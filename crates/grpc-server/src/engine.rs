@@ -1963,6 +1963,14 @@ impl AetherEngine {
     pub fn snapshot_manager(&self) -> &Arc<SnapshotManager> {
         &self.snapshot_manager
     }
+
+    /// Get a clone of the RPC provider used for revm fork simulations.
+    /// `None` when the engine was constructed without an `ETH_RPC_URL`
+    /// (empty-state mode). The mempool-backrun validator consumes this
+    /// to build `RpcForkedState` per validation attempt.
+    pub fn rpc_provider(&self) -> Option<DynProvider<Ethereum>> {
+        self.rpc_provider.clone()
+    }
 }
 
 #[cfg(test)]

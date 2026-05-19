@@ -31,20 +31,15 @@ use aether_ingestion::subscription::{EventChannels, PendingTxEvent};
 use aether_pools::router_decoder::{decode_pending, DecodeError, DecodedSwap, Protocol};
 use aether_pools::{predict_post_state_with_fallback, PoolStateCache, UnifiedPostState};
 use aether_simulator::calldata::build_execute_arb_calldata;
-// `ArbTx` / `ValidatorParams` / `VictimTx` / `validate_backrun_rpc` are
-// imported here for the next commit on this branch that plumbs a
-// `DynProvider` into `BackrunValidatorConfig` and constructs an
-// `RpcForkedState` per validation attempt. Until that lands the
-// short-circuit branch in `run_backrun_validation` rejects with
-// `RejectReason::SimError` and the rest of these symbols stay unused.
-#[allow(unused_imports)]
 use aether_simulator::mempool_backrun::{
     validate_backrun_rpc, ArbTx, RejectReason, ValidatorParams, VictimTx,
 };
 use aether_state::price_graph::PriceGraph;
 use aether_state::snapshot::SnapshotManager;
 use aether_state::token_index::TokenIndex;
+use alloy::network::Ethereum;
 use alloy::primitives::{Address, U256};
+use alloy::providers::DynProvider;
 use arc_swap::ArcSwap;
 use tokio::sync::{broadcast, watch, Semaphore};
 use tracing::{debug, info, warn};
@@ -90,11 +85,6 @@ fn build_pair_index(registry: &HashMap<Address, PoolMetadata>) -> PairIndex {
 /// all in-flight validation attempts so we never burn more than
 /// `sim_concurrency` revm forks at the same time.
 #[derive(Clone)]
-#[allow(dead_code)]
-// `profit_token` and `balance_slot` are read by `validate_backrun_rpc`
-// when the RPC-fork construction lands; until then they are populated
-// from env but unread here. Kept on the struct so the next commit on
-// this branch wires them without churning callers.
 pub struct BackrunValidatorConfig {
     pub executor_address: Address,
     pub searcher_caller: Address,
@@ -104,6 +94,12 @@ pub struct BackrunValidatorConfig {
     pub min_profit_wei: U256,
     pub input_amount_wei: U256,
     pub sim_semaphore: Arc<Semaphore>,
+    /// RPC provider used by [`validate_backrun_rpc`] to build
+    /// [`aether_simulator::fork::RpcForkedState`] per attempt. When
+    /// `None` the validator stays dormant — the pipeline counts a
+    /// `provider_unavailable` reject and the analytical-only behaviour
+    /// from `develop` is preserved.
+    pub provider: Option<DynProvider<Ethereum>>,
 }
 
 /// State the post-state simulator needs to run after a successful decode.
@@ -552,6 +548,7 @@ fn try_post_state_scan(
                 best,
                 _event,
                 router_label,
+                snapshot.block_number,
             );
         }
     }
@@ -574,16 +571,10 @@ fn try_post_state_scan(
 ///
 /// Acquires the global validation semaphore (drops the call when full),
 /// converts the cycle to executor calldata via the existing
-/// `aether_simulator::calldata` builder, runs `validate_backrun_rpc` under
-/// a wall-clock latency observation, and either publishes or counts the
-/// rejection reason on the `aether_mempool_backrun_*` metrics.
-///
-/// **Provider plumbing.** The real-RPC fork construction lives behind a
-/// future commit on this branch that adds `provider: DynProvider` to
-/// `BackrunValidatorConfig`. Until that lands the entry below short-circuits
-/// with `RejectReason::SimError` after recording the attempt — sufficient
-/// to exercise the publish + metric path end-to-end without depending on
-/// a live RPC endpoint in unit tests.
+/// `aether_simulator::calldata` builder, builds an `RpcForkedState` at
+/// the snapshot's block, runs `validate_backrun_rpc`, and either publishes
+/// or counts the rejection reason on the `aether_mempool_backrun_*`
+/// metrics.
 #[allow(clippy::too_many_arguments)]
 fn run_backrun_validation(
     metrics: &EngineMetrics,
@@ -594,6 +585,7 @@ fn run_backrun_validation(
     cycle: &DetectedCycle,
     event: &PendingTxEvent,
     router_label: &str,
+    block_number: u64,
 ) -> Option<()> {
     // Bounded concurrency. `try_acquire_owned` so a saturated semaphore
     // drops the attempt rather than queueing — the next pending swap will
@@ -605,18 +597,21 @@ fn run_backrun_validation(
             return None;
         }
     };
-    // Manual gauge inc — the RAII guard lives in metrics.rs but takes an
-    // Arc, which the pipeline holds via Arc<EngineMetrics> at the call
-    // site that wraps this function. Track here for the duration of this
-    // call only.
-    metrics.observe_mempool_backrun_validation_latency_ms("inflight", 0.0);
+    // Provider check. Without an RPC connection the validator stays
+    // dormant — the analytical-only path from develop is preserved. The
+    // reject reason is distinct from `sim_error` so dashboards can show
+    // dormant-validator runs separately from real failures.
+    let Some(provider) = cfg.provider.as_ref() else {
+        metrics.inc_mempool_backrun_rejected("provider_unavailable");
+        return None;
+    };
+    let started = Instant::now();
 
     // Cycle → SwapStep conversion. Walks the cycle vertices and picks the
     // first matching edge for each hop. When any leg lacks a graph edge
     // (e.g. cycle crosses a vertex with no outbound edge under the
     // current snapshot) the attempt rejects rather than publishing a
     // malformed bundle.
-    let started = Instant::now();
     let steps = match cycle_to_swap_steps(graph, token_index, cycle, cfg.input_amount_wei) {
         Some(s) if !s.is_empty() => s,
         _ => {
@@ -642,26 +637,173 @@ fn run_backrun_validation(
         U256::from(9000u64), // 90% tip share — conservative starting point
     );
 
-    // No live RPC fork constructed here — see fn-level doc. Treat as
-    // SimError so dashboards can split this transitional case from real
-    // sim failures via the existing reason label.
-    metrics.inc_mempool_backrun_rejected(RejectReason::SimError.as_str());
-    let elapsed_ms = started.elapsed().as_secs_f64() * 1_000.0;
-    metrics.observe_mempool_backrun_validation_latency_ms("reject", elapsed_ms);
+    // Build the forked state at the snapshot block. `new_at_latest`
+    // sidesteps the BlockId resolution issue when the provider is an
+    // Anvil fork; on real mainnet RPC the difference is invisible
+    // because `latest` and the snapshot block are typically within one
+    // slot of each other.
+    let state = match aether_simulator::fork::RpcForkedState::new_at_latest(
+        provider.clone(),
+        block_number,
+        now_secs,
+        // Base fee unknown at the snapshot — pass 1 gwei and rely on
+        // `disable_base_fee = true` inside the simulator's cfg. This is
+        // safe because the only effect of base_fee here is the EIP-1559
+        // gas-price check, which the validator already disables.
+        1_000_000_000,
+    ) {
+        Some(s) => s,
+        None => {
+            metrics.inc_mempool_backrun_rejected("fork_construction_failed");
+            return None;
+        }
+    };
 
-    // The publish path below is kept reachable so the broadcast plumbing
-    // is exercised by integration tests that swap the validator for a
-    // stub that returns Accept. In the production path this branch only
-    // fires after `validate_backrun_rpc` accepts.
-    let _unused = (publisher, cfg.executor_address, cfg.searcher_caller, cfg.chain_id);
-    drop(calldata);
-    debug!(
-        target: "aether::mempool",
-        tx_hash = %event.tx_hash,
-        router = %router_label,
-        "backrun validator: provider plumbing pending — attempt counted as sim_error"
-    );
-    None
+    let victim = VictimTx {
+        from: event.from,
+        to: event.to?,
+        value: event.value,
+        data: event.input.clone(),
+        gas_price: event.gas_price,
+        gas_limit: 1_000_000, // generous; victim's actual gas_limit not on the subscription stream
+    };
+    let arb = ArbTx {
+        caller: cfg.searcher_caller,
+        to: cfg.executor_address,
+        data: calldata,
+        gas_limit: 1_500_000,
+    };
+    let params = ValidatorParams {
+        block_number,
+        block_timestamp: now_secs,
+        base_fee: 1_000_000_000,
+        chain_id: cfg.chain_id,
+        profit_token: cfg.profit_token,
+        profit_recipient: cfg.searcher_caller,
+        balance_slot: cfg.balance_slot,
+    };
+
+    let result = validate_backrun_rpc(state, &victim, &arb, &params);
+    let elapsed_ms = started.elapsed().as_secs_f64() * 1_000.0;
+
+    if !result.accepted {
+        let reason = result
+            .reject
+            .as_ref()
+            .map(|r| r.as_str())
+            .unwrap_or(RejectReason::SimError.as_str());
+        metrics.inc_mempool_backrun_rejected(reason);
+        metrics.observe_mempool_backrun_validation_latency_ms("reject", elapsed_ms);
+        debug!(
+            target: "aether::mempool",
+            tx_hash = %event.tx_hash,
+            router = %router_label,
+            reason,
+            arb_gas_used = result.arb_gas_used,
+            "BACKRUN VALIDATION REJECTED"
+        );
+        return None;
+    }
+
+    // Accept path — publish a ValidatedArb tagged MEMPOOL_BACKRUN.
+    metrics.observe_mempool_backrun_validation_latency_ms("accept", elapsed_ms);
+    let bucket = gross_profit_bucket(result.gross_profit_wei);
+    metrics.inc_mempool_backrun_validated(bucket);
+
+    let proto = aether_proto::ValidatedArb {
+        id: format!(
+            "mempool-{:#x}-{}",
+            event.tx_hash,
+            cycle
+                .path
+                .first()
+                .copied()
+                .unwrap_or(0)
+        ),
+        hops: vec![], // detailed hop info lives on the SwapStep list below
+        total_profit_wei: u256_bytes(result.gross_profit_wei),
+        total_gas: result.arb_gas_used,
+        gas_cost_wei: u256_bytes(
+            U256::from(result.arb_gas_used).saturating_mul(U256::from(params.base_fee)),
+        ),
+        net_profit_wei: u256_bytes(result.gross_profit_wei),
+        block_number,
+        timestamp_ns: now_secs as i64 * 1_000_000_000,
+        flashloan_token: flashloan_token.to_vec().into(),
+        flashloan_amount: u256_bytes(cfg.input_amount_wei),
+        steps: steps.into_iter().map(swap_step_to_proto).collect(),
+        calldata: arb.data.into(),
+        source: aether_proto::ArbSource::MempoolBackrun as i32,
+        victim_tx_hash: event.tx_hash.0.to_vec().into(),
+        target_block: block_number.saturating_add(1),
+    };
+
+    if let Err(e) = publisher.send(proto) {
+        debug!(
+            target: "aether::mempool",
+            error = %e,
+            "BACKRUN VALIDATED — no arb subscribers connected"
+        );
+    } else {
+        info!(
+            target: "aether::mempool",
+            tx_hash = %event.tx_hash,
+            router = %router_label,
+            arb_gas_used = result.arb_gas_used,
+            gross_profit_wei = %result.gross_profit_wei,
+            "BACKRUN VALIDATED — published to executor"
+        );
+    }
+    Some(())
+}
+
+fn u256_bytes(v: U256) -> bytes::Bytes {
+    let arr: [u8; 32] = v.to_be_bytes();
+    bytes::Bytes::copy_from_slice(&arr)
+}
+
+fn swap_step_to_proto(s: aether_common::types::SwapStep) -> aether_proto::SwapStep {
+    aether_proto::SwapStep {
+        protocol: protocol_to_proto(s.protocol) as i32,
+        pool_address: s.pool_address.to_vec().into(),
+        token_in: s.token_in.to_vec().into(),
+        token_out: s.token_out.to_vec().into(),
+        amount_in: u256_bytes(s.amount_in),
+        min_amount_out: u256_bytes(s.min_amount_out),
+        calldata: s.calldata.into(),
+    }
+}
+
+fn protocol_to_proto(p: ProtocolType) -> aether_proto::ProtocolType {
+    match p {
+        ProtocolType::UniswapV2 => aether_proto::ProtocolType::UniswapV2,
+        ProtocolType::UniswapV3 => aether_proto::ProtocolType::UniswapV3,
+        ProtocolType::SushiSwap => aether_proto::ProtocolType::Sushiswap,
+        ProtocolType::Curve => aether_proto::ProtocolType::Curve,
+        ProtocolType::BalancerV2 => aether_proto::ProtocolType::BalancerV2,
+        ProtocolType::BancorV3 => aether_proto::ProtocolType::BancorV3,
+    }
+}
+
+/// Map a gross profit value (wei) onto the same bucket cardinality used
+/// by the analytical-candidate metric so dashboards can join the two
+/// funnels in a single query.
+fn gross_profit_bucket(profit_wei: U256) -> &'static str {
+    let eth = u256_to_f64_saturating(profit_wei) / 1e18;
+    // Compare against approximate USD ranges by mapping ETH → ~$3000:
+    //   <0.001 ETH ≈ <$3      → lt_10bps   (vanishingly small)
+    //   <0.01  ETH ≈ <$30     → 10_50bps   (sub-floor)
+    //   <0.1   ETH ≈ <$300    → 50_200bps  (sensible)
+    //   otherwise              → gt_200bps  (fat tail)
+    if eth < 0.001 {
+        "lt_10bps"
+    } else if eth < 0.01 {
+        "10_50bps"
+    } else if eth < 0.1 {
+        "50_200bps"
+    } else {
+        "gt_200bps"
+    }
 }
 
 /// Convert a `DetectedCycle` (vertex-index path) into the `SwapStep`

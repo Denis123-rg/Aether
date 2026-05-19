@@ -170,9 +170,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             // execution. `AETHER_EXECUTOR_ADDRESS` is the only hard
             // requirement; when unset the validator stays dormant and
             // the analytical-only candidate path runs as before.
-            if let Some(cfg) = build_backrun_validator_config() {
+            if let Some(cfg) = build_backrun_validator_config(engine.rpc_provider()) {
+                let with_provider = cfg.provider.is_some();
                 sim_ctx_inner = sim_ctx_inner.with_backrun_validator(cfg);
-                info!("Mempool-backrun revm validator enabled");
+                if with_provider {
+                    info!("Mempool-backrun revm validator enabled (live RPC fork)");
+                } else {
+                    info!(
+                        "Mempool-backrun revm validator enabled (provider unavailable — rejects with provider_unavailable)"
+                    );
+                }
             } else {
                 info!(
                     "AETHER_EXECUTOR_ADDRESS not set — mempool-backrun revm validator disabled"
@@ -288,7 +295,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 /// variables. Returns `None` when `AETHER_EXECUTOR_ADDRESS` is unset — the
 /// pipeline then runs analytical-only without attempting the revm
 /// validator path. All other env vars have safe defaults documented inline.
-fn build_backrun_validator_config() -> Option<mempool_pipeline::BackrunValidatorConfig> {
+fn build_backrun_validator_config(
+    provider: Option<alloy::providers::DynProvider<alloy::network::Ethereum>>,
+) -> Option<mempool_pipeline::BackrunValidatorConfig> {
     use alloy::primitives::{Address, U256};
     use std::str::FromStr;
 
@@ -337,5 +346,6 @@ fn build_backrun_validator_config() -> Option<mempool_pipeline::BackrunValidator
         min_profit_wei,
         input_amount_wei,
         sim_semaphore: Arc::new(tokio::sync::Semaphore::new(sim_concurrency)),
+        provider,
     })
 }
