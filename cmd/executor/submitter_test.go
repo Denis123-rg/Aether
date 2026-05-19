@@ -616,3 +616,118 @@ func TestTruncateBytes(t *testing.T) {
 		t.Errorf("truncateBytes(long) should end with ...(truncated)")
 	}
 }
+
+func TestSubmitToBuilder_MempoolBackrunEnvelope(t *testing.T) {
+	t.Parallel()
+
+	const victimHash = "0xfeed00000000000000000000000000000000000000000000000000000000beef"
+
+	var capturedBody []byte
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		capturedBody = body
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":{"bundleHash":"0xabc"}}`))
+	}))
+	defer srv.Close()
+
+	builders := []BuilderConfig{
+		{Name: "test-builder", URL: srv.URL, AuthType: "none", Enabled: true, TimeoutMs: 2000},
+	}
+	sub, err := NewSubmitter(builders, "")
+	if err != nil {
+		t.Fatalf("NewSubmitter: %v", err)
+	}
+
+	bundle := &Bundle{
+		BlockNumber:       0x112A881,
+		RawTxs:            [][]byte{{0xaa, 0xbb}},
+		Source:            SourceMempoolBackrun,
+		VictimTxHashHex:   victimHash,
+		RevertingTxHashes: []string{"0x1111111111111111111111111111111111111111111111111111111111111111"},
+	}
+
+	results := sub.SubmitToAll(context.Background(), bundle)
+	if len(results) != 1 || !results[0].Success {
+		t.Fatalf("expected 1 successful result, got %v", results)
+	}
+
+	var req struct {
+		Params []map[string]interface{} `json:"params"`
+	}
+	if err := json.Unmarshal(capturedBody, &req); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	params := req.Params[0]
+	txs := params["txs"].([]interface{})
+	if len(txs) != 2 {
+		t.Fatalf("expected [victim_hash, our_arb] (2 entries), got %d", len(txs))
+	}
+	if txs[0].(string) != victimHash {
+		t.Errorf("txs[0] = %s, want victim hash %s", txs[0], victimHash)
+	}
+	if txs[1].(string) != "0xaabb" {
+		t.Errorf("txs[1] = %s, want our_arb 0xaabb", txs[1])
+	}
+	reverting, ok := params["revertingTxHashes"].([]interface{})
+	if !ok {
+		t.Fatalf("revertingTxHashes missing from params")
+	}
+	if len(reverting) != 1 {
+		t.Fatalf("revertingTxHashes len: want 1, got %d", len(reverting))
+	}
+	for _, h := range reverting {
+		if h.(string) == victimHash {
+			t.Fatalf("victim hash leaked into revertingTxHashes — adverse-fill risk")
+		}
+	}
+}
+
+func TestSubmitToBuilder_BlockDrivenStillUnaffected(t *testing.T) {
+	t.Parallel()
+
+	var capturedBody []byte
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		capturedBody = body
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":{"bundleHash":"0xok"}}`))
+	}))
+	defer srv.Close()
+
+	builders := []BuilderConfig{
+		{Name: "test-builder", URL: srv.URL, AuthType: "none", Enabled: true, TimeoutMs: 2000},
+	}
+	sub, err := NewSubmitter(builders, "")
+	if err != nil {
+		t.Fatalf("NewSubmitter: %v", err)
+	}
+
+	bundle := &Bundle{
+		BlockNumber: 0x112A880,
+		RawTxs:      [][]byte{{0x01, 0x02}, {0x03, 0x04}},
+		// No VictimTxHashHex, no RevertingTxHashes.
+	}
+	results := sub.SubmitToAll(context.Background(), bundle)
+	if len(results) != 1 || !results[0].Success {
+		t.Fatalf("expected success, got %v", results)
+	}
+
+	var req struct {
+		Params []map[string]interface{} `json:"params"`
+	}
+	if err := json.Unmarshal(capturedBody, &req); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	params := req.Params[0]
+	if _, has := params["revertingTxHashes"]; has {
+		t.Fatalf("block-driven bundle must NOT carry revertingTxHashes")
+	}
+	txs := params["txs"].([]interface{})
+	if len(txs) != 2 {
+		t.Fatalf("expected 2 signed txs only, got %d", len(txs))
+	}
+	if txs[0].(string) != "0x0102" || txs[1].(string) != "0x0304" {
+		t.Errorf("block-driven txs envelope: got %v", txs)
+	}
+}

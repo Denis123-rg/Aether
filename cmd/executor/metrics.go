@@ -25,13 +25,34 @@ import (
 //	aether_*          — system-level spec metrics shared across processes
 //	                    (latency, gas price, PnL, ETH balance)
 var (
-	bundlesSubmitted = prometheus.NewCounter(prometheus.CounterOpts{
+	// `source` label split: `block_driven` for the historical confirmed-
+	// block path, `mempool_backrun` for the new pending-tx path landed by
+	// #138 / #142. Dashboards must aggregate-sum across labels for the
+	// "all bundles" view; per-source rows let operators see which
+	// pipeline produces inclusion vs misses.
+	bundlesSubmitted = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "aether_executor_bundles_submitted_total",
-		Help: "Total bundles submitted for builder fanout",
-	})
-	bundlesIncluded = prometheus.NewCounter(prometheus.CounterOpts{
+		Help: "Total bundles submitted for builder fanout, by source",
+	}, []string{"source"})
+	bundlesIncluded = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "aether_executor_bundles_included_total",
-		Help: "Total bundles with at least one builder acceptance",
+		Help: "Total bundles with at least one builder acceptance, by source",
+	}, []string{"source"})
+	// Built-but-not-yet-submitted counter. Distinct from `bundlesSubmitted`
+	// so the bundle-build → submit funnel can be observed when shadow mode
+	// or a risk gate blocks the submission step.
+	bundlesBuilt = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "aether_executor_bundles_built_total",
+		Help: "Total bundles constructed (signed but not necessarily submitted), by source",
+	}, []string{"source"})
+	// Mempool-only build-latency histogram. The block-driven path keeps
+	// its existing untimed flow because it builds at the cadence of
+	// confirmed blocks (every 12s); the mempool path runs per-victim and
+	// the per-build cost is competitive signal we want graphable.
+	mempoolBundleBuildLatencyMs = prometheus.NewHistogram(prometheus.HistogramOpts{
+		Name:    "aether_executor_mempool_bundle_build_latency_ms",
+		Help:    "Per-bundle build latency for mempool-backrun source, ms",
+		Buckets: []float64{0.1, 0.5, 1, 2, 5, 10, 25, 50, 100},
 	})
 	profitTotalWei = prometheus.NewCounter(prometheus.CounterOpts{
 		Name: "aether_executor_profit_wei_total",
@@ -104,6 +125,8 @@ func init() {
 	prometheus.MustRegister(
 		bundlesSubmitted,
 		bundlesIncluded,
+		bundlesBuilt,
+		mempoolBundleBuildLatencyMs,
 		profitTotalWei,
 		gasSpentWei,
 		riskRejections,
@@ -118,6 +141,17 @@ func init() {
 		shadowBundles,
 		metricsPrecisionLoss,
 	)
+	// Pre-touch both `source` labels so the Prometheus text exposition
+	// emits a zero-row for each value even before any bundles flow.
+	// Dashboards key on stable series presence; without this the
+	// `bundles_*_total{source="mempool_backrun"}` row only appears
+	// after the first mempool-backrun bundle, which delays alert
+	// rules waiting for the series.
+	for _, s := range []string{SourceBlockDriven, SourceMempoolBackrun} {
+		bundlesSubmitted.WithLabelValues(s)
+		bundlesIncluded.WithLabelValues(s)
+		bundlesBuilt.WithLabelValues(s)
+	}
 }
 
 func recordShadowBundle() {
@@ -151,16 +185,33 @@ func metricsAddr() string {
 	return port
 }
 
-func recordBundleSubmitted() {
-	bundlesSubmitted.Inc()
+// SourceLabel is the canonical `source` label used by all bundle-flow
+// counters in the executor. The string values match the
+// `aether.ArbSource` enum in `proto/aether.proto`; treat them as the
+// stable contract dashboards key on.
+const (
+	SourceBlockDriven    = "block_driven"
+	SourceMempoolBackrun = "mempool_backrun"
+)
+
+func recordBundleBuilt(source string) {
+	bundlesBuilt.WithLabelValues(source).Inc()
 }
 
-func recordBundleIncluded(profitWei *big.Int, gasGwei float64, gasUsed uint64) {
-	bundlesIncluded.Inc()
+func recordBundleSubmitted(source string) {
+	bundlesSubmitted.WithLabelValues(source).Inc()
+}
+
+func recordBundleIncluded(source string, profitWei *big.Int, gasGwei float64, gasUsed uint64) {
+	bundlesIncluded.WithLabelValues(source).Inc()
 	addBigIntCounter(profitTotalWei, profitWei)
 	addGasSpent(gasGwei, gasUsed)
 	gasCostWei := gasGwei * 1e9 * float64(gasUsed)
 	addPnl(profitWei, gasCostWei)
+}
+
+func recordMempoolBundleBuildLatency(d time.Duration) {
+	mempoolBundleBuildLatencyMs.Observe(float64(d.Microseconds()) / 1000.0)
 }
 
 func recordRiskRejection() {
