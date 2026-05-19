@@ -53,7 +53,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Create the AetherEngine with a broadcast sender connected to the
     // ArbService's stream.
+    // Cloned twice: once moved into the engine for the block-driven path
+    // and once attached to `SimContext::arb_publisher` so the mempool
+    // validator can publish on the same channel.
     let arb_tx = arb_service.arb_sender();
+    let arb_tx_for_mempool = arb_tx.clone();
     let engine_config = EngineConfig {
         rpc_url: std::env::var("ETH_RPC_URL").ok(),
         ..EngineConfig::default()
@@ -146,7 +150,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             // the engine's BellmanFord config so the analytical scan
             // honours the same hop / latency budget as the main path.
             let engine_cfg = EngineConfig::default();
-            let sim_ctx = Arc::new(mempool_pipeline::SimContext::new(
+            let mut sim_ctx_inner = mempool_pipeline::SimContext::new(
                 Arc::clone(engine.pool_registry()),
                 Arc::clone(engine.token_index()),
                 Arc::clone(engine.snapshot_manager()),
@@ -155,7 +159,26 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     engine_cfg.detection_time_budget_us,
                 ),
                 Arc::clone(engine.pool_states()),
-            ));
+            );
+            // Wire the validated-arb publisher so the revm validator can
+            // hand accepted backruns to the existing gRPC stream. The
+            // executor consumes both block-driven and mempool-backrun
+            // arbs from this single channel.
+            sim_ctx_inner = sim_ctx_inner.with_arb_publisher(arb_tx_for_mempool);
+            // Validator config — env-tunable. All fields default to safe
+            // values when the operator hasn't opted into mempool-backrun
+            // execution. `AETHER_EXECUTOR_ADDRESS` is the only hard
+            // requirement; when unset the validator stays dormant and
+            // the analytical-only candidate path runs as before.
+            if let Some(cfg) = build_backrun_validator_config() {
+                sim_ctx_inner = sim_ctx_inner.with_backrun_validator(cfg);
+                info!("Mempool-backrun revm validator enabled");
+            } else {
+                info!(
+                    "AETHER_EXECUTOR_ADDRESS not set — mempool-backrun revm validator disabled"
+                );
+            }
+            let sim_ctx = Arc::new(sim_ctx_inner);
             let pipeline_handle = mempool_pipeline::spawn_mempool_pipeline(
                 Arc::clone(engine.event_channels()),
                 Arc::clone(&metrics),
@@ -259,4 +282,60 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     server_result?;
 
     Ok(())
+}
+
+/// Build a [`mempool_pipeline::BackrunValidatorConfig`] from environment
+/// variables. Returns `None` when `AETHER_EXECUTOR_ADDRESS` is unset — the
+/// pipeline then runs analytical-only without attempting the revm
+/// validator path. All other env vars have safe defaults documented inline.
+fn build_backrun_validator_config() -> Option<mempool_pipeline::BackrunValidatorConfig> {
+    use alloy::primitives::{Address, U256};
+    use std::str::FromStr;
+
+    let executor_address = std::env::var("AETHER_EXECUTOR_ADDRESS")
+        .ok()
+        .and_then(|s| Address::from_str(s.trim()).ok())?;
+    let searcher_caller = std::env::var("AETHER_SEARCHER_CALLER")
+        .ok()
+        .and_then(|s| Address::from_str(s.trim()).ok())
+        .unwrap_or(executor_address);
+    // WETH-9 mainnet. Override via env when running on a fork / testnet.
+    let profit_token = std::env::var("AETHER_PROFIT_TOKEN")
+        .ok()
+        .and_then(|s| Address::from_str(s.trim()).ok())
+        .unwrap_or_else(|| {
+            Address::from_str("0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2").unwrap()
+        });
+    // WETH `_balances` mapping at slot 3. USDC = 9, USDT = 2, DAI = 2.
+    let balance_slot = std::env::var("AETHER_PROFIT_TOKEN_BALANCE_SLOT")
+        .ok()
+        .and_then(|s| s.parse::<u64>().ok())
+        .map(U256::from)
+        .unwrap_or_else(|| U256::from(3u64));
+    let chain_id = std::env::var("AETHER_CHAIN_ID")
+        .ok()
+        .and_then(|s| s.parse::<u64>().ok())
+        .unwrap_or(1);
+    let min_profit_wei = std::env::var("AETHER_MEMPOOL_MIN_PROFIT_WEI")
+        .ok()
+        .and_then(|s| U256::from_str(s.trim()).ok())
+        .unwrap_or_else(|| U256::from(1_000_000_000_000_000u64)); // 0.001 ETH
+    let input_amount_wei = std::env::var("AETHER_MEMPOOL_INPUT_AMOUNT_WEI")
+        .ok()
+        .and_then(|s| U256::from_str(s.trim()).ok())
+        .unwrap_or_else(|| U256::from(10_000_000_000_000_000u64)); // 0.01 ETH
+    let sim_concurrency = std::env::var("AETHER_MEMPOOL_SIM_CONCURRENCY")
+        .ok()
+        .and_then(|s| s.parse::<usize>().ok())
+        .unwrap_or(8);
+    Some(mempool_pipeline::BackrunValidatorConfig {
+        executor_address,
+        searcher_caller,
+        profit_token,
+        balance_slot,
+        chain_id,
+        min_profit_wei,
+        input_amount_wei,
+        sim_semaphore: Arc::new(tokio::sync::Semaphore::new(sim_concurrency)),
+    })
 }
