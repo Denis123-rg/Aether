@@ -35,6 +35,16 @@ enum SystemState {
     HALTED = 4;
 }
 
+// Source channel for an arb opportunity. BlockDriven is the historical
+// path (Sync/Swap events on confirmed blocks); MempoolBackrun is the new
+// pending-tx path where validation forks at the victim's parent block,
+// applies the victim, applies our arb, and only publishes on success.
+enum ArbSource {
+    SOURCE_UNKNOWN = 0;
+    BLOCK_DRIVEN = 1;
+    MEMPOOL_BACKRUN = 2;
+}
+
 message SwapStep {
     ProtocolType protocol = 1;
     bytes pool_address = 2;
@@ -68,6 +78,20 @@ message ValidatedArb {
     bytes flashloan_amount = 10;
     repeated SwapStep steps = 11;
     bytes calldata = 12;
+
+    // Which detection channel surfaced this opportunity. Defaults to
+    // SOURCE_UNKNOWN for backward compatibility with publishers that
+    // pre-date the field; existing block-driven callers will be updated
+    // to set BLOCK_DRIVEN. Mempool-backrun publishers set MEMPOOL_BACKRUN
+    // and additionally populate `victim_tx_hash` + `target_block`.
+    ArbSource source = 13;
+    // Pending-tx hash the bundle is backrunning. Empty when source is
+    // BLOCK_DRIVEN.
+    bytes victim_tx_hash = 14;
+    // Slot the bundle is targeting. For BLOCK_DRIVEN this matches
+    // block_number+1; for MEMPOOL_BACKRUN it matches the block the
+    // builder is currently constructing.
+    uint64 target_block = 15;
 }
 
 message SubmitArbResponse {

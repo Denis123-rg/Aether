@@ -3,7 +3,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use prometheus::{
-    Encoder, Histogram, HistogramOpts, IntCounter, IntCounterVec, Opts, Registry, TextEncoder,
+    Encoder, Histogram, HistogramOpts, HistogramVec, IntCounter, IntCounterVec, IntGauge, Opts,
+    Registry, TextEncoder,
 };
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
@@ -92,6 +93,30 @@ pub struct EngineMetrics {
     ///     fee-on-transfer wrapper)
     ///   - `zero_amount` — `amount_in == 0` (no profit possible)
     mempool_filtered_total: IntCounterVec,
+    /// Per-attempt revm validation latency for the mempool-backrun path,
+    /// split by accept / reject. `accept` rows capture only successful
+    /// double-tx sims (victim + arb), `reject` rows include every other
+    /// outcome so dashboards can decompose tail behaviour by reason.
+    mempool_backrun_validation_latency_ms: HistogramVec,
+    /// Validated mempool-backrun candidates ready for executor publish,
+    /// bucketed by predicted profit so dashboards can show distribution.
+    mempool_backrun_validated_total: IntCounterVec,
+    /// Reason-tagged reject counter for the mempool-backrun validator.
+    ///
+    /// Stable label set:
+    ///   - `victim_reverted` — victim tx reverts when applied to the fork
+    ///   - `victim_halted` — victim tx hit revm `Halt` (OOG, invalid opcode)
+    ///   - `arb_reverted` — our arb tx reverts after the victim
+    ///   - `arb_halted` — our arb tx hit revm `Halt`
+    ///   - `negative_after_gas` — sim succeeded but `profit_wei <= gas_cost`
+    ///   - `sim_timeout` — sim wall-clock exceeded `AETHER_MEMPOOL_SIM_TIMEOUT_MS`
+    ///   - `victim_stale` — `seen_at` older than freshness threshold
+    ///   - `sim_error` — non-revert / non-halt revm error
+    mempool_backrun_rejected_total: IntCounterVec,
+    /// In-flight mempool-backrun validation sims. Bounded by the
+    /// `AETHER_MEMPOOL_SIM_CONCURRENCY` semaphore; exposed so dashboards can
+    /// alert on saturation (gauge at ceiling = victims being dropped).
+    mempool_backrun_sim_concurrent: IntGauge,
 }
 
 impl EngineMetrics {
@@ -201,6 +226,38 @@ impl EngineMetrics {
             &["reason"],
         )
         .expect("aether_mempool_filtered_total counter vec");
+        let mempool_backrun_validation_latency_ms = HistogramVec::new(
+            HistogramOpts::new(
+                "aether_mempool_backrun_validation_latency_ms",
+                "Per-attempt revm validation latency for the mempool-backrun path, ms",
+            )
+            .buckets(vec![
+                0.5, 1.0, 2.0, 5.0, 10.0, 20.0, 50.0, 100.0, 250.0, 500.0,
+            ]),
+            &["result"],
+        )
+        .expect("aether_mempool_backrun_validation_latency_ms histogram vec");
+        let mempool_backrun_validated_total = IntCounterVec::new(
+            Opts::new(
+                "aether_mempool_backrun_validated_total",
+                "Mempool-backrun candidates that passed revm validation, by profit bucket",
+            ),
+            &["profit_bucket"],
+        )
+        .expect("aether_mempool_backrun_validated_total counter vec");
+        let mempool_backrun_rejected_total = IntCounterVec::new(
+            Opts::new(
+                "aether_mempool_backrun_rejected_total",
+                "Mempool-backrun candidates rejected by the revm validator, by reason",
+            ),
+            &["reason"],
+        )
+        .expect("aether_mempool_backrun_rejected_total counter vec");
+        let mempool_backrun_sim_concurrent = IntGauge::new(
+            "aether_mempool_backrun_sim_concurrent",
+            "In-flight mempool-backrun validation sims, bounded by the semaphore",
+        )
+        .expect("aether_mempool_backrun_sim_concurrent gauge");
 
         registry
             .register(Box::new(detection_latency_ms.clone()))
@@ -247,6 +304,18 @@ impl EngineMetrics {
         registry
             .register(Box::new(mempool_filtered_total.clone()))
             .expect("register aether_mempool_filtered_total");
+        registry
+            .register(Box::new(mempool_backrun_validation_latency_ms.clone()))
+            .expect("register aether_mempool_backrun_validation_latency_ms");
+        registry
+            .register(Box::new(mempool_backrun_validated_total.clone()))
+            .expect("register aether_mempool_backrun_validated_total");
+        registry
+            .register(Box::new(mempool_backrun_rejected_total.clone()))
+            .expect("register aether_mempool_backrun_rejected_total");
+        registry
+            .register(Box::new(mempool_backrun_sim_concurrent.clone()))
+            .expect("register aether_mempool_backrun_sim_concurrent");
 
         Self {
             registry,
@@ -265,6 +334,10 @@ impl EngineMetrics {
             pending_arb_sim_skipped_total,
             pending_pipeline_lagged_total,
             mempool_filtered_total,
+            mempool_backrun_validation_latency_ms,
+            mempool_backrun_validated_total,
+            mempool_backrun_rejected_total,
+            mempool_backrun_sim_concurrent,
         }
     }
 
@@ -417,6 +490,65 @@ impl EngineMetrics {
             .get()
     }
 
+    /// Observe one mempool-backrun validation latency sample. `result` is
+    /// `"accept"` for a fully-successful sim (victim + arb both committed
+    /// with positive net profit) or `"reject"` for every other outcome.
+    pub fn observe_mempool_backrun_validation_latency_ms(&self, result: &str, ms: f64) {
+        self.mempool_backrun_validation_latency_ms
+            .with_label_values(&[result])
+            .observe(ms);
+    }
+
+    /// Bump `aether_mempool_backrun_validated_total{profit_bucket}`. Buckets
+    /// reuse the existing `pending_arb_candidates_total` cardinality so a
+    /// single Grafana query joins the analytical-candidate funnel with the
+    /// revm-validated funnel.
+    pub fn inc_mempool_backrun_validated(&self, profit_bucket: &str) {
+        self.mempool_backrun_validated_total
+            .with_label_values(&[profit_bucket])
+            .inc();
+    }
+
+    /// Bump `aether_mempool_backrun_rejected_total{reason}`. See the field
+    /// doc on `mempool_backrun_rejected_total` for the stable label set.
+    pub fn inc_mempool_backrun_rejected(&self, reason: &str) {
+        self.mempool_backrun_rejected_total
+            .with_label_values(&[reason])
+            .inc();
+    }
+
+    /// Increment the in-flight mempool-backrun sim gauge by one. Returns a
+    /// guard that decrements on drop so callers can wrap a sim in a
+    /// `let _g = metrics.track_mempool_backrun_sim();` block and the
+    /// counter is always balanced even on panic.
+    pub fn track_mempool_backrun_sim(self: &Arc<Self>) -> MempoolBackrunSimGuard {
+        self.mempool_backrun_sim_concurrent.inc();
+        MempoolBackrunSimGuard {
+            metrics: Arc::clone(self),
+        }
+    }
+
+    /// Read the current in-flight sim count. Public so tests can assert the
+    /// gauge is balanced after a validation completes.
+    pub fn mempool_backrun_sim_concurrent(&self) -> i64 {
+        self.mempool_backrun_sim_concurrent.get()
+    }
+
+    /// Read the validated-candidate counter. Public so tests can assert
+    /// the validator publishes on accept.
+    pub fn mempool_backrun_validated_count(&self, profit_bucket: &str) -> u64 {
+        self.mempool_backrun_validated_total
+            .with_label_values(&[profit_bucket])
+            .get()
+    }
+
+    /// Read the rejected-candidate counter for a specific reason.
+    pub fn mempool_backrun_rejected_count(&self, reason: &str) -> u64 {
+        self.mempool_backrun_rejected_total
+            .with_label_values(&[reason])
+            .get()
+    }
+
     /// Render the registered metrics in Prometheus text exposition format.
     /// `pub(crate)` so sibling modules (`provider::tests`) can assert on
     /// rendered counter values without exposing the whole registry.
@@ -434,6 +566,20 @@ impl EngineMetrics {
 impl Default for EngineMetrics {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+/// RAII guard that decrements `aether_mempool_backrun_sim_concurrent` on
+/// drop. Returned by [`EngineMetrics::track_mempool_backrun_sim`]; the
+/// caller binds it for the duration of a validation attempt and the gauge
+/// is balanced even if the sim panics or returns early via `?`.
+pub struct MempoolBackrunSimGuard {
+    metrics: Arc<EngineMetrics>,
+}
+
+impl Drop for MempoolBackrunSimGuard {
+    fn drop(&mut self) {
+        self.metrics.mempool_backrun_sim_concurrent.dec();
     }
 }
 
