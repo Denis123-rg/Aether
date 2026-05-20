@@ -33,6 +33,16 @@ import (
 
 var tracer trace.Tracer = otel.Tracer("aether-executor")
 
+// Package-level mempool risk state — populated by main() at startup
+// from env vars. Read by processArb on the mempool-backrun path; the
+// block-driven path ignores them. Globals (vs threading through every
+// call) keep the existing processArb signature stable for the existing
+// test suite.
+var (
+	mempoolRiskCfg  MempoolRiskConfig
+	mempoolInflight *MempoolInflightTracker
+)
+
 // Config holds executor service configuration.
 // ChainID, ExecutorAddr, and the live ETH balance are no longer carried here —
 // they are resolved against the connected node at startup (see main) and the
@@ -247,6 +257,22 @@ func main() {
 	riskMgr := risk.NewRiskManager(loadRiskConfig())
 	riskMgr.SetMetricsObserver(executorMetricsObserver{})
 
+	// Mempool-backrun gate state. The risk config snapshots env at boot;
+	// the inflight tracker spans the executor process lifetime so per-
+	// target-block dedup survives across the candidate burst from a hot
+	// block.
+	mempoolRiskCfg = LoadMempoolRiskConfig()
+	mempoolInflight = NewMempoolInflightTracker()
+	slog.Info("mempool-backrun risk gates configured",
+		"min_profit_wei", mempoolRiskCfg.MinProfitWei.String(),
+		"max_tip_bps", mempoolRiskCfg.MaxTipShareBps,
+		"victim_freshness_ms", mempoolRiskCfg.MaxVictimFreshnessMs,
+		"max_inflight_per_block", mempoolRiskCfg.MaxInflightPerTargetBlock,
+	)
+	if isShadowMode() {
+		slog.Warn("SHADOW MODE ENABLED — eth_sendBundle calls will be blocked for both block-driven and mempool-backrun bundles")
+	}
+
 	// Live searcher ETH balance, written by balanceWatchLoop and read by
 	// consumeArbStream → processArb → risk.PreflightCheck. When no searcher
 	// key is configured there is no address to query, so the live balance
@@ -400,8 +426,42 @@ func processArb(
 		return false, nil
 	}
 
-	_, buildSpan := tracer.Start(ctx, "bundle.build")
 	targetBlock := targetBlockForArb(arb)
+
+	// Mempool-specific risk gates run AFTER the shared preflight so the
+	// existing system-state / gas / balance / position-limit checks
+	// always fire first. Reject decisions are stamped onto a trace
+	// passed forward to the shadow JSON dump for forensics.
+	var mempoolDecision MempoolPreflightResult
+	if sourceLbl == SourceMempoolBackrun {
+		victimHex := "0x" + hex.EncodeToString(arb.VictimTxHash)
+		victimSeenAt := time.Unix(0, arb.TimestampNs)
+		mempoolDecision = MempoolRiskGate(
+			mempoolRiskCfg,
+			MempoolPreflightArgs{
+				GrossProfitWei:  profitWei,
+				TipShareBps:     uint16(tipSharePct * 100), // pct → bps
+				VictimSeenAt:    victimSeenAt,
+				TargetBlock:     targetBlock,
+				VictimTxHashHex: victimHex,
+			},
+			mempoolInflight,
+			time.Now(),
+		)
+		if !mempoolDecision.Approved {
+			recordRiskRejection()
+			slog.InfoContext(ctx, "mempool arb rejected by mempool gate",
+				"arb_id", arb.Id,
+				"reason", mempoolDecision.Reason,
+				"victim_tx_hash", victimHex,
+				"target_block", targetBlock,
+			)
+			span.SetAttributes(attribute.String("outcome", "mempool_rejected"))
+			return false, nil
+		}
+	}
+
+	_, buildSpan := tracer.Start(ctx, "bundle.build")
 	var bundle *Bundle
 	if sourceLbl == SourceMempoolBackrun {
 		buildStart := time.Now()
@@ -446,18 +506,24 @@ func processArb(
 	if isShadowMode() {
 		recordEndToEndLatency(receivedAt)
 		recordShadowBundle()
+		recordShadowBlocked(sourceLbl)
 		profitEth := weiToEth(profitWei)
 		slog.InfoContext(ctx, "shadow bundle built, skipping submission",
 			"arb_id", arb.Id,
 			"arb_db_id", arbDBID,
 			"bundle_id", bundleID,
+			"source", sourceLbl,
 			"target_block", targetBlock,
 			"tip_tx_count", len(bundle.RawTxs),
 			"profit_eth", profitEth,
 			"gas", arb.TotalGas,
 			"tip_share_pct", tipSharePct,
 		)
-		if err := dumpShadowBundle(arb, bundle, profitEth, gasGwei, tipSharePct); err != nil {
+		if sourceLbl == SourceMempoolBackrun {
+			if err := dumpMempoolShadowBundle(arb, bundle, gasFees, tipSharePct, mempoolDecision); err != nil {
+				slog.WarnContext(ctx, "mempool shadow bundle json dump failed", "arb_id", arb.Id, "err", err)
+			}
+		} else if err := dumpShadowBundle(arb, bundle, profitEth, gasGwei, tipSharePct); err != nil {
 			slog.WarnContext(ctx, "shadow bundle json dump failed", "arb_id", arb.Id, "err", err)
 		}
 		// Persist a `bundles` row for the shadow build so query traffic
@@ -871,6 +937,116 @@ func dumpShadowBundle(
 	}
 	filename := filepath.Join(dir, safeID+".json")
 	return os.WriteFile(filename, out, 0o644)
+}
+
+// mempoolShadowSessionDir is resolved once per process and reused for every
+// mempool-shadow bundle dump. One `shadow_mempool_<ts>` per run keeps
+// stage-rollout reports self-contained instead of interleaving bundles from
+// multiple deploys.
+//
+// Resolved via a function pointer so tests can inject a deterministic dir
+// via resetMempoolShadowSessionForTest without dancing around sync.Once.
+var mempoolShadowSessionDir = newMempoolShadowSessionDirOnce()
+
+func newMempoolShadowSessionDirOnce() func() string {
+	var (
+		once sync.Once
+		path string
+	)
+	return func() string {
+		once.Do(func() {
+			base := strings.TrimSpace(os.Getenv("AETHER_REPORTS_DIR"))
+			if base == "" {
+				base = "reports"
+			}
+			ts := time.Now().UTC().Format("20060102T150405Z")
+			path = filepath.Join(base, "shadow_mempool_"+ts, "bundles")
+		})
+		return path
+	}
+}
+
+// dumpMempoolShadowBundle writes the mempool-backrun bundle to a forensics
+// JSON per the #140 schema. Layout:
+//   ${AETHER_REPORTS_DIR:-reports}/shadow_mempool_<ts>/bundles/<arb_id>.json
+// One file per arb so the orchestrator can `ls | wc -l` straight into stage
+// gates. Gross profit is reconstructed as net + (gas × max_fee) since the
+// proto carries only net.
+func dumpMempoolShadowBundle(
+	arb *pb.ValidatedArb,
+	bundle *Bundle,
+	gasFees GasFees,
+	tipSharePct float64,
+	decision MempoolPreflightResult,
+) error {
+	dir := mempoolShadowSessionDir()
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return fmt.Errorf("mkdir %s: %w", dir, err)
+	}
+
+	netProfitWei := new(big.Int).SetBytes(arb.NetProfitWei)
+	gasCostWei := new(big.Int).Mul(new(big.Int).SetUint64(arb.TotalGas), gasFees.MaxFeePerGas)
+	grossProfitWei := new(big.Int).Add(netProfitWei, gasCostWei)
+
+	envelopeTxs := make([]string, 0, 1+len(bundle.RawTxs))
+	if bundle.VictimTxHashHex != "" {
+		envelopeTxs = append(envelopeTxs, bundle.VictimTxHashHex)
+	}
+	for _, raw := range bundle.RawTxs {
+		envelopeTxs = append(envelopeTxs, fmt.Sprintf("0x%x", raw))
+	}
+	envelope := map[string]interface{}{
+		"txs":               envelopeTxs,
+		"block_number":      bundle.BlockNumber,
+		"revertingTxHashes": bundle.RevertingTxHashes,
+	}
+
+	gates := make([]map[string]interface{}, 0, len(decision.Gates))
+	for _, g := range decision.Gates {
+		gates = append(gates, map[string]interface{}{
+			"gate":   g.Gate,
+			"passed": g.Passed,
+			"value":  g.Value,
+		})
+	}
+
+	payload := map[string]interface{}{
+		"arb_id":                    arb.Id,
+		"source":                    SourceMempoolBackrun,
+		"victim_tx_hash":            bundle.VictimTxHashHex,
+		"target_block":              bundle.BlockNumber,
+		"built_at":                  time.Now().UTC().Format(time.RFC3339Nano),
+		"envelope":                  envelope,
+		"expected_gross_profit_wei": grossProfitWei.String(),
+		"expected_net_profit_wei":   netProfitWei.String(),
+		"tip_share_bps":             uint64(tipSharePct * 100),
+		"gas_used":                  arb.TotalGas,
+		"base_fee_wei":              gasFees.BaseFee.String(),
+		"priority_fee_wei":          gasFees.MaxPriorityFee.String(),
+		"max_fee_per_gas_wei":       gasFees.MaxFeePerGas.String(),
+		"flashloan_provider":        "aave_v3",
+		"flashloan_token":           fmt.Sprintf("0x%x", arb.FlashloanToken),
+		"flashloan_amount":          new(big.Int).SetBytes(arb.FlashloanAmount).String(),
+		"risk_decisions":            gates,
+	}
+
+	out, err := json.MarshalIndent(payload, "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshal: %w", err)
+	}
+
+	safeID := strings.Map(func(r rune) rune {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '-', r == '_':
+			return r
+		default:
+			return '_'
+		}
+	}, arb.Id)
+	if safeID == "" {
+		safeID = "anon"
+	}
+	return os.WriteFile(filepath.Join(dir, safeID+".json"), out, 0o644)
 }
 
 func weiToEth(wei *big.Int) float64 {
