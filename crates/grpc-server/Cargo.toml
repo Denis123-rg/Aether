@@ -15,6 +15,10 @@ path = "src/main.rs"
 name = "aether-replay"
 path = "src/bin/aether_replay.rs"
 
+[[bin]]
+name = "aether-profit-scorer"
+path = "src/bin/aether_profit_scorer.rs"
+
 [dependencies]
 aether-common = { path = "../common" }
 aether-ingestion = { path = "../ingestion" }
@@ -48,6 +52,8 @@ serde_json = { workspace = true }
 uuid = { workspace = true }
 chrono = { workspace = true }
 sha2 = "0.10"
+sqlx = { workspace = true }
+bigdecimal = { workspace = true }
 [build-dependencies]
 tonic-build = { workspace = true }
 prost-build = { workspace = true }
