@@ -4,11 +4,26 @@ import (
 	"context"
 	"log/slog"
 	"math/big"
+	"os"
+	"strconv"
 	"sync"
 	"time"
 
 	"github.com/ethereum/go-ethereum"
 )
+
+// mempoolGasTipFloorGwei reads the `AETHER_MEMPOOL_GAS_TIP_MIN_GWEI` env
+// var and returns the floor for the mempool-backrun priority-fee
+// calculation. Defaults to 2 gwei when unset / unparseable. Resolved at
+// every `MempoolFees` call so operators can tune without restarting.
+func mempoolGasTipFloorGwei() float64 {
+	if s := os.Getenv("AETHER_MEMPOOL_GAS_TIP_MIN_GWEI"); s != "" {
+		if v, err := strconv.ParseFloat(s, 64); err == nil && v > 0 {
+			return v
+		}
+	}
+	return 2.0
+}
 
 // weiToGwei converts a wei value to gwei as a float64.
 // Uses big.Float to avoid silent truncation for values exceeding math.MaxInt64.
@@ -93,6 +108,42 @@ func (go_ *GasOracle) Update(baseFee *big.Int, priorityFee *big.Int) {
 		MaxFeePerGas:   maxFee,
 		MaxPriorityFee: new(big.Int).Set(priorityFee),
 		GasPriceGwei:   weiToGwei(baseFee),
+	}
+}
+
+// MempoolFees returns gas fees tuned for the mempool-backrun path.
+//
+// Compared to `CurrentFees`, the priority fee is raised to
+// `max(suggested, base_fee * 10%, AETHER_MEMPOOL_GAS_TIP_MIN_GWEI)` —
+// we race other backrunners for the same target block, so a stale
+// priority fee from the previous block's 50th percentile reward
+// systematically loses the auction. `MaxFeePerGas` is recomputed off
+// the bumped priority fee so the bundle never leaks priority above
+// what the searcher actually wants to pay.
+func (go_ *GasOracle) MempoolFees() GasFees {
+	base := go_.CurrentFees()
+	// 10% of base fee, in wei.
+	ten := new(big.Int).Div(base.BaseFee, big.NewInt(10))
+	// Floor from env, converted to wei.
+	floorWei := new(big.Int).SetInt64(int64(mempoolGasTipFloorGwei() * 1e9))
+
+	priority := new(big.Int).Set(base.MaxPriorityFee)
+	if ten.Cmp(priority) > 0 {
+		priority = ten
+	}
+	if floorWei.Cmp(priority) > 0 {
+		priority = floorWei
+	}
+
+	// maxFeePerGas = 2 * baseFee + priorityFee (1 block bump headroom)
+	maxFee := new(big.Int).Mul(base.BaseFee, big.NewInt(2))
+	maxFee.Add(maxFee, priority)
+
+	return GasFees{
+		BaseFee:        new(big.Int).Set(base.BaseFee),
+		MaxFeePerGas:   maxFee,
+		MaxPriorityFee: priority,
+		GasPriceGwei:   base.GasPriceGwei,
 	}
 }
 

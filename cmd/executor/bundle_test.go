@@ -175,3 +175,111 @@ func intETHToWei(t *testing.T, eth int64) *big.Int {
 	oneETH := new(big.Int).Exp(big.NewInt(10), big.NewInt(18), nil)
 	return new(big.Int).Mul(big.NewInt(eth), oneETH)
 }
+
+// ---------------------------------------------------------------------------
+// BuildMempoolBackrunBundle
+// ---------------------------------------------------------------------------
+
+const victimHashHex = "0xdeadbeef00000000000000000000000000000000000000000000000000000001"
+
+func newBundleConstructorForTest(t *testing.T) *BundleConstructor {
+	t.Helper()
+	nm := NewNonceManager(0)
+	go_ := NewGasOracle(300.0)
+	signer, err := NewTransactionSigner("0x0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef", 1)
+	if err != nil {
+		t.Fatalf("test signer: %v", err)
+	}
+	return NewBundleConstructor(nm, go_, signer, 1)
+}
+
+func TestBuildMempoolBackrunBundle_HappyPath(t *testing.T) {
+	t.Parallel()
+
+	bc := newBundleConstructorForTest(t)
+	bundle, err := bc.BuildMempoolBackrunBundle(
+		[]byte{0xAB, 0xCD},
+		"0x1234567890abcdef1234567890abcdef12345678",
+		500000,
+		18_000_001,
+		victimHashHex,
+	)
+	if err != nil {
+		t.Fatalf("BuildMempoolBackrunBundle: %v", err)
+	}
+
+	if bundle.Source != SourceMempoolBackrun {
+		t.Errorf("bundle.Source: want %q, got %q", SourceMempoolBackrun, bundle.Source)
+	}
+	if bundle.VictimTxHashHex != victimHashHex {
+		t.Errorf("VictimTxHashHex: want %s, got %s", victimHashHex, bundle.VictimTxHashHex)
+	}
+	if len(bundle.RawTxs) != 1 {
+		t.Fatalf("RawTxs: want 1 (just our arb), got %d", len(bundle.RawTxs))
+	}
+	if len(bundle.RevertingTxHashes) != 1 {
+		t.Fatalf("RevertingTxHashes len: want 1, got %d", len(bundle.RevertingTxHashes))
+	}
+	if bundle.RevertingTxHashes[0] == victimHashHex {
+		t.Fatalf("RevertingTxHashes must NOT include victim hash; got %v", bundle.RevertingTxHashes)
+	}
+	if bundle.RevertingTxHashes[0] != bundle.Transactions[0].Hash().Hex() {
+		t.Fatalf("RevertingTxHashes[0]=%s, expected arb tx hash %s",
+			bundle.RevertingTxHashes[0], bundle.Transactions[0].Hash().Hex())
+	}
+	if bundle.BlockNumber != 18_000_001 {
+		t.Errorf("BlockNumber: want 18_000_001, got %d", bundle.BlockNumber)
+	}
+}
+
+func TestBuildMempoolBackrunBundle_RejectsBadVictimHash(t *testing.T) {
+	t.Parallel()
+
+	bc := newBundleConstructorForTest(t)
+	cases := []struct {
+		name string
+		hash string
+	}{
+		{"missing 0x prefix", "deadbeef00000000000000000000000000000000000000000000000000000001"},
+		{"wrong length", "0x1234"},
+		{"empty", ""},
+	}
+	for _, c := range cases {
+		c := c
+		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
+			_, err := bc.BuildMempoolBackrunBundle([]byte{0x01}, "0x1234567890abcdef1234567890abcdef12345678", 100000, 1, c.hash)
+			if err == nil {
+				t.Fatalf("expected error for %s, got nil", c.name)
+			}
+		})
+	}
+}
+
+func TestBuildMempoolBackrunBundle_UnsignedFallback(t *testing.T) {
+	t.Parallel()
+
+	nm := NewNonceManager(0)
+	go_ := NewGasOracle(300.0)
+	bc := NewBundleConstructor(nm, go_, nil, 1)
+
+	bundle, err := bc.BuildMempoolBackrunBundle(
+		[]byte{0xAB},
+		"0x1234567890abcdef1234567890abcdef12345678",
+		200000,
+		18_000_001,
+		victimHashHex,
+	)
+	if err != nil {
+		t.Fatalf("unsigned BuildMempoolBackrunBundle: %v", err)
+	}
+	if len(bundle.RawTxs) != 0 {
+		t.Errorf("unsigned bundle should have no RawTxs, got %d", len(bundle.RawTxs))
+	}
+	if len(bundle.Transactions) != 1 {
+		t.Errorf("expected 1 unsigned transaction, got %d", len(bundle.Transactions))
+	}
+	if bundle.VictimTxHashHex != victimHashHex {
+		t.Errorf("VictimTxHashHex: want %s, got %s", victimHashHex, bundle.VictimTxHashHex)
+	}
+}

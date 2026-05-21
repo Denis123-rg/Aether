@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -329,6 +330,29 @@ func main() {
 	slog.Info("executor service stopped")
 }
 
+// arbSourceLabel maps the proto enum onto the canonical metric label.
+// Treats unset / unknown source as block-driven so pre-#138 publishers
+// (no `source` field on the wire) land in the historical row.
+func arbSourceLabel(arb *pb.ValidatedArb) string {
+	if arb.GetSource() == pb.ArbSource_MEMPOOL_BACKRUN {
+		return SourceMempoolBackrun
+	}
+	return SourceBlockDriven
+}
+
+// targetBlockForArb picks the right target block per arb source.
+// Mempool publishers stamp `target_block` directly; block-driven
+// publishers leave it at zero (defaulted by the proto) so we fall back
+// to `block_number + 1`. Treating `target_block == 0` as the fallback
+// signal keeps the executor backward-compatible with publishers that
+// pre-date the proto field.
+func targetBlockForArb(arb *pb.ValidatedArb) uint64 {
+	if arb.GetTargetBlock() != 0 {
+		return arb.GetTargetBlock()
+	}
+	return arb.BlockNumber + 1
+}
+
 // processArb handles a single validated arb through the full pipeline:
 // parse -> preflight -> bundle -> submit -> record result.
 // receivedAt is the Go-side wall clock when the arb arrived from the gRPC
@@ -344,11 +368,13 @@ func processArb(
 	executorAddr string,
 	ethBalance float64,
 ) (submitted bool, err error) {
+	sourceLbl := arbSourceLabel(arb)
 	ctx, span := tracer.Start(ctx, "processArb",
 		trace.WithAttributes(
 			attribute.String("arb_id", arb.Id),
 			attribute.Int("hops", len(arb.Hops)),
-			attribute.Int64("target_block", int64(arb.BlockNumber+1)),
+			attribute.Int64("target_block", int64(targetBlockForArb(arb))),
+			attribute.String("source", sourceLbl),
 		),
 	)
 	defer span.End()
@@ -375,7 +401,22 @@ func processArb(
 	}
 
 	_, buildSpan := tracer.Start(ctx, "bundle.build")
-	bundle, err := bundler.BuildBundle(arb.Calldata, executorAddr, arb.TotalGas, arb.BlockNumber+1)
+	targetBlock := targetBlockForArb(arb)
+	var bundle *Bundle
+	if sourceLbl == SourceMempoolBackrun {
+		buildStart := time.Now()
+		victimHex := "0x" + hex.EncodeToString(arb.VictimTxHash)
+		bundle, err = bundler.BuildMempoolBackrunBundle(arb.Calldata, executorAddr, arb.TotalGas, targetBlock, victimHex)
+		recordMempoolBundleBuildLatency(time.Since(buildStart))
+		slog.InfoContext(ctx, "mempool_arb_received",
+			"arb_id", arb.Id,
+			"victim_tx_hash", victimHex,
+			"target_block", targetBlock,
+			"expected_profit_wei", new(big.Int).SetBytes(arb.NetProfitWei).String(),
+		)
+	} else {
+		bundle, err = bundler.BuildBundle(arb.Calldata, executorAddr, arb.TotalGas, targetBlock)
+	}
 	if err != nil {
 		buildSpan.RecordError(err)
 		buildSpan.SetStatus(codes.Error, "build bundle failed")
@@ -384,6 +425,10 @@ func processArb(
 		span.SetStatus(codes.Error, "build bundle failed")
 		return false, fmt.Errorf("build bundle: %w", err)
 	}
+	if bundle.Source == "" {
+		bundle.Source = sourceLbl
+	}
+	recordBundleBuilt(sourceLbl)
 	buildSpan.End()
 
 	// Derive deterministic ledger ids before either branch so the same
@@ -392,7 +437,6 @@ func processArb(
 	// `arb_id_for_opp` so log↔DB joins work end-to-end across the gRPC
 	// boundary.
 	arbDBID := db.ArbIDFromOppID(arb.Id)
-	targetBlock := arb.BlockNumber + 1
 	bundleID := db.BundleIDFor(arbDBID, targetBlock)
 	signedTxHex := signedTxsHex(bundle)
 
@@ -433,7 +477,7 @@ func processArb(
 
 	// Submit to all builders
 	recordEndToEndLatency(receivedAt)
-	recordBundleSubmitted()
+	recordBundleSubmitted(sourceLbl)
 	results := submitter.SubmitToAll(ctx, bundle)
 	recordSubmissionReverts(rm, results)
 	successes := SuccessCount(results)
@@ -492,7 +536,7 @@ func processArb(
 	// Record result for miss rate tracking
 	included := successes > 0
 	if included {
-		recordBundleIncluded(profitWei, gasGwei, arb.TotalGas)
+		recordBundleIncluded(sourceLbl, profitWei, gasGwei, arb.TotalGas)
 	}
 	rm.RecordBundleResult(included)
 

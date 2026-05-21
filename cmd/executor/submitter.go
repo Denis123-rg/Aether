@@ -227,15 +227,26 @@ func (s *Submitter) submitToBuilder(ctx context.Context, builder BuilderConfig, 
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	// Hex-encode each raw signed transaction.
-	txHexes := make([]string, len(bundle.RawTxs))
+	// Hex-encode each raw signed transaction. Mempool-backrun bundles
+	// prepend the pending victim tx hash so the builder pulls the victim
+	// from its own mempool view; block-driven bundles ship only the
+	// signed RawTxs.
+	signedHexes := make([]string, len(bundle.RawTxs))
 	for i, raw := range bundle.RawTxs {
-		txHexes[i] = "0x" + hex.EncodeToString(raw)
+		signedHexes[i] = "0x" + hex.EncodeToString(raw)
 	}
+	var txHexes []string
+	if bundle.VictimTxHashHex != "" {
+		txHexes = append(txHexes, bundle.VictimTxHashHex)
+	}
+	txHexes = append(txHexes, signedHexes...)
 
 	params := map[string]interface{}{
 		"txs":         txHexes,
 		"blockNumber": fmt.Sprintf("0x%x", bundle.BlockNumber),
+	}
+	if len(bundle.RevertingTxHashes) > 0 {
+		params["revertingTxHashes"] = bundle.RevertingTxHashes
 	}
 
 	reqBody := jsonRPCRequest{
