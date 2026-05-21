@@ -22,20 +22,31 @@
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
+use std::time::Instant;
 
 use aether_common::types::ProtocolType;
 use aether_detector::bellman_ford::BellmanFord;
+use aether_detector::opportunity::DetectedCycle;
 use aether_ingestion::subscription::{EventChannels, PendingTxEvent};
 use aether_pools::router_decoder::{decode_pending, DecodeError, DecodedSwap, Protocol};
 use aether_pools::{predict_post_state_with_fallback, PoolStateCache, UnifiedPostState};
+use aether_simulator::calldata::build_execute_arb_calldata;
+use aether_simulator::mempool_backrun::{
+    validate_backrun_rpc, ArbTx, RejectReason, ValidatorParams, VictimTx,
+};
+use aether_state::price_graph::PriceGraph;
 use aether_state::snapshot::SnapshotManager;
 use aether_state::token_index::TokenIndex;
+use alloy::network::Ethereum;
 use alloy::primitives::{Address, U256};
+use alloy::providers::DynProvider;
 use arc_swap::ArcSwap;
 use chrono::Utc;
-use tokio::sync::watch;
+use tokio::sync::{broadcast, watch, Semaphore};
 use tracing::{debug, info, warn};
 use uuid::Uuid;
+
+use crate::service::aether_proto;
 
 use crate::engine::PoolMetadata;
 use crate::mempool_writer::{
@@ -72,6 +83,31 @@ fn build_pair_index(registry: &HashMap<Address, PoolMetadata>) -> PairIndex {
     idx
 }
 
+/// Configuration for the mempool-backrun revm validator, populated by
+/// `main.rs` from env vars and embedded inside `SimContext` so the
+/// per-event hot path doesn't re-parse env on every swap.
+///
+/// All values are read once at startup. The semaphore is shared across
+/// all in-flight validation attempts so we never burn more than
+/// `sim_concurrency` revm forks at the same time.
+#[derive(Clone)]
+pub struct BackrunValidatorConfig {
+    pub executor_address: Address,
+    pub searcher_caller: Address,
+    pub profit_token: Address,
+    pub balance_slot: U256,
+    pub chain_id: u64,
+    pub min_profit_wei: U256,
+    pub input_amount_wei: U256,
+    pub sim_semaphore: Arc<Semaphore>,
+    /// RPC provider used by [`validate_backrun_rpc`] to build
+    /// [`aether_simulator::fork::RpcForkedState`] per attempt. When
+    /// `None` the validator stays dormant — the pipeline counts a
+    /// `provider_unavailable` reject and the analytical-only behaviour
+    /// from `develop` is preserved.
+    pub provider: Option<DynProvider<Ethereum>>,
+}
+
 /// State the post-state simulator needs to run after a successful decode.
 /// Cheap to clone (everything is `Arc`), so the pipeline holds one
 /// `Arc<SimContext>` and dispatches per-event work without re-locking.
@@ -86,6 +122,15 @@ pub struct SimContext {
     /// Balancer mempool sim path to call `predict_post_state_with_fallback`
     /// without round-tripping through the pool registry RPC.
     pub pool_states: PoolStateCache,
+    /// Broadcast sender for `ProtoValidatedArb` — when the revm validator
+    /// accepts a backrun candidate the pipeline publishes here. The
+    /// existing block-driven path shares the same channel so the Go
+    /// executor consumes both sources uniformly.
+    pub arb_publisher: Option<broadcast::Sender<aether_proto::ValidatedArb>>,
+    /// Validator configuration. `None` when env vars required for the
+    /// revm validator are absent (e.g. dev runs without an executor
+    /// address) — in that case the analytical-only path is preserved.
+    pub backrun: Option<BackrunValidatorConfig>,
     /// Optional persistence sink for mempool predictions. `Arc<NoopMempoolSink>`
     /// when `MEMPOOL_LEDGER_DSN` is unset (no DB writes, no behaviour
     /// change); `Arc<PgMempoolWriter>` when set. Always present so the
@@ -118,10 +163,32 @@ impl SimContext {
             snapshot_manager,
             detector,
             pool_states,
+            arb_publisher: None,
+            backrun: None,
             prediction_sink,
             engine_git_sha,
             pair_index_cache: Mutex::new(None),
         }
+    }
+
+    /// Attach the validated-arb broadcast sender so the revm validator can
+    /// publish accepted backruns. Calling this without also calling
+    /// [`SimContext::with_backrun_validator`] leaves the publisher
+    /// unreachable from the pipeline — both are required for the live
+    /// `MEMPOOL_BACKRUN` path.
+    pub fn with_arb_publisher(
+        mut self,
+        publisher: broadcast::Sender<aether_proto::ValidatedArb>,
+    ) -> Self {
+        self.arb_publisher = Some(publisher);
+        self
+    }
+
+    /// Attach the revm validator configuration. The pipeline ignores this
+    /// when [`SimContext::arb_publisher`] is also unset.
+    pub fn with_backrun_validator(mut self, cfg: BackrunValidatorConfig) -> Self {
+        self.backrun = Some(cfg);
+        self
     }
 
     /// Look up a pool by `(token_in, token_out, protocol)` in O(1).
@@ -235,9 +302,10 @@ fn handle_event(
                 let ctx = Arc::clone(ctx);
                 let swap = swap.clone();
                 let router_label = router_label.clone();
+                let event = event.clone();
                 let tx_hash = event.tx_hash;
                 tokio::task::spawn_blocking(move || {
-                    try_post_state_scan(&metrics, &ctx, &router_label, &swap, tx_hash, to);
+                    try_post_state_scan(&metrics, &ctx, &router_label, &swap, tx_hash, to, &event);
                 });
             }
         }
@@ -368,6 +436,7 @@ fn emit_failure(metrics: &EngineMetrics, router_label: &str, err: &DecodeError) 
 /// every profitable cycle increments
 /// `aether_pending_arb_candidates_total{router, profit_bucket}` and is
 /// logged at `info` so a tail of the log is enough to verify the path.
+#[allow(clippy::too_many_arguments)]
 fn try_post_state_scan(
     metrics: &EngineMetrics,
     ctx: &SimContext,
@@ -375,6 +444,7 @@ fn try_post_state_scan(
     swap: &DecodedSwap,
     event_tx_hash: alloy::primitives::B256,
     event_to: Address,
+    event: &PendingTxEvent,
 ) {
     let target_protocol = match swap.protocol {
         Protocol::UniswapV2 => ProtocolType::UniswapV2,
@@ -527,6 +597,27 @@ fn try_post_state_scan(
         metrics.inc_pending_arb_candidates(router_label, bucket);
     }
 
+    // Hand the best profitable cycle to the revm validator when the
+    // pipeline has both a configured validator and a broadcast publisher.
+    // The validator returns the per-attempt outcome via metrics; this
+    // call site is intentionally fire-and-forget so the analytical
+    // candidate metric remains the contract for the dashboard.
+    if let (Some(publisher), Some(cfg)) = (ctx.arb_publisher.as_ref(), ctx.backrun.as_ref()) {
+        if let Some(best) = profitable.first() {
+            let _ = run_backrun_validation(
+                metrics,
+                publisher,
+                cfg,
+                &snapshot.graph,
+                ctx.token_index.load().as_ref(),
+                best,
+                event,
+                router_label,
+                snapshot.block_number,
+            );
+        }
+    }
+
     info!(
         target: "aether::mempool",
         router = %router_label,
@@ -538,6 +629,306 @@ fn try_post_state_scan(
         best_profit_bps = (profitable[0].profit_factor() * 10_000.0) as i64,
         "MEMPOOL ARB CANDIDATE"
     );
+}
+
+/// Orchestrate the revm validator for one profitable cycle and publish a
+/// `ValidatedArb` on accept.
+///
+/// Acquires the global validation semaphore (drops the call when full),
+/// converts the cycle to executor calldata via the existing
+/// `aether_simulator::calldata` builder, builds an `RpcForkedState` at
+/// the snapshot's block, runs `validate_backrun_rpc`, and either publishes
+/// or counts the rejection reason on the `aether_mempool_backrun_*`
+/// metrics.
+#[allow(clippy::too_many_arguments)]
+fn run_backrun_validation(
+    metrics: &EngineMetrics,
+    publisher: &broadcast::Sender<aether_proto::ValidatedArb>,
+    cfg: &BackrunValidatorConfig,
+    graph: &PriceGraph,
+    token_index: &TokenIndex,
+    cycle: &DetectedCycle,
+    event: &PendingTxEvent,
+    router_label: &str,
+    block_number: u64,
+) -> Option<()> {
+    // Bounded concurrency. `try_acquire_owned` so a saturated semaphore
+    // drops the attempt rather than queueing — the next pending swap will
+    // bring its own validation candidate within tens of ms.
+    let _permit = match cfg.sim_semaphore.clone().try_acquire_owned() {
+        Ok(p) => p,
+        Err(_) => {
+            metrics.inc_mempool_backrun_rejected("sim_concurrency_saturated");
+            return None;
+        }
+    };
+    // Provider check. Without an RPC connection the validator stays
+    // dormant — the analytical-only path from develop is preserved. The
+    // reject reason is distinct from `sim_error` so dashboards can show
+    // dormant-validator runs separately from real failures.
+    let Some(provider) = cfg.provider.as_ref() else {
+        metrics.inc_mempool_backrun_rejected("provider_unavailable");
+        return None;
+    };
+    let started = Instant::now();
+
+    // Cycle → SwapStep conversion. Walks the cycle vertices and picks the
+    // first matching edge for each hop. When any leg lacks a graph edge
+    // (e.g. cycle crosses a vertex with no outbound edge under the
+    // current snapshot) the attempt rejects rather than publishing a
+    // malformed bundle.
+    let steps = match cycle_to_swap_steps(graph, token_index, cycle, cfg.input_amount_wei) {
+        Some(s) if !s.is_empty() => s,
+        _ => {
+            metrics.inc_mempool_backrun_rejected("cycle_unbuildable");
+            return None;
+        }
+    };
+    let flashloan_token = steps[0].token_in;
+
+    // Deadline: now + 24s (~2 blocks of mainnet slot time). Mirrors the
+    // block-driven path's deadline convention.
+    let now_secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    let deadline = U256::from(now_secs + 24);
+    let calldata = build_execute_arb_calldata(
+        &steps,
+        flashloan_token,
+        cfg.input_amount_wei,
+        deadline,
+        cfg.min_profit_wei,
+        U256::from(9000u64), // 90% tip share — conservative starting point
+    );
+
+    // Build the forked state at the snapshot block. `new_at_latest`
+    // sidesteps the BlockId resolution issue when the provider is an
+    // Anvil fork; on real mainnet RPC the difference is invisible
+    // because `latest` and the snapshot block are typically within one
+    // slot of each other.
+    let state = match aether_simulator::fork::RpcForkedState::new_at_latest(
+        provider.clone(),
+        block_number,
+        now_secs,
+        // Base fee unknown at the snapshot — pass 1 gwei and rely on
+        // `disable_base_fee = true` inside the simulator's cfg. This is
+        // safe because the only effect of base_fee here is the EIP-1559
+        // gas-price check, which the validator already disables.
+        1_000_000_000,
+    ) {
+        Some(s) => s,
+        None => {
+            metrics.inc_mempool_backrun_rejected("fork_construction_failed");
+            return None;
+        }
+    };
+
+    let victim = VictimTx {
+        from: event.from,
+        to: event.to?,
+        value: event.value,
+        data: event.input.clone(),
+        gas_price: event.gas_price,
+        gas_limit: 1_000_000, // generous; victim's actual gas_limit not on the subscription stream
+    };
+    let arb = ArbTx {
+        caller: cfg.searcher_caller,
+        to: cfg.executor_address,
+        data: calldata,
+        gas_limit: 1_500_000,
+    };
+    let params = ValidatorParams {
+        block_number,
+        block_timestamp: now_secs,
+        base_fee: 1_000_000_000,
+        chain_id: cfg.chain_id,
+        profit_token: cfg.profit_token,
+        profit_recipient: cfg.searcher_caller,
+        balance_slot: cfg.balance_slot,
+    };
+
+    let result = validate_backrun_rpc(state, &victim, &arb, &params);
+    let elapsed_ms = started.elapsed().as_secs_f64() * 1_000.0;
+
+    if !result.accepted {
+        let reason = result
+            .reject
+            .as_ref()
+            .map(|r| r.as_str())
+            .unwrap_or(RejectReason::SimError.as_str());
+        metrics.inc_mempool_backrun_rejected(reason);
+        metrics.observe_mempool_backrun_validation_latency_ms("reject", elapsed_ms);
+        debug!(
+            target: "aether::mempool",
+            tx_hash = %event.tx_hash,
+            router = %router_label,
+            reason,
+            arb_gas_used = result.arb_gas_used,
+            "BACKRUN VALIDATION REJECTED"
+        );
+        return None;
+    }
+
+    // Accept path — publish a ValidatedArb tagged MEMPOOL_BACKRUN.
+    metrics.observe_mempool_backrun_validation_latency_ms("accept", elapsed_ms);
+    let bucket = gross_profit_bucket(result.gross_profit_wei);
+    metrics.inc_mempool_backrun_validated(bucket);
+
+    let proto = aether_proto::ValidatedArb {
+        id: format!(
+            "mempool-{:#x}-{}",
+            event.tx_hash,
+            cycle
+                .path
+                .first()
+                .copied()
+                .unwrap_or(0)
+        ),
+        hops: vec![], // detailed hop info lives on the SwapStep list below
+        total_profit_wei: u256_bytes(result.gross_profit_wei),
+        total_gas: result.arb_gas_used,
+        gas_cost_wei: u256_bytes(
+            U256::from(result.arb_gas_used).saturating_mul(U256::from(params.base_fee)),
+        ),
+        net_profit_wei: u256_bytes(result.gross_profit_wei),
+        block_number,
+        timestamp_ns: now_secs as i64 * 1_000_000_000,
+        flashloan_token: flashloan_token.to_vec().into(),
+        flashloan_amount: u256_bytes(cfg.input_amount_wei),
+        steps: steps.into_iter().map(swap_step_to_proto).collect(),
+        calldata: arb.data.into(),
+        source: aether_proto::ArbSource::MempoolBackrun as i32,
+        victim_tx_hash: event.tx_hash.0.to_vec().into(),
+        target_block: block_number.saturating_add(1),
+    };
+
+    if let Err(e) = publisher.send(proto) {
+        debug!(
+            target: "aether::mempool",
+            error = %e,
+            "BACKRUN VALIDATED — no arb subscribers connected"
+        );
+    } else {
+        info!(
+            target: "aether::mempool",
+            tx_hash = %event.tx_hash,
+            router = %router_label,
+            arb_gas_used = result.arb_gas_used,
+            gross_profit_wei = %result.gross_profit_wei,
+            "BACKRUN VALIDATED — published to executor"
+        );
+    }
+    Some(())
+}
+
+fn u256_bytes(v: U256) -> bytes::Bytes {
+    let arr: [u8; 32] = v.to_be_bytes();
+    bytes::Bytes::copy_from_slice(&arr)
+}
+
+fn swap_step_to_proto(s: aether_common::types::SwapStep) -> aether_proto::SwapStep {
+    aether_proto::SwapStep {
+        protocol: protocol_to_proto(s.protocol) as i32,
+        pool_address: s.pool_address.to_vec().into(),
+        token_in: s.token_in.to_vec().into(),
+        token_out: s.token_out.to_vec().into(),
+        amount_in: u256_bytes(s.amount_in),
+        min_amount_out: u256_bytes(s.min_amount_out),
+        calldata: s.calldata.into(),
+    }
+}
+
+fn protocol_to_proto(p: ProtocolType) -> aether_proto::ProtocolType {
+    match p {
+        ProtocolType::UniswapV2 => aether_proto::ProtocolType::UniswapV2,
+        ProtocolType::UniswapV3 => aether_proto::ProtocolType::UniswapV3,
+        ProtocolType::SushiSwap => aether_proto::ProtocolType::Sushiswap,
+        ProtocolType::Curve => aether_proto::ProtocolType::Curve,
+        ProtocolType::BalancerV2 => aether_proto::ProtocolType::BalancerV2,
+        ProtocolType::BancorV3 => aether_proto::ProtocolType::BancorV3,
+    }
+}
+
+/// Map a gross profit value (wei) onto the same bucket cardinality used
+/// by the analytical-candidate metric so dashboards can join the two
+/// funnels in a single query.
+fn gross_profit_bucket(profit_wei: U256) -> &'static str {
+    let eth = u256_to_f64_saturating(profit_wei) / 1e18;
+    // Compare against approximate USD ranges by mapping ETH → ~$3000:
+    //   <0.001 ETH ≈ <$3      → lt_10bps   (vanishingly small)
+    //   <0.01  ETH ≈ <$30     → 10_50bps   (sub-floor)
+    //   <0.1   ETH ≈ <$300    → 50_200bps  (sensible)
+    //   otherwise              → gt_200bps  (fat tail)
+    if eth < 0.001 {
+        "lt_10bps"
+    } else if eth < 0.01 {
+        "10_50bps"
+    } else if eth < 0.1 {
+        "50_200bps"
+    } else {
+        "gt_200bps"
+    }
+}
+
+/// Convert a `DetectedCycle` (vertex-index path) into the `SwapStep`
+/// sequence consumed by `build_execute_arb_calldata`. Picks the first
+/// graph edge between each consecutive vertex pair. Returns `None` when
+/// any token address or edge cannot be resolved against the current
+/// snapshot.
+fn cycle_to_swap_steps(
+    graph: &PriceGraph,
+    token_index: &TokenIndex,
+    cycle: &DetectedCycle,
+    input_amount_wei: U256,
+) -> Option<Vec<aether_common::types::SwapStep>> {
+    if cycle.path.len() < 2 {
+        return None;
+    }
+    let mut steps = Vec::with_capacity(cycle.path.len() - 1);
+    let mut current_amount = input_amount_wei;
+    for window in cycle.path.windows(2) {
+        let (from_idx, to_idx) = (window[0], window[1]);
+        let from_addr = *token_index.get_address(from_idx)?;
+        let to_addr = *token_index.get_address(to_idx)?;
+        let edge = graph
+            .edges_from(from_idx)
+            .iter()
+            .find(|e| e.to == to_idx)?;
+        steps.push(aether_common::types::SwapStep {
+            protocol: edge.protocol,
+            pool_address: edge.pool_address,
+            token_in: from_addr,
+            token_out: to_addr,
+            amount_in: current_amount,
+            min_amount_out: U256::ZERO,
+            calldata: Vec::new(),
+        });
+        // Approximate downstream amount via the edge's reserve ratio so
+        // each hop carries a plausible amount_in. The executor contract
+        // will overwrite intermediates from real on-chain reads anyway —
+        // this is only used by sim path arithmetic that wants a non-zero
+        // amount_in per step.
+        if edge.reserve_in > 0.0 && edge.reserve_out > 0.0 {
+            let ratio = edge.reserve_out / edge.reserve_in;
+            let amount_f64 = u256_to_f64_saturating(current_amount) * ratio;
+            current_amount = u256_from_f64_saturating(amount_f64);
+        }
+    }
+    Some(steps)
+}
+
+/// Saturating f64 → U256. The inverse of `u256_to_f64_saturating`. Used
+/// only for downstream hop amount approximation in `cycle_to_swap_steps`
+/// — never for profit accounting.
+fn u256_from_f64_saturating(v: f64) -> U256 {
+    if !v.is_finite() || v <= 0.0 {
+        return U256::ZERO;
+    }
+    if v >= u128::MAX as f64 {
+        return U256::from(u128::MAX);
+    }
+    U256::from(v as u128)
 }
 
 /// Wire label for the `protocol` column on `mempool_predictions`. Pinned to

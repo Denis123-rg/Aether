@@ -458,6 +458,7 @@ mod tests {
             flashloan_amount: Bytes::new(),
             steps: vec![],
             calldata: Bytes::new(),
+            ..Default::default()
         };
 
         let resp = svc
@@ -494,6 +495,7 @@ mod tests {
             flashloan_amount: Bytes::new(),
             steps: vec![],
             calldata: Bytes::new(),
+            ..Default::default()
         };
 
         let resp = svc
@@ -529,6 +531,7 @@ mod tests {
             flashloan_amount: Bytes::new(),
             steps: vec![],
             calldata: Bytes::new(),
+            ..Default::default()
         };
 
         let resp = svc
@@ -560,6 +563,7 @@ mod tests {
             flashloan_amount: Bytes::new(),
             steps: vec![],
             calldata: Bytes::new(),
+            ..Default::default()
         };
 
         let resp = svc
@@ -596,6 +600,7 @@ mod tests {
             flashloan_amount: Bytes::new(),
             steps: vec![],
             calldata: Bytes::new(),
+            ..Default::default()
         };
 
         let resp = svc
@@ -992,6 +997,7 @@ tier = "warm"
             flashloan_amount: Bytes::new(),
             steps: vec![],
             calldata: Bytes::new(),
+            ..Default::default()
         };
 
         // Publish an arb with 2.0 ETH profit (above threshold).
@@ -1009,6 +1015,7 @@ tier = "warm"
             flashloan_amount: Bytes::new(),
             steps: vec![],
             calldata: Bytes::new(),
+            ..Default::default()
         };
 
         // Send both arbs.
@@ -1057,6 +1064,7 @@ tier = "warm"
             flashloan_amount: Bytes::new(),
             steps: vec![],
             calldata: Bytes::new(),
+            ..Default::default()
         };
 
         svc.arb_tx.send(arb).unwrap();
