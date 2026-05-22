@@ -24,7 +24,7 @@ use anyhow::{Context, Result};
 use clap::Parser;
 use tracing_subscriber::EnvFilter;
 
-use aether_common::types::{PoolId, ProtocolType, SwapStep};
+use aether_common::types::{known_token_decimals, PoolId, ProtocolType, SwapStep};
 use aether_detector::bellman_ford::BellmanFord;
 use aether_detector::gas as gas_model;
 use aether_detector::opportunity::DetectedCycle;
@@ -232,31 +232,11 @@ fn build_graph(
         let t1 = token_index.get_or_insert(p.token1);
         graph.resize(token_index.len());
 
-        // Raw atomic rate token0 -> token1 (before fee).
-        // For V2: rate_0to1 = r1 / r0.
-        // For V3: sqrtPriceX96 = sqrt(token1/token0) * 2^96, so rate_0to1 = (s/2^96)^2.
-        let rate_0to1 = match state {
-            PoolState::V2 { r0, r1 } => {
-                let r0f = u256_to_f64(r0);
-                let r1f = u256_to_f64(r1);
-                if r0f == 0.0 || r1f == 0.0 {
-                    continue;
-                }
-                r1f / r0f
-            }
-            PoolState::V3 { sqrt_price_x96 } => {
-                let s = u256_to_f64(sqrt_price_x96);
-                if s == 0.0 {
-                    continue;
-                }
-                let root = s / Q96;
-                root * root
-            }
-        };
-
-        if !rate_0to1.is_finite() || rate_0to1 <= 0.0 {
-            continue;
-        }
+        // Seed per-vertex decimals before adding edges so the decimal
+        // correction inside `update_edge_from_reserves` matches the engine.
+        // Unknown tokens default to the ERC20 standard of 18.
+        graph.set_token_decimals(t0, known_token_decimals(&p.token0).unwrap_or(18));
+        graph.set_token_decimals(t1, known_token_decimals(&p.token1).unwrap_or(18));
 
         let fee = (10_000 - p.fee_bps) as f64 / 10_000.0;
         let pool_id = PoolId {
@@ -264,25 +244,45 @@ fn build_graph(
             protocol: p.protocol,
         };
 
-        // Both directions. Weight = -ln(rate * fee).
-        graph.add_edge(
-            t0,
-            t1,
-            rate_0to1 * fee,
-            pool_id,
-            p.address,
-            p.protocol,
-            U256::ZERO,
-        );
-        graph.add_edge(
-            t1,
-            t0,
-            (1.0 / rate_0to1) * fee,
-            pool_id,
-            p.address,
-            p.protocol,
-            U256::ZERO,
-        );
+        // Match the engine convention exactly: add neutral placeholder edges,
+        // then seed the real rate via `update_edge_from_reserves` so the
+        // `10^(dec_in - dec_out)` correction is applied uniformly. Raw reserves
+        // are passed un-divided — the correction lives entirely in the graph.
+        // For V2: rate_0to1 = r1 / r0 (real reserves).
+        // For V3: sqrtPriceX96 = sqrt(token1/token0) * 2^96, so the synthetic
+        // mapping is `(reserve_in, reserve_out) = (1.0, (s/2^96)^2)`.
+        match state {
+            PoolState::V2 { r0, r1 } => {
+                let r0f = u256_to_f64(r0);
+                let r1f = u256_to_f64(r1);
+                if r0f == 0.0 || r1f == 0.0 {
+                    continue;
+                }
+                let rate_0to1 = r1f / r0f;
+                if !rate_0to1.is_finite() || rate_0to1 <= 0.0 {
+                    continue;
+                }
+                graph.add_edge(t0, t1, 1.0, pool_id, p.address, p.protocol, U256::ZERO);
+                graph.add_edge(t1, t0, 1.0, pool_id, p.address, p.protocol, U256::ZERO);
+                graph.update_edge_from_reserves(t0, t1, pool_id, r0f, r1f, fee);
+                graph.update_edge_from_reserves(t1, t0, pool_id, r1f, r0f, fee);
+            }
+            PoolState::V3 { sqrt_price_x96 } => {
+                let s = u256_to_f64(sqrt_price_x96);
+                if s == 0.0 {
+                    continue;
+                }
+                let root = s / Q96;
+                let raw_spot = root * root;
+                if !raw_spot.is_finite() || raw_spot <= 0.0 {
+                    continue;
+                }
+                graph.add_edge(t0, t1, 1.0, pool_id, p.address, p.protocol, U256::ZERO);
+                graph.add_edge(t1, t0, 1.0, pool_id, p.address, p.protocol, U256::ZERO);
+                graph.update_edge_from_reserves(t0, t1, pool_id, 1.0, raw_spot, fee);
+                graph.update_edge_from_reserves(t1, t0, pool_id, 1.0, 1.0 / raw_spot, fee);
+            }
+        }
     }
 
     (graph, token_index)

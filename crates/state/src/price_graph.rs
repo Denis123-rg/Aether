@@ -3,6 +3,10 @@ use std::collections::HashMap;
 use alloy::primitives::{Address, U256};
 use aether_common::types::{PoolId, ProtocolType};
 
+/// Default ERC20 token decimals assumed for any vertex whose decimals have not
+/// been explicitly set. Most ERC20 tokens use 18 decimals.
+const DEFAULT_TOKEN_DECIMALS: u8 = 18;
+
 /// Edge in the price graph representing a swap between two tokens via a pool.
 #[derive(Debug, Clone)]
 pub struct PriceEdge {
@@ -45,6 +49,10 @@ pub struct PriceGraph {
     /// Dirty flags per edge index -- only dirty edges need recomputation in
     /// partial Bellman-Ford scans.
     dirty: Vec<bool>,
+    /// ERC20 decimals per token vertex. Used to convert raw base-unit reserve
+    /// ratios into human-unit exchange rates in [`update_edge_from_reserves`].
+    /// Defaults to 18 (the ERC20 default) for any vertex not explicitly set.
+    token_decimals: Vec<u8>,
 }
 
 impl PriceGraph {
@@ -56,6 +64,7 @@ impl PriceGraph {
             all_edges: Vec::new(),
             edge_index: HashMap::with_capacity(num_vertices * 8),
             dirty: Vec::new(),
+            token_decimals: vec![DEFAULT_TOKEN_DECIMALS; num_vertices],
         }
     }
 
@@ -66,6 +75,14 @@ impl PriceGraph {
     ///
     /// If an edge with the same `(from, to, pool_id)` already exists it is
     /// updated in place; otherwise a new edge is appended.
+    ///
+    /// NOTE: `add_edge` does **not** apply token-decimal correction. Decimal
+    /// normalization of the raw reserve ratio lives in
+    /// [`update_edge_from_reserves`]. Callers that want a live, decimal-correct
+    /// rate must either pass a neutral `1.0` placeholder here (decimal-neutral,
+    /// since `ln(1) = 0`) or follow this call with
+    /// [`update_edge_from_reserves`], which is the single source of truth for
+    /// decimal-aware rates.
     #[allow(clippy::too_many_arguments)]
     pub fn add_edge(
         &mut self,
@@ -120,6 +137,19 @@ impl PriceGraph {
     /// `rate = (reserve_out / reserve_in) * fee_factor`
     /// where `fee_factor` accounts for the swap fee (e.g. 0.997 for 0.3% fee).
     ///
+    /// `reserve_in` / `reserve_out` are expressed in raw on-chain base units, so
+    /// the ratio `reserve_out / reserve_in` is in *output base units per input
+    /// base unit*. To obtain a human-unit exchange rate the ratio is scaled by
+    /// `10^(dec_in - dec_out)`, where `dec_in`/`dec_out` are the ERC20 decimals
+    /// of the input/output token vertices. Without this correction a
+    /// decimal-mismatched pair (e.g. USDC 6 / WETH 18) would carry an
+    /// uncancelled `10^12` factor into the edge weight.
+    ///
+    /// This single correction is correct for **both** V2 (real reserves) and the
+    /// V3 synthetic mapping `(reserve_in, reserve_out) = (1.0, raw_spot)`, since
+    /// in both cases the ratio is output-base-per-input-base. V3 is not
+    /// special-cased.
+    ///
     /// This only updates an *existing* edge. If no matching edge is found the
     /// call is a no-op.
     pub fn update_edge_from_reserves(
@@ -134,7 +164,17 @@ impl PriceGraph {
         if reserve_in <= 0.0 || reserve_out <= 0.0 {
             return;
         }
-        let rate = (reserve_out / reserve_in) * fee_factor;
+        let dec_in = self
+            .token_decimals
+            .get(from)
+            .copied()
+            .unwrap_or(DEFAULT_TOKEN_DECIMALS) as i32;
+        let dec_out = self
+            .token_decimals
+            .get(to)
+            .copied()
+            .unwrap_or(DEFAULT_TOKEN_DECIMALS) as i32;
+        let rate = (reserve_out / reserve_in) * fee_factor * 10f64.powi(dec_in - dec_out);
 
         if let Some(existing) = self.edges[from]
             .iter_mut()
@@ -253,8 +293,32 @@ impl PriceGraph {
     pub fn resize(&mut self, new_size: usize) {
         if new_size > self.num_vertices {
             self.edges.resize(new_size, Vec::new());
+            // Keep the per-vertex decimals table in lockstep with the vertex
+            // count, defaulting new slots to the ERC20 default.
+            self.token_decimals.resize(new_size, DEFAULT_TOKEN_DECIMALS);
             self.num_vertices = new_size;
         }
+    }
+
+    /// Set the ERC20 decimals for a token vertex. If `vertex` is beyond the
+    /// current table length the table is grown (new slots default to 18) so the
+    /// assignment always succeeds.
+    pub fn set_token_decimals(&mut self, vertex: usize, decimals: u8) {
+        if vertex >= self.token_decimals.len() {
+            self.token_decimals
+                .resize(vertex + 1, DEFAULT_TOKEN_DECIMALS);
+        }
+        self.token_decimals[vertex] = decimals;
+    }
+
+    /// Get the ERC20 decimals for a token vertex, or the ERC20 default (18) if
+    /// the vertex has no explicit entry.
+    #[inline]
+    pub fn token_decimals(&self, vertex: usize) -> u8 {
+        self.token_decimals
+            .get(vertex)
+            .copied()
+            .unwrap_or(DEFAULT_TOKEN_DECIMALS)
     }
 }
 
@@ -867,5 +931,172 @@ mod tests {
         // Update only the second edge.
         g.update_edge_from_reserves(1, 2, p2, 500.0, 800.0, 0.997);
         assert_eq!(g.dirty_edge_indices(), vec![1]);
+    }
+
+    #[test]
+    fn test_set_and_get_token_decimals() {
+        let mut g = PriceGraph::new(3);
+        // Defaults to 18 before any explicit set.
+        assert_eq!(g.token_decimals(0), 18);
+        assert_eq!(g.token_decimals(2), 18);
+        // Out-of-range vertex also defaults to 18.
+        assert_eq!(g.token_decimals(99), 18);
+
+        g.set_token_decimals(0, 6);
+        assert_eq!(g.token_decimals(0), 6);
+
+        // Setting beyond current length grows the table with 18-fill.
+        g.set_token_decimals(50, 8);
+        assert_eq!(g.token_decimals(50), 8);
+        assert_eq!(g.token_decimals(49), 18);
+    }
+
+    #[test]
+    fn test_resize_extends_decimals_with_default() {
+        let mut g = PriceGraph::new(3);
+        g.set_token_decimals(1, 6);
+        g.resize(10);
+        // Existing decimals preserved across resize.
+        assert_eq!(g.token_decimals(1), 6);
+        // New slots default to 18.
+        assert_eq!(g.token_decimals(7), 18);
+    }
+
+    #[test]
+    fn test_decimal_correction_usdc_weth_v2() {
+        // Realistic balanced mainnet-ish USDC/WETH V2 pool at ~3000 USDC/WETH.
+        // vertex 0 = USDC (6 decimals), vertex 1 = WETH (18 decimals).
+        // Reserves in raw base units:
+        //   USDC: 3,000,000 * 1e6  = 3_000_000_000_000
+        //   WETH: 1,000     * 1e18 = 1_000_000_000_000_000_000_000
+        // Human price = 3,000,000 USDC / 1,000 WETH = 3000 USDC per WETH.
+        let mut g = PriceGraph::new(2);
+        g.set_token_decimals(0, 6); // USDC
+        g.set_token_decimals(1, 18); // WETH
+
+        let pool_id = make_pool_id(1, ProtocolType::UniswapV2);
+        // USDC -> WETH edge and WETH -> USDC edge.
+        g.add_edge(
+            0,
+            1,
+            1.0,
+            pool_id,
+            Address::repeat_byte(1),
+            ProtocolType::UniswapV2,
+            U256::from(1u64),
+        );
+        g.add_edge(
+            1,
+            0,
+            1.0,
+            pool_id,
+            Address::repeat_byte(1),
+            ProtocolType::UniswapV2,
+            U256::from(1u64),
+        );
+
+        let usdc_reserve = 3_000_000_000_000.0_f64; // 3e6 * 1e6
+        let weth_reserve = 1_000_000_000_000_000_000_000.0_f64; // 1e3 * 1e18
+        let fee = 0.997_f64;
+
+        // USDC(0) -> WETH(1): rate ~ (1/3000) * fee in human units.
+        g.update_edge_from_reserves(0, 1, pool_id, usdc_reserve, weth_reserve, fee);
+        // WETH(1) -> USDC(0): rate ~ 3000 * fee in human units.
+        g.update_edge_from_reserves(1, 0, pool_id, weth_reserve, usdc_reserve, fee);
+
+        // Recover human rates from stored weights (-ln(rate)).
+        let usdc_to_weth_rate = (-g.edges_from(0)[0].weight).exp();
+        let weth_to_usdc_rate = (-g.edges_from(1)[0].weight).exp();
+
+        // Each rate must be in a sane band, NOT off by ~1e12.
+        let expected_usdc_to_weth = (1.0 / 3000.0) * fee;
+        let expected_weth_to_usdc = 3000.0 * fee;
+        assert!(
+            (usdc_to_weth_rate - expected_usdc_to_weth).abs() / expected_usdc_to_weth < 1e-9,
+            "USDC->WETH human rate off: got {usdc_to_weth_rate}, want ~{expected_usdc_to_weth}"
+        );
+        assert!(
+            (weth_to_usdc_rate - expected_weth_to_usdc).abs() / expected_weth_to_usdc < 1e-9,
+            "WETH->USDC human rate off: got {weth_to_usdc_rate}, want ~{expected_weth_to_usdc}"
+        );
+
+        // Round-trip product must be ~fee^2 (≈ 0.997^2 ≈ 0.994), NOT ~1e±12.
+        let product = usdc_to_weth_rate * weth_to_usdc_rate;
+        assert!(
+            (product - fee * fee).abs() < 1e-9,
+            "round-trip product should be ~fee^2 ({}), got {product}",
+            fee * fee
+        );
+    }
+
+    #[test]
+    fn test_decimal_correction_v3_synthetic_mapping() {
+        // Regression for the V3 synthetic mapping that triggered the live
+        // phantom-profit bug: (reserve_in, reserve_out) = (1.0, raw_spot).
+        // raw_spot = (sqrt_price / 2^96)^2 ~ token1_base_per_token0_base.
+        //
+        // For a USDC(token0, 6 dec) / WETH(token1, 18 dec) V3 pool priced at
+        // ~3000 USDC/WETH, raw_spot (WETH-base per USDC-base) ~ token1/token0.
+        // Human price WETH per USDC = (1/3000); in base units that is
+        //   raw_spot = (1/3000) * 10^(dec1 - dec0) = (1/3000) * 1e12.
+        // The edge direction here is USDC(0) -> WETH(1), so the corrected human
+        // rate must be ~ (1/3000) * fee, NOT off by 1e12.
+        let mut g = PriceGraph::new(2);
+        g.set_token_decimals(0, 6); // USDC = token0
+        g.set_token_decimals(1, 18); // WETH = token1
+
+        let pool_id = make_pool_id(2, ProtocolType::UniswapV3);
+        g.add_edge(
+            0,
+            1,
+            1.0,
+            pool_id,
+            Address::repeat_byte(2),
+            ProtocolType::UniswapV3,
+            U256::from(1u64),
+        );
+
+        let fee = 0.997_f64;
+        // raw_spot in base units: (1/3000) human * 10^(18-6) = (1/3000) * 1e12.
+        let raw_spot = (1.0 / 3000.0) * 1e12;
+
+        // V3 synthetic: reserve_in = 1.0 (dimensionless), reserve_out = raw_spot.
+        g.update_edge_from_reserves(0, 1, pool_id, 1.0, raw_spot, fee);
+
+        let human_rate = (-g.edges_from(0)[0].weight).exp();
+        let expected = (1.0 / 3000.0) * fee;
+        assert!(
+            (human_rate - expected).abs() / expected < 1e-9,
+            "V3 synthetic USDC->WETH human rate off: got {human_rate}, want ~{expected} (must NOT carry 1e12)"
+        );
+        // Sanity: a 1e12-off bug would put human_rate near 3.3e8; assert nowhere close.
+        assert!(human_rate < 1.0, "human rate must be sub-1, got {human_rate}");
+    }
+
+    #[test]
+    fn test_decimal_neutral_18_18_unchanged() {
+        // Two 18-decimal tokens: 10^(18-18) = 1, so the corrected rate must
+        // exactly equal the pre-change behavior (no regression).
+        let mut g = PriceGraph::new(3);
+        let pool_id = make_pool_id(1, ProtocolType::UniswapV2);
+        g.add_edge(
+            0,
+            1,
+            2.0,
+            pool_id,
+            Address::repeat_byte(1),
+            ProtocolType::UniswapV2,
+            U256::from(1_000u64),
+        );
+        // Vertices default to 18 decimals; do not set anything.
+        g.update_edge_from_reserves(0, 1, pool_id, 1000.0, 2000.0, 0.997);
+
+        // Same expectation as the legacy test_update_edge_from_reserves.
+        let expected_weight = -(2.0 * 0.997_f64).ln();
+        let edge = &g.all_edges()[0];
+        assert!(
+            (edge.weight - expected_weight).abs() < 1e-12,
+            "18/18 decimal pair must match pre-change weight"
+        );
     }
 }

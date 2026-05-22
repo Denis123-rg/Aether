@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -12,7 +12,9 @@ use alloy::providers::{DynProvider, Provider};
 use alloy::sol_types::SolCall;
 
 use aether_common::db::{protocol_label, Ledger, NewArb, NewPool, NoopLedger};
-use aether_common::types::{ArbHop, ArbOpportunity, PoolId, ProtocolType, SwapStep};
+use aether_common::types::{
+    known_token_decimals, ArbHop, ArbOpportunity, PoolId, ProtocolType, SwapStep,
+};
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 use aether_detector::bellman_ford::BellmanFord;
@@ -132,6 +134,25 @@ impl PoolMetadata {
     pub fn fee_factor(&self) -> f64 {
         (10000 - self.fee_bps) as f64 / 10000.0
     }
+}
+
+/// Whether a pool's config-declared token identity matches the on-chain truth.
+///
+/// Returns `true` only when the config `token0`/`token1` equal the chain's
+/// `token0()`/`token1()` in the SAME order. A swapped-order pool (config t0/t1
+/// equal chain t1/t0) returns `false`: order matters because graph edges and
+/// decimal lookups are keyed on `token0_idx`/`token1_idx`, so a swap silently
+/// inverts every rate and corrupts the decimal correction.
+///
+/// `Address` comparison is exact over the raw 20 bytes (alloy `Address` is
+/// case-insensitive by construction), so no checksum normalization is needed.
+fn token_identity_matches(
+    meta_t0: Address,
+    meta_t1: Address,
+    chain_t0: Address,
+    chain_t1: Address,
+) -> bool {
+    meta_t0 == chain_t0 && meta_t1 == chain_t1
 }
 
 /// Core pipeline orchestrator that wires the Rust detection crates together.
@@ -536,6 +557,12 @@ impl AetherEngine {
         {
             let mut graph = self.working_graph.lock().await;
             graph.resize(num_tokens);
+            // Seed per-vertex decimals from the static curated map (fallback 18)
+            // so update_edge_from_reserves produces decimal-correct human rates
+            // even before any RPC decimals() truth is fetched. RPC results, when
+            // available, override these in fetch_initial_reserves.
+            graph.set_token_decimals(t0_idx, known_token_decimals(&token0).unwrap_or(18));
+            graph.set_token_decimals(t1_idx, known_token_decimals(&token1).unwrap_or(18));
             // Placeholder edges with rate 1.0 (neutral weight = 0).
             graph.add_edge(
                 t0_idx,
@@ -699,6 +726,195 @@ impl AetherEngine {
         loaded
     }
 
+    /// Resolve ERC20 `decimals()` for every unique token across `pools` and
+    /// write the result onto the working graph's per-vertex decimals table.
+    ///
+    /// Each unique token address is fetched at most once (deduplicated). On RPC
+    /// success the graph vertex decimals are overridden with the on-chain truth;
+    /// on failure the value seeded at registration (static map or the ERC20
+    /// default of 18) is left untouched. Startup is never blocked by a failed
+    /// decimals call.
+    async fn fetch_and_apply_token_decimals(
+        &self,
+        provider: &DynProvider<Ethereum>,
+        pools: &[(Address, PoolMetadata)],
+    ) {
+        alloy::sol! {
+            function decimals() external view returns (uint8);
+        }
+
+        // Deduplicate tokens by address, keeping the graph vertex index.
+        let mut unique: HashMap<Address, usize> = HashMap::new();
+        for (_, meta) in pools {
+            unique.entry(meta.token0).or_insert(meta.token0_idx);
+            unique.entry(meta.token1).or_insert(meta.token1_idx);
+        }
+
+        let mut join_set = tokio::task::JoinSet::new();
+        for (token, vertex) in unique {
+            let provider = provider.clone();
+            join_set.spawn(async move {
+                let calldata = decimalsCall {}.abi_encode();
+                let tx = alloy::rpc::types::TransactionRequest::default()
+                    .to(token)
+                    .input(calldata.into());
+                match provider.call(tx).await {
+                    // decimals() returns uint8 right-aligned in a 32-byte word.
+                    Ok(output) if !output.is_empty() => {
+                        let dec = output[output.len() - 1];
+                        Some((vertex, dec))
+                    }
+                    Ok(_) => {
+                        warn!(%token, "decimals() returned empty output; keeping fallback");
+                        None
+                    }
+                    Err(e) => {
+                        warn!(%token, error = %e, "decimals() RPC call failed; keeping fallback");
+                        None
+                    }
+                }
+            });
+        }
+
+        let mut results: Vec<(usize, u8)> = Vec::new();
+        while let Some(joined) = join_set.join_next().await {
+            match joined {
+                Ok(Some(pair)) => results.push(pair),
+                Ok(None) => {}
+                Err(e) => warn!(error = %e, "decimals() fetch task panicked"),
+            }
+        }
+
+        if results.is_empty() {
+            return;
+        }
+        let applied = results.len();
+        let mut graph = self.working_graph.lock().await;
+        for (vertex, dec) in results {
+            graph.set_token_decimals(vertex, dec);
+        }
+        debug!(applied, "Applied on-chain token decimals to price graph");
+    }
+
+    /// Query on-chain `token0()`/`token1()` for every pair pool and return the
+    /// set of pool addresses whose config-declared token identity disagrees
+    /// with the chain.
+    ///
+    /// Only protocols that expose the `token0()`/`token1()` accessors are
+    /// checked — UniswapV2, SushiSwap and UniswapV3. Curve and Balancer use
+    /// different token-listing accessors and are skipped entirely (never
+    /// quarantined here).
+    ///
+    /// This is a fail-safe guard against config drift: a pool whose config
+    /// `token0`/`token1` are wrong (wrong address or swapped order) feeds bad
+    /// decimals and bad graph-edge identity into detection, which historically
+    /// produced phantom profit factors up to ~1e11. Quarantined pools are
+    /// skipped during reserve seeding so they never produce a live rate.
+    ///
+    /// Degrades open on RPC failure: a transient blip must not disable every
+    /// pool, and the corrected config remains the primary correctness
+    /// guarantee. Failures are logged at debug level and the pool is NOT
+    /// quarantined.
+    async fn fetch_token_identity_quarantine(
+        &self,
+        provider: &DynProvider<Ethereum>,
+        pools: &[(Address, PoolMetadata)],
+    ) -> HashSet<Address> {
+        alloy::sol! {
+            function token0() external view returns (address);
+            function token1() external view returns (address);
+        }
+
+        let mut join_set = tokio::task::JoinSet::new();
+        for (pool_addr, meta) in pools.iter().cloned() {
+            // Only pair pools expose token0()/token1(). Skip the rest.
+            if !matches!(
+                meta.protocol,
+                ProtocolType::UniswapV2 | ProtocolType::SushiSwap | ProtocolType::UniswapV3
+            ) {
+                continue;
+            }
+            let provider = provider.clone();
+            join_set.spawn(async move {
+                let chain_t0 = match Self::call_token_accessor(
+                    &provider,
+                    pool_addr,
+                    token0Call {}.abi_encode(),
+                )
+                .await
+                {
+                    Some(a) => a,
+                    None => return None,
+                };
+                let chain_t1 = match Self::call_token_accessor(
+                    &provider,
+                    pool_addr,
+                    token1Call {}.abi_encode(),
+                )
+                .await
+                {
+                    Some(a) => a,
+                    None => return None,
+                };
+
+                if token_identity_matches(meta.token0, meta.token1, chain_t0, chain_t1) {
+                    None
+                } else {
+                    warn!(
+                        pool_addr = %pool_addr,
+                        config_t0 = ?meta.token0,
+                        config_t1 = ?meta.token1,
+                        chain_t0 = ?chain_t0,
+                        chain_t1 = ?chain_t1,
+                        "pool token identity mismatch vs on-chain; skipping reserve seeding (fail-safe)"
+                    );
+                    Some(pool_addr)
+                }
+            });
+        }
+
+        let mut quarantined: HashSet<Address> = HashSet::new();
+        while let Some(joined) = join_set.join_next().await {
+            match joined {
+                Ok(Some(pool_addr)) => {
+                    quarantined.insert(pool_addr);
+                }
+                Ok(None) => {}
+                Err(e) => debug!(error = %e, "token identity check task panicked"),
+            }
+        }
+        quarantined
+    }
+
+    /// Execute a single `token0()`/`token1()` eth_call and decode the trailing
+    /// 20 bytes of the returned 32-byte word as an [`Address`].
+    ///
+    /// Returns `None` on RPC failure or a short/empty return — the caller
+    /// treats `None` as "could not verify" and degrades open (no quarantine).
+    async fn call_token_accessor(
+        provider: &DynProvider<Ethereum>,
+        pool_addr: Address,
+        calldata: Vec<u8>,
+    ) -> Option<Address> {
+        let tx = alloy::rpc::types::TransactionRequest::default()
+            .to(pool_addr)
+            .input(calldata.into());
+        match provider.call(tx).await {
+            // An address is the low 20 bytes of a right-aligned 32-byte word.
+            Ok(output) if output.len() >= 32 => {
+                Some(Address::from_slice(&output[12..32]))
+            }
+            Ok(output) => {
+                debug!(%pool_addr, len = output.len(), "token accessor output too short; cannot verify identity");
+                None
+            }
+            Err(e) => {
+                debug!(%pool_addr, error = %e, "token accessor RPC call failed; cannot verify identity");
+                None
+            }
+        }
+    }
+
     /// Fetch initial on-chain reserves for all registered pools via RPC.
     ///
     /// For V2/SushiSwap pools: calls `getReserves()`.
@@ -726,6 +942,25 @@ impl AetherEngine {
         }
 
         info!(count = pools.len(), "Fetching initial reserves via RPC (concurrent)");
+
+        // Resolve per-token ERC20 decimals once per UNIQUE token address and
+        // apply them to the graph BEFORE any update_edge_from_reserves call, so
+        // the decimal correction uses on-chain truth. RPC failures degrade to
+        // the static/default decimals already seeded at registration — startup
+        // is never blocked.
+        self.fetch_and_apply_token_decimals(&provider, &pools).await;
+
+        // Validate that each pair pool's config token0/token1 agree with the
+        // on-chain contract. Mismatched pools are quarantined: they are skipped
+        // during reserve seeding below so a config-drift error cannot inject a
+        // phantom rate into detection. Degrades open on RPC failure.
+        let quarantined = self.fetch_token_identity_quarantine(&provider, &pools).await;
+        if !quarantined.is_empty() {
+            warn!(
+                count = quarantined.len(),
+                "quarantined pools with on-chain token identity mismatch; excluded from reserve seeding"
+            );
+        }
 
         // ABI for getReserves() / slot0() / Curve A + balances /
         // Balancer pool/vault helpers.
@@ -953,6 +1188,13 @@ impl AetherEngine {
             for reserve in all_results {
                 match reserve {
                     ReserveResult::V2 { pool_addr, meta, r0, r1 } => {
+                        if quarantined.contains(&pool_addr) {
+                            // Token identity disagrees with chain — leave the
+                            // neutral placeholder edge in place (no live rate)
+                            // and skip the pool-state cache insert so the
+                            // mempool post-state sim never uses it.
+                            continue;
+                        }
                         let r0_f = u256_to_f64(r0);
                         let r1_f = u256_to_f64(r1);
                         if r0_f > 0.0 && r1_f > 0.0 {
@@ -975,6 +1217,13 @@ impl AetherEngine {
                         }
                     }
                     ReserveResult::V3 { pool_addr, meta, sqrt_price_x96, tick } => {
+                        if quarantined.contains(&pool_addr) {
+                            // Token identity disagrees with chain — skip both
+                            // the graph-edge seeding and the pool-state cache
+                            // insert (fail-safe). The neutral placeholder edge
+                            // from registration remains, so no live rate.
+                            continue;
+                        }
                         const TWO_POW_96: f64 = 79_228_162_514_264_337_593_543_950_336.0;
                         let sqrt_f64 = u256_to_f64(sqrt_price_x96);
                         let price = (sqrt_f64 / TWO_POW_96).powi(2);
@@ -2213,6 +2462,35 @@ mod tests {
         let (tx, _rx) = broadcast::channel(100);
         let engine = AetherEngine::new(config, tx);
         assert_eq!(engine.min_profit_threshold_wei(), 2_000_000_000_000_000);
+    }
+
+    #[test]
+    fn test_token_identity_matches() {
+        use alloy::primitives::address;
+        let a = address!("A0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48");
+        let b = address!("C02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2");
+        let c = address!("6B175474E89094C44Da98b954EedeAC495271d0F");
+
+        // Exact match in the same order.
+        assert!(token_identity_matches(a, b, a, b));
+
+        // Swapped order must fail — order is load-bearing for edge identity
+        // and decimal correction.
+        assert!(!token_identity_matches(a, b, b, a));
+
+        // Wrong token0 address.
+        assert!(!token_identity_matches(a, b, c, b));
+
+        // Wrong token1 address.
+        assert!(!token_identity_matches(a, b, a, c));
+
+        // Both wrong.
+        assert!(!token_identity_matches(a, b, c, c));
+
+        // Case-insensitivity: alloy addresses compare on raw bytes regardless
+        // of input checksum casing.
+        let lower = address!("a0b86991c6218b36c1d19d4a2e9eb0ce3606eb48");
+        assert!(token_identity_matches(a, b, lower, b));
     }
 
     #[tokio::test]

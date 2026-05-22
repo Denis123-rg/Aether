@@ -33,6 +33,27 @@ impl ProtocolType {
     }
 }
 
+/// Return the ERC20 decimals for a curated set of well-known mainnet tokens.
+///
+/// Address comparison is case-insensitive (compares raw 20-byte values, which
+/// are checksum-agnostic). Returns `None` for any address not in the curated
+/// set, in which case callers should fall back to an RPC `decimals()` call or
+/// the ERC20 default of 18.
+///
+/// This is the static source of truth used to seed the price graph's per-vertex
+/// decimals table before any RPC truth is available.
+pub fn known_token_decimals(addr: &Address) -> Option<u8> {
+    use addresses::{DAI, USDC, USDT, WBTC, WETH};
+    match *addr {
+        WETH => Some(18),
+        USDC => Some(6),
+        USDT => Some(6),
+        DAI => Some(18),
+        WBTC => Some(8),
+        _ => None,
+    }
+}
+
 /// Unique pool identifier
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct PoolId {
@@ -185,6 +206,32 @@ mod tests {
         assert_eq!(ProtocolType::Curve.base_gas(), 130_000);
         assert_eq!(ProtocolType::BalancerV2.base_gas(), 120_000);
         assert_eq!(ProtocolType::BancorV3.base_gas(), 150_000);
+    }
+
+    #[test]
+    fn test_known_token_decimals_hits() {
+        use addresses::{DAI, USDC, USDT, WBTC, WETH};
+        assert_eq!(known_token_decimals(&WETH), Some(18));
+        assert_eq!(known_token_decimals(&USDC), Some(6));
+        assert_eq!(known_token_decimals(&USDT), Some(6));
+        assert_eq!(known_token_decimals(&DAI), Some(18));
+        assert_eq!(known_token_decimals(&WBTC), Some(8));
+    }
+
+    #[test]
+    fn test_known_token_decimals_miss() {
+        // An address not in the curated set returns None so callers fall back.
+        assert_eq!(known_token_decimals(&Address::ZERO), None);
+        assert_eq!(known_token_decimals(&Address::repeat_byte(0xAB)), None);
+    }
+
+    #[test]
+    fn test_known_token_decimals_case_insensitive() {
+        // Address equality is over the raw 20 bytes, so checksum casing of the
+        // input does not matter — a lowercased USDC must still resolve to 6.
+        let usdc_lower: Address =
+            "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48".parse().expect("valid addr");
+        assert_eq!(known_token_decimals(&usdc_lower), Some(6));
     }
 
     #[test]
