@@ -160,6 +160,10 @@ const AAVE_POOL: Address = address!("87870Bca3F3fD6335C3F4ce8392D69350B4fA4E2");
 const BALANCER_VAULT: Address = address!("BA12222222228d8Ba445958a75a0704d566BF2C8");
 const BANCOR_NETWORK: Address = address!("eEF417e1D5CC832e619ae18D2F140De2999dD4fB");
 const WETH_ADDR: Address = address!("C02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2");
+/// Default WETH-side min-liquidity floor for the diagnostic detectors; matches
+/// the engine's `EngineConfig::min_liquidity_weth` default so the scorer skips
+/// the same drained WETH-paired pools the live engine does.
+const MIN_LIQUIDITY_WETH: f64 = 1.0;
 const USDC_ADDR: Address = address!("A0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48");
 const DAI_ADDR: Address = address!("6B175474E89094C44Da98b954EedeAC495271d0F");
 const USDT_ADDR: Address = address!("dAC17F958D2ee523a2206206994597C13D831ec7");
@@ -1343,6 +1347,19 @@ async fn bootstrap_state(
         // Unknown tokens default to the ERC20 standard of 18.
         graph.set_token_decimals(t0, known_token_decimals(&pool.token0).unwrap_or(18));
         graph.set_token_decimals(t1, known_token_decimals(&pool.token1).unwrap_or(18));
+
+        // Enable the WETH-denominated min-liquidity floor only when a WETH
+        // vertex is actually present, so synthetic-graph unit tests (which
+        // never reference WETH_ADDR) keep `weth_vertex = None` and behave
+        // exactly as before. Set before `update_edge_from_reserves` so the
+        // `filtered` flags are computed on seeding.
+        if pool.token0 == WETH_ADDR {
+            graph.set_weth_vertex(t0);
+            graph.set_min_liquidity_weth(MIN_LIQUIDITY_WETH);
+        } else if pool.token1 == WETH_ADDR {
+            graph.set_weth_vertex(t1);
+            graph.set_min_liquidity_weth(MIN_LIQUIDITY_WETH);
+        }
 
         let fee = (10_000 - pool.fee_bps) as f64 / 10_000.0;
         let pool_id = PoolId {

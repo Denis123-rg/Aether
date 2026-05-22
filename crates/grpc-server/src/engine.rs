@@ -91,6 +91,10 @@ pub struct EngineConfig {
     /// (`add_edge` without seeded reserves) should override this with a
     /// permissive config; production runs use the strict default.
     pub gating: GatingConfig,
+    /// Minimum WETH-side reserve (≈ half pool TVL) for a WETH-paired pool to
+    /// participate in detection; aligns with the >$10K qualification rule; 0
+    /// disables.
+    pub min_liquidity_weth: f64,
 }
 
 impl Default for EngineConfig {
@@ -106,6 +110,7 @@ impl Default for EngineConfig {
             slippage_bps: 100,
             max_parallel_sims: 4,
             gating: GatingConfig::default(),
+            min_liquidity_weth: 1.0,
         }
     }
 }
@@ -563,6 +568,18 @@ impl AetherEngine {
             // available, override these in fetch_initial_reserves.
             graph.set_token_decimals(t0_idx, known_token_decimals(&token0).unwrap_or(18));
             graph.set_token_decimals(t1_idx, known_token_decimals(&token1).unwrap_or(18));
+            // Register the WETH vertex + min-liquidity floor so the snapshot
+            // carries correct `filtered` flags once reserves are seeded. This
+            // must run BEFORE fetch_initial_reserves (called by the caller) so
+            // that update_edge_from_reserves can apply the floor. Idempotent:
+            // safe to call on every WETH-paired registration.
+            if token0 == aether_common::types::addresses::WETH {
+                graph.set_weth_vertex(t0_idx);
+                graph.set_min_liquidity_weth(self.config.min_liquidity_weth);
+            } else if token1 == aether_common::types::addresses::WETH {
+                graph.set_weth_vertex(t1_idx);
+                graph.set_min_liquidity_weth(self.config.min_liquidity_weth);
+            }
             // Placeholder edges with rate 1.0 (neutral weight = 0).
             graph.add_edge(
                 t0_idx,

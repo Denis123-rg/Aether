@@ -238,6 +238,19 @@ fn build_graph(
         graph.set_token_decimals(t0, known_token_decimals(&p.token0).unwrap_or(18));
         graph.set_token_decimals(t1, known_token_decimals(&p.token1).unwrap_or(18));
 
+        // Enable the WETH-denominated min-liquidity floor when a WETH vertex is
+        // present (matching the engine + scorer default of 1.0 WETH) so the
+        // diagnostic detector skips drained WETH-paired pools. Set before
+        // `update_edge_from_reserves` so the `filtered` flags are computed on
+        // seeding. Synthetic graphs without WETH keep `weth_vertex = None`.
+        if p.token0 == aether_common::types::addresses::WETH {
+            graph.set_weth_vertex(t0);
+            graph.set_min_liquidity_weth(1.0);
+        } else if p.token1 == aether_common::types::addresses::WETH {
+            graph.set_weth_vertex(t1);
+            graph.set_min_liquidity_weth(1.0);
+        }
+
         let fee = (10_000 - p.fee_bps) as f64 / 10_000.0;
         let pool_id = PoolId {
             address: p.address,
