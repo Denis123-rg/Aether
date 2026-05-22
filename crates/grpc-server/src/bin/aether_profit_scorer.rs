@@ -66,7 +66,7 @@ use tokio::time::{interval, MissedTickBehavior};
 use tracing::{debug, error, info, warn};
 use tracing_subscriber::EnvFilter;
 
-use aether_common::types::{PoolId, ProtocolType, SwapStep};
+use aether_common::types::{known_token_decimals, PoolId, ProtocolType, SwapStep};
 use aether_detector::bellman_ford::BellmanFord;
 use aether_detector::gas as gas_model;
 use aether_detector::opportunity::DetectedCycle;
@@ -1338,14 +1338,37 @@ async fn bootstrap_state(
         let t1 = token_index.get_or_insert(pool.token1);
         graph.resize(token_index.len());
 
-        let rate_0to1 = match state {
+        // Seed per-vertex decimals before adding edges so the decimal
+        // correction inside `update_edge_from_reserves` matches the engine.
+        // Unknown tokens default to the ERC20 standard of 18.
+        graph.set_token_decimals(t0, known_token_decimals(&pool.token0).unwrap_or(18));
+        graph.set_token_decimals(t1, known_token_decimals(&pool.token1).unwrap_or(18));
+
+        let fee = (10_000 - pool.fee_bps) as f64 / 10_000.0;
+        let pool_id = PoolId {
+            address: pool.address,
+            protocol: pool.protocol,
+        };
+
+        // Match the engine convention exactly: add neutral placeholder edges,
+        // then seed the real rate via `update_edge_from_reserves` so the
+        // `10^(dec_in - dec_out)` correction is applied uniformly. Raw reserves
+        // are passed un-divided — the correction lives entirely in the graph.
+        match state {
             PoolState::V2 { r0, r1 } => {
                 let r0f = u256_to_f64(r0);
                 let r1f = u256_to_f64(r1);
                 if r0f == 0.0 || r1f == 0.0 {
                     continue;
                 }
-                r1f / r0f
+                let rate_0to1 = r1f / r0f;
+                if !rate_0to1.is_finite() || rate_0to1 <= 0.0 {
+                    continue;
+                }
+                graph.add_edge(t0, t1, 1.0, pool_id, pool.address, pool.protocol, U256::ZERO);
+                graph.add_edge(t1, t0, 1.0, pool_id, pool.address, pool.protocol, U256::ZERO);
+                graph.update_edge_from_reserves(t0, t1, pool_id, r0f, r1f, fee);
+                graph.update_edge_from_reserves(t1, t0, pool_id, r1f, r0f, fee);
             }
             PoolState::V3 { sqrt_price_x96 } => {
                 let s = u256_to_f64(sqrt_price_x96);
@@ -1353,19 +1376,18 @@ async fn bootstrap_state(
                     continue;
                 }
                 let root = s / Q96;
-                root * root
+                let raw_spot = root * root;
+                if !raw_spot.is_finite() || raw_spot <= 0.0 {
+                    continue;
+                }
+                // Synthetic mapping `(reserve_in, reserve_out) = (1.0, raw_spot)`,
+                // identical to engine.rs and `state_to_graph_reserves`.
+                graph.add_edge(t0, t1, 1.0, pool_id, pool.address, pool.protocol, U256::ZERO);
+                graph.add_edge(t1, t0, 1.0, pool_id, pool.address, pool.protocol, U256::ZERO);
+                graph.update_edge_from_reserves(t0, t1, pool_id, 1.0, raw_spot, fee);
+                graph.update_edge_from_reserves(t1, t0, pool_id, 1.0, 1.0 / raw_spot, fee);
             }
-        };
-        if !rate_0to1.is_finite() || rate_0to1 <= 0.0 {
-            continue;
         }
-        let fee = (10_000 - pool.fee_bps) as f64 / 10_000.0;
-        let pool_id = PoolId {
-            address: pool.address,
-            protocol: pool.protocol,
-        };
-        graph.add_edge(t0, t1, rate_0to1 * fee, pool_id, pool.address, pool.protocol, U256::ZERO);
-        graph.add_edge(t1, t0, (1.0 / rate_0to1) * fee, pool_id, pool.address, pool.protocol, U256::ZERO);
     }
 
     Ok(ScorerState {
