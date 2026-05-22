@@ -71,6 +71,11 @@ impl BellmanFord {
             }
 
             for edge in graph.edges_from(u) {
+                // Skip edges whose backing pool is below the min-liquidity
+                // floor — drained/dead pools must never seed a cycle.
+                if edge.filtered {
+                    continue;
+                }
                 let v = edge.to;
                 let new_dist = dist[u] + edge.weight;
 
@@ -174,7 +179,7 @@ impl BellmanFord {
             if let Some(best_edge) = graph
                 .edges_from(from)
                 .iter()
-                .filter(|e| e.to == to)
+                .filter(|e| e.to == to && !e.filtered)
                 .min_by(|a, b| {
                     a.weight
                         .partial_cmp(&b.weight)
@@ -238,6 +243,11 @@ impl BellmanFord {
             }
 
             for edge in graph.edges_from(u) {
+                // Skip edges whose backing pool is below the min-liquidity
+                // floor — drained/dead pools must never seed a cycle.
+                if edge.filtered {
+                    continue;
+                }
                 let v = edge.to;
                 let new_dist = dist[u] + edge.weight;
 
@@ -610,6 +620,99 @@ mod tests {
         let bf = BellmanFord::new(6, 1_000_000);
         let cycles = bf.detect_negative_cycles(&graph);
         assert!(cycles.is_empty());
+    }
+
+    // --------------- Min-liquidity floor filtering ---------------
+
+    #[test]
+    fn test_filtered_edge_breaks_cycle() {
+        // Profitable triangle 0->1->2->0 where vertex 1 is WETH. The 0->1 edge's
+        // WETH-side reserve is below the floor, so that edge is `filtered` and the
+        // cycle must NOT be detected — even though every edge weight stays
+        // profitable. Disabling the floor restores detection.
+        let p01 = make_pool_id(1, ProtocolType::UniswapV2);
+        let p12 = make_pool_id(2, ProtocolType::SushiSwap);
+        let p20 = make_pool_id(3, ProtocolType::Curve);
+
+        // Reserve pairs (all 18-decimal tokens, fee 1.0) chosen so each hop's
+        // rate = reserve_out / reserve_in = 1.1 → product 1.331 > 1 (profitable).
+        // 1e18 raw == 1.0 human unit.
+        let weth_below_floor = 500_000_000_000_000_000.0_f64; // 0.5 WETH < floor 1.0
+        let token_in_for_0to1 = weth_below_floor / 1.1; // gives rate 1.1 on 0->1
+
+        let build = |floor: f64| -> PriceGraph {
+            let mut g = PriceGraph::new(3);
+            // vertex 1 = WETH (18 decimals, like all others here).
+            g.add_edge(0, 1, 1.0, p01, Address::repeat_byte(1), ProtocolType::UniswapV2, U256::from(1u64));
+            g.add_edge(1, 2, 1.0, p12, Address::repeat_byte(2), ProtocolType::SushiSwap, U256::from(1u64));
+            g.add_edge(2, 0, 1.0, p20, Address::repeat_byte(3), ProtocolType::Curve, U256::from(1u64));
+            g.set_weth_vertex(1);
+            g.set_min_liquidity_weth(floor);
+            // 0->1: WETH (vertex 1) is the output side, reserve below floor.
+            g.update_edge_from_reserves(0, 1, p01, token_in_for_0to1, weth_below_floor, 1.0);
+            // 1->2 and 2->0: non-WETH-output / non-WETH-paired, ample reserves,
+            // each rate = out/in = 1.1.
+            g.update_edge_from_reserves(1, 2, p12, 1.0e18, 1.1e18, 1.0);
+            g.update_edge_from_reserves(2, 0, p20, 1.0e18, 1.1e18, 1.0);
+            g
+        };
+
+        let bf = BellmanFord::new(6, 1_000_000);
+
+        // With the floor active the 0->1 edge is filtered → no cycle.
+        let filtered_graph = build(1.0);
+        assert!(
+            filtered_graph.edges_from(0)[0].filtered,
+            "0->1 edge should be filtered (0.5 WETH < floor 1.0)"
+        );
+        let cycles = bf.detect_negative_cycles(&filtered_graph);
+        assert!(
+            cycles.is_empty(),
+            "a filtered edge on the only cycle must suppress detection, got {} cycles",
+            cycles.len()
+        );
+
+        // With the floor disabled (0.0) the same graph yields the profitable cycle.
+        let open_graph = build(0.0);
+        assert!(
+            !open_graph.edges_from(0)[0].filtered,
+            "0->1 edge should not be filtered when floor is disabled"
+        );
+        let cycles = bf.detect_negative_cycles(&open_graph);
+        assert!(
+            !cycles.is_empty(),
+            "with the floor disabled the profitable cycle must be detected"
+        );
+        assert!(cycles[0].is_profitable());
+    }
+
+    #[test]
+    fn test_filtered_edge_skipped_in_affected_scan() {
+        // Same setup, verifying detect_from_affected also skips filtered edges.
+        let p01 = make_pool_id(1, ProtocolType::UniswapV2);
+        let p12 = make_pool_id(2, ProtocolType::SushiSwap);
+        let p20 = make_pool_id(3, ProtocolType::Curve);
+
+        let weth_below_floor = 500_000_000_000_000_000.0_f64;
+        let token_in_for_0to1 = weth_below_floor / 1.1;
+
+        let mut g = PriceGraph::new(3);
+        g.add_edge(0, 1, 1.0, p01, Address::repeat_byte(1), ProtocolType::UniswapV2, U256::from(1u64));
+        g.add_edge(1, 2, 1.0, p12, Address::repeat_byte(2), ProtocolType::SushiSwap, U256::from(1u64));
+        g.add_edge(2, 0, 1.0, p20, Address::repeat_byte(3), ProtocolType::Curve, U256::from(1u64));
+        g.set_weth_vertex(1);
+        g.set_min_liquidity_weth(1.0);
+        g.update_edge_from_reserves(0, 1, p01, token_in_for_0to1, weth_below_floor, 1.0);
+        g.update_edge_from_reserves(1, 2, p12, 1.0e18, 1.1e18, 1.0);
+        g.update_edge_from_reserves(2, 0, p20, 1.0e18, 1.1e18, 1.0);
+
+        let bf = BellmanFord::new(6, 1_000_000);
+        let cycles = bf.detect_from_affected(&g, &[0, 1, 2]);
+        assert!(
+            cycles.is_empty(),
+            "affected scan must skip the filtered edge and find no cycle, got {} cycles",
+            cycles.len()
+        );
     }
 
     // --------------- Disconnected components ---------------

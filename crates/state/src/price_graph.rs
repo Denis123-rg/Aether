@@ -29,6 +29,12 @@ pub struct PriceEdge {
     pub reserve_in: f64,
     /// Pool reserve on the output side (f64 approx). Zero when reserves are unknown.
     pub reserve_out: f64,
+    /// `true` when this edge is excluded from arbitrage detection because the
+    /// backing pool's liquidity is below the configured minimum-liquidity floor
+    /// (see [`PriceGraph::set_min_liquidity_weth`]). Bellman-Ford skips filtered
+    /// edges during relaxation, so dead/drained pools never produce phantom
+    /// cycles. Placeholder edges (no real reserves) are never filtered.
+    pub filtered: bool,
 }
 
 /// Directed price graph for arbitrage detection.
@@ -53,6 +59,15 @@ pub struct PriceGraph {
     /// ratios into human-unit exchange rates in [`update_edge_from_reserves`].
     /// Defaults to 18 (the ERC20 default) for any vertex not explicitly set.
     token_decimals: Vec<u8>,
+    /// Graph vertex index of WETH, when known. The minimum-liquidity floor uses
+    /// the WETH-side reserve of a WETH-paired pool as a no-oracle TVL proxy.
+    /// `None` disables the floor entirely (backward-compatible: synthetic graphs
+    /// that never register WETH behave exactly as before).
+    weth_vertex: Option<usize>,
+    /// Minimum WETH-side human reserve (≈ half a constant-product pool's TVL)
+    /// for a WETH-paired pool's edges to participate in detection. `0.0` (the
+    /// default) disables the floor.
+    min_liquidity_weth: f64,
 }
 
 impl PriceGraph {
@@ -65,6 +80,8 @@ impl PriceGraph {
             edge_index: HashMap::with_capacity(num_vertices * 8),
             dirty: Vec::new(),
             token_decimals: vec![DEFAULT_TOKEN_DECIMALS; num_vertices],
+            weth_vertex: None,
+            min_liquidity_weth: 0.0,
         }
     }
 
@@ -106,6 +123,9 @@ impl PriceGraph {
             liquidity,
             reserve_in: 0.0,
             reserve_out: 0.0,
+            // Placeholder edges carry no real reserves and are never floored;
+            // the follow-up `update_edge_from_reserves` sets the real flag.
+            filtered: false,
         };
 
         // Try to update an existing edge with matching (from, to, pool_id).
@@ -176,6 +196,30 @@ impl PriceGraph {
             .unwrap_or(DEFAULT_TOKEN_DECIMALS) as i32;
         let rate = (reserve_out / reserve_in) * fee_factor * 10f64.powi(dec_in - dec_out);
 
+        // Minimum-liquidity floor: exclude WETH-paired pools whose WETH-side
+        // human reserve is below the configured floor. For a constant-product
+        // pool both sides hold equal value, so the WETH-side reserve is a clean,
+        // oracle-free TVL proxy. Pools where neither endpoint is WETH are NOT
+        // subject to this floor (left to existing qualification gates). The
+        // floor is disabled when `weth_vertex` is unknown or the floor is 0.0.
+        let filtered = match self.weth_vertex {
+            Some(weth) if self.min_liquidity_weth > 0.0 => {
+                let weth_human = if from == weth {
+                    Some(reserve_in / 10f64.powi(self.token_decimals(from) as i32))
+                } else if to == weth {
+                    Some(reserve_out / 10f64.powi(self.token_decimals(to) as i32))
+                } else {
+                    // Pool not WETH-paired → not subject to this floor.
+                    None
+                };
+                match weth_human {
+                    Some(human) => human < self.min_liquidity_weth,
+                    None => false,
+                }
+            }
+            _ => false,
+        };
+
         if let Some(existing) = self.edges[from]
             .iter_mut()
             .find(|e| e.to == to && e.pool_id == pool_id)
@@ -183,6 +227,7 @@ impl PriceGraph {
             existing.weight = -rate.ln();
             existing.reserve_in = reserve_in;
             existing.reserve_out = reserve_out;
+            existing.filtered = filtered;
             // Mirror the update in the flat edge list via O(1) index lookup.
             // Direct indexing: panics if the key is missing, which is correct —
             // the adjacency list found the edge, so edge_index must agree.
@@ -190,6 +235,7 @@ impl PriceGraph {
             self.all_edges[idx].weight = existing.weight;
             self.all_edges[idx].reserve_in = reserve_in;
             self.all_edges[idx].reserve_out = reserve_out;
+            self.all_edges[idx].filtered = filtered;
             self.dirty[idx] = true;
         }
     }
@@ -319,6 +365,27 @@ impl PriceGraph {
             .get(vertex)
             .copied()
             .unwrap_or(DEFAULT_TOKEN_DECIMALS)
+    }
+
+    /// Register the graph vertex index of WETH. Enables the WETH-denominated
+    /// minimum-liquidity floor for WETH-paired pools (see
+    /// [`Self::set_min_liquidity_weth`]). Must be set before reserves are seeded
+    /// for the resulting `filtered` flags to be correct.
+    pub fn set_weth_vertex(&mut self, vertex: usize) {
+        self.weth_vertex = Some(vertex);
+    }
+
+    /// Set the minimum WETH-side human reserve a WETH-paired pool must hold for
+    /// its edges to participate in detection. `0.0` disables the floor. The
+    /// floor is only applied when [`Self::set_weth_vertex`] has also been set.
+    pub fn set_min_liquidity_weth(&mut self, floor: f64) {
+        self.min_liquidity_weth = floor;
+    }
+
+    /// The configured minimum WETH-side reserve floor (`0.0` when disabled).
+    #[inline]
+    pub fn min_liquidity_weth(&self) -> f64 {
+        self.min_liquidity_weth
     }
 }
 
@@ -1071,6 +1138,129 @@ mod tests {
         );
         // Sanity: a 1e12-off bug would put human_rate near 3.3e8; assert nowhere close.
         assert!(human_rate < 1.0, "human rate must be sub-1, got {human_rate}");
+    }
+
+    // --------------- Minimum-liquidity floor ---------------
+
+    /// Build a single WETH-paired V2 pool (vertex 0 = some token, vertex 1 =
+    /// WETH) with both directional placeholder edges in place, ready for a
+    /// `update_edge_from_reserves` call. Returns the graph and the pool_id.
+    fn build_weth_paired_pool(weth_decimals: u8) -> (PriceGraph, PoolId) {
+        let mut g = PriceGraph::new(2);
+        g.set_token_decimals(0, 18); // arbitrary token
+        g.set_token_decimals(1, weth_decimals); // WETH
+        let pool_id = make_pool_id(1, ProtocolType::UniswapV2);
+        g.add_edge(0, 1, 1.0, pool_id, Address::repeat_byte(1), ProtocolType::UniswapV2, U256::from(1u64));
+        g.add_edge(1, 0, 1.0, pool_id, Address::repeat_byte(1), ProtocolType::UniswapV2, U256::from(1u64));
+        (g, pool_id)
+    }
+
+    #[test]
+    fn test_floor_filters_low_weth_reserve() {
+        // WETH-side human reserve = 0.5 WETH < floor 1.0 → filtered.
+        let (mut g, pool_id) = build_weth_paired_pool(18);
+        g.set_weth_vertex(1);
+        g.set_min_liquidity_weth(1.0);
+
+        // 0.5 WETH raw = 5e17 wei on the WETH side (vertex 1 = `to` for 0->1).
+        let token_reserve = 1_000_000_000_000_000_000.0_f64; // 1.0 token
+        let weth_reserve = 500_000_000_000_000_000.0_f64; // 0.5 WETH
+        g.update_edge_from_reserves(0, 1, pool_id, token_reserve, weth_reserve, 0.997);
+        g.update_edge_from_reserves(1, 0, pool_id, weth_reserve, token_reserve, 0.997);
+
+        // Both directions must be filtered (each carries the same dead pool).
+        assert!(g.edges_from(0)[0].filtered, "0->1 edge should be filtered");
+        assert!(g.edges_from(1)[0].filtered, "1->0 edge should be filtered");
+        // Mirror in all_edges must agree.
+        assert!(g.all_edges().iter().all(|e| e.filtered));
+    }
+
+    #[test]
+    fn test_floor_passes_high_weth_reserve() {
+        // WETH-side human reserve = 10 WETH > floor 1.0 → not filtered.
+        let (mut g, pool_id) = build_weth_paired_pool(18);
+        g.set_weth_vertex(1);
+        g.set_min_liquidity_weth(1.0);
+
+        let token_reserve = 30_000_000_000_000_000_000_000.0_f64; // 30000 token
+        let weth_reserve = 10_000_000_000_000_000_000.0_f64; // 10 WETH
+        g.update_edge_from_reserves(0, 1, pool_id, token_reserve, weth_reserve, 0.997);
+        g.update_edge_from_reserves(1, 0, pool_id, weth_reserve, token_reserve, 0.997);
+
+        assert!(!g.edges_from(0)[0].filtered, "0->1 edge should not be filtered");
+        assert!(!g.edges_from(1)[0].filtered, "1->0 edge should not be filtered");
+        assert!(g.all_edges().iter().all(|e| !e.filtered));
+    }
+
+    #[test]
+    fn test_floor_ignores_non_weth_pool() {
+        // Neither vertex is WETH (weth_vertex points at a third vertex) → never
+        // filtered regardless of how tiny the reserves are.
+        let mut g = PriceGraph::new(3);
+        g.set_token_decimals(0, 18);
+        g.set_token_decimals(1, 18);
+        g.set_weth_vertex(2); // WETH is vertex 2, not part of this pool
+        g.set_min_liquidity_weth(1.0);
+
+        let pool_id = make_pool_id(1, ProtocolType::UniswapV2);
+        g.add_edge(0, 1, 1.0, pool_id, Address::repeat_byte(1), ProtocolType::UniswapV2, U256::from(1u64));
+        // Tiny reserves on both sides — would be filtered if this were WETH-paired.
+        g.update_edge_from_reserves(0, 1, pool_id, 1.0, 1.0, 0.997);
+
+        assert!(!g.edges_from(0)[0].filtered, "non-WETH pool must never be floored");
+    }
+
+    #[test]
+    fn test_floor_disabled_when_weth_vertex_unset() {
+        // weth_vertex None → backward-compatible, never filtered.
+        let (mut g, pool_id) = build_weth_paired_pool(18);
+        g.set_min_liquidity_weth(1.0); // floor set, but no weth_vertex
+        g.update_edge_from_reserves(0, 1, pool_id, 1.0, 1.0, 0.997);
+        assert!(!g.edges_from(0)[0].filtered);
+    }
+
+    #[test]
+    fn test_floor_disabled_when_floor_zero() {
+        // min_liquidity_weth 0.0 (default) → never filtered even with weth_vertex.
+        let (mut g, pool_id) = build_weth_paired_pool(18);
+        g.set_weth_vertex(1);
+        // Leave floor at its 0.0 default.
+        assert_eq!(g.min_liquidity_weth(), 0.0);
+        g.update_edge_from_reserves(0, 1, pool_id, 1.0, 1.0, 0.997);
+        assert!(!g.edges_from(0)[0].filtered);
+    }
+
+    #[test]
+    fn test_floor_decimal_aware_conversion() {
+        // WETH is 18-dec: raw 5e17 wei = 0.5 WETH < floor 1.0 → filtered.
+        // Verifies the human conversion divides by 10^decimals correctly.
+        let (mut g, pool_id) = build_weth_paired_pool(18);
+        g.set_weth_vertex(1);
+        g.set_min_liquidity_weth(1.0);
+
+        // WETH side (vertex 1) is `to` for the 0->1 direction.
+        let weth_raw = 500_000_000_000_000_000.0_f64; // 5e17 wei = 0.5 WETH
+        g.update_edge_from_reserves(0, 1, pool_id, 1.0e18, weth_raw, 0.997);
+        assert!(
+            g.edges_from(0)[0].filtered,
+            "0.5 WETH (raw 5e17) must be below floor 1.0 after decimal conversion"
+        );
+
+        // Bump just above the floor: 1.5 WETH = 1.5e18 wei → not filtered.
+        let weth_raw_ok = 1_500_000_000_000_000_000.0_f64;
+        g.update_edge_from_reserves(0, 1, pool_id, 1.0e18, weth_raw_ok, 0.997);
+        assert!(
+            !g.edges_from(0)[0].filtered,
+            "1.5 WETH must be above floor 1.0 after decimal conversion"
+        );
+    }
+
+    #[test]
+    fn test_add_edge_initializes_filtered_false() {
+        let mut g = PriceGraph::new(2);
+        let pool_id = make_pool_id(1, ProtocolType::UniswapV2);
+        g.add_edge(0, 1, 2.0, pool_id, Address::repeat_byte(1), ProtocolType::UniswapV2, U256::from(1u64));
+        assert!(!g.all_edges()[0].filtered, "placeholder edge must start unfiltered");
     }
 
     #[test]
