@@ -34,7 +34,7 @@ use aether_state::token_index::TokenIndex;
 // Import the proto ValidatedArb type from service module
 use aether_grpc_server::EngineMetrics;
 
-use crate::cycle_gating::{
+use aether_grpc_server::cycle_gating::{
     self, GatingConfig, PostSimGateVerdict, PreSimGateVerdict,
 };
 use crate::pipeline;

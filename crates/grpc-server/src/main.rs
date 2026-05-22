@@ -11,7 +11,6 @@ use tokio::net::UnixListener;
 #[cfg(unix)]
 use tokio_stream::wrappers::UnixListenerStream;
 
-mod cycle_gating;
 mod engine;
 mod mempool_pipeline;
 mod mempool_writer;

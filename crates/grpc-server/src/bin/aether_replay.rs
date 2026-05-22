@@ -28,6 +28,10 @@ use aether_common::types::{known_token_decimals, PoolId, ProtocolType, SwapStep}
 use aether_detector::bellman_ford::BellmanFord;
 use aether_detector::gas as gas_model;
 use aether_detector::opportunity::DetectedCycle;
+use aether_grpc_server::cycle_gating::{
+    build_fingerprint_index, gate_pre_sim, GatingConfig, PreSimGateVerdict,
+};
+use aether_grpc_server::EngineMetrics;
 use aether_detector::optimizer::ternary_search_optimal_input;
 use aether_grpc_server::historical::{
     fetch_pool_state_at, getReservesCall, load_executor_init_bytecode, load_pools, slot0Call,
@@ -301,6 +305,27 @@ fn build_graph(
     (graph, token_index)
 }
 
+/// Apply the engine's pre-simulation gates to a freshly detected cycle batch,
+/// keeping only the cycles the production engine would actually act on. The
+/// `aether-rust` engine runs this same `gate_pre_sim` between detection and
+/// simulation; mirroring it here keeps the diagnostic output free of phantom
+/// cycles (e.g. f64-overflow profit factors from a transiently corrupted fork
+/// pool) that the engine drops at the `profit_factor_impossible` cap.
+fn gate_cycles(cycles: Vec<DetectedCycle>, graph: &PriceGraph) -> Vec<DetectedCycle> {
+    let config = GatingConfig::default();
+    let metrics = EngineMetrics::new();
+    let fingerprint_index = build_fingerprint_index(&cycles, &config);
+    cycles
+        .into_iter()
+        .filter(|c| {
+            matches!(
+                gate_pre_sim(c, graph, &fingerprint_index, &config, &metrics),
+                PreSimGateVerdict::Pass
+            )
+        })
+        .collect()
+}
+
 fn print_cycles(cycles: &[DetectedCycle], token_index: &TokenIndex, top: usize) {
     let mut ranked: Vec<&DetectedCycle> = cycles.iter().filter(|c| c.is_profitable()).collect();
     ranked.sort_by(|a, b| {
@@ -459,7 +484,10 @@ async fn main() -> Result<()> {
     // Run detector — same code path as production.
     let t_detect = Instant::now();
     let detector = BellmanFord::new(args.max_hops, args.max_time_us);
-    let cycles = detector.detect_negative_cycles(&graph);
+    // Mirror the engine: gate the raw cycle batch so phantom cycles (graph
+    // f64-overflow / corrupted-edge signatures the engine drops pre-sim) never
+    // surface in the diagnostic output.
+    let cycles = gate_cycles(detector.detect_negative_cycles(&graph), &graph);
     let detect_ms = t_detect.elapsed().as_millis();
 
     let profitable = cycles.iter().filter(|c| c.is_profitable()).count();
@@ -1233,7 +1261,10 @@ async fn run_full_block_replay(
             running_states.iter().map(|(&i, &s)| (i, s)).collect();
 
         let (graph, token_index) = build_graph(&pools, &states);
-        let cycles = detector.detect_negative_cycles(&graph);
+        // Mirror the engine's pre-sim gating so corrupted-fork-state phantoms
+        // (e.g. an impersonated tx transiently draining a pool) don't pollute
+        // the per-tx diagnostic the way the ungated detector did.
+        let cycles = gate_cycles(detector.detect_negative_cycles(&graph), &graph);
         let profitable = cycles.iter().filter(|c| c.is_profitable()).count();
 
         if profitable > 0 {
