@@ -130,15 +130,15 @@ tier = "warm"
 protocol = "uniswap_v2"
 address = "0xE1573B9D29e2183B1AF0e743Dc2754979A40D237"
 token0 = "0x3432B6A60D23Ca0dFCa7761B7ab56459D9C964D0"  # FXS
-token1 = "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2"  # WETH
+token1 = "0x853d955aCEf822Db058eb8505911ED77F175b99e"  # FRAX (corrected: on-chain token1 was mislabeled WETH)
 fee_bps = 30
 tier = "cold"
 
 [[pools]]
 protocol = "uniswap_v2"
 address = "0x3dA1313aE46132A397D90d95B1424A9A7e3e0fCE"
-token0 = "0xD533a949740bb3306d119CC777fa900bA034cd52"  # CRV
-token1 = "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2"  # WETH
+token0 = "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2"  # WETH (corrected: token0/token1 order swapped to match on-chain)
+token1 = "0xD533a949740bb3306d119CC777fa900bA034cd52"  # CRV
 fee_bps = 30
 tier = "cold"
 
@@ -349,8 +349,8 @@ tick_spacing = 60
 [[pools]]
 protocol = "uniswap_v3"
 address = "0xe8c6c9227491C0a8156A0106A0204d881BB7E531"
-token0 = "0x6B175474E89094C44Da98b954EedeAC495271d0F"  # DAI
-token1 = "0x9f8F72aA9304c8B593d555F12eF6589cC3A579A2"  # MKR
+token0 = "0x9f8F72aA9304c8B593d555F12eF6589cC3A579A2"  # rETH (corrected: pool is rETH/WETH, was mislabeled DAI/MKR)
+token1 = "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2"  # WETH
 fee_bps = 30
 tier = "cold"
 tick_spacing = 60
@@ -358,7 +358,7 @@ tick_spacing = 60
 [[pools]]
 protocol = "uniswap_v3"
 address = "0xfaA318479b7755b2dBfDD34dC306cb28B420Ad12"
-token0 = "0x111111111117dC0aa78b770fA6A738034120C302"  # 1INCH
+token0 = "0x1f9840a85d5aF5bf1D1762F925BDADdC4201F984"  # UNI (corrected: on-chain token0 was mislabeled 1INCH)
 token1 = "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2"  # WETH
 fee_bps = 30
 tier = "cold"
@@ -444,16 +444,16 @@ tier = "warm"
 [[pools]]
 protocol = "sushiswap"
 address = "0x58Dc5a51fE44589BEb22E8CE67720B5BC5378009"
-token0 = "0xD533a949740bb3306d119CC777fa900bA034cd52"  # CRV
-token1 = "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2"  # WETH
+token0 = "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2"  # WETH (corrected: token0/token1 order swapped to match on-chain)
+token1 = "0xD533a949740bb3306d119CC777fa900bA034cd52"  # CRV
 fee_bps = 30
 tier = "warm"
 
 [[pools]]
 protocol = "sushiswap"
 address = "0xDafd66636E2561b0284EDdE37e42d192F2844D40"
-token0 = "0x6B175474E89094C44Da98b954EedeAC495271d0F"  # DAI
-token1 = "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"  # USDC
+token0 = "0x1f9840a85d5aF5bf1D1762F925BDADdC4201F984"  # UNI (corrected: pool is UNI/WETH, was mislabeled DAI/USDC)
+token1 = "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2"  # WETH
 fee_bps = 30
 tier = "warm"
 
@@ -485,7 +485,7 @@ tier = "cold"
 protocol = "sushiswap"
 address = "0xDB06a76733528761Eda47d356647297bC35a98BD"
 token0 = "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2"  # WETH
-token1 = "0xae7ab96520DE3A18E5e111B5EaAb095312D7fE84"  # stETH
+token1 = "0xe80C0cd204D654CEbe8dd64A4857cAb6Be8345a3"  # JPEG (corrected: on-chain token1 was mislabeled stETH)
 fee_bps = 30
 tier = "cold"
 
