@@ -12,7 +12,9 @@ use alloy::providers::{DynProvider, Provider};
 use alloy::sol_types::SolCall;
 
 use aether_common::db::{protocol_label, Ledger, NewArb, NewPool, NoopLedger};
-use aether_common::types::{ArbHop, ArbOpportunity, PoolId, ProtocolType, SwapStep};
+use aether_common::types::{
+    known_token_decimals, ArbHop, ArbOpportunity, PoolId, ProtocolType, SwapStep,
+};
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 use aether_detector::bellman_ford::BellmanFord;
@@ -536,6 +538,12 @@ impl AetherEngine {
         {
             let mut graph = self.working_graph.lock().await;
             graph.resize(num_tokens);
+            // Seed per-vertex decimals from the static curated map (fallback 18)
+            // so update_edge_from_reserves produces decimal-correct human rates
+            // even before any RPC decimals() truth is fetched. RPC results, when
+            // available, override these in fetch_initial_reserves.
+            graph.set_token_decimals(t0_idx, known_token_decimals(&token0).unwrap_or(18));
+            graph.set_token_decimals(t1_idx, known_token_decimals(&token1).unwrap_or(18));
             // Placeholder edges with rate 1.0 (neutral weight = 0).
             graph.add_edge(
                 t0_idx,
@@ -699,6 +707,76 @@ impl AetherEngine {
         loaded
     }
 
+    /// Resolve ERC20 `decimals()` for every unique token across `pools` and
+    /// write the result onto the working graph's per-vertex decimals table.
+    ///
+    /// Each unique token address is fetched at most once (deduplicated). On RPC
+    /// success the graph vertex decimals are overridden with the on-chain truth;
+    /// on failure the value seeded at registration (static map or the ERC20
+    /// default of 18) is left untouched. Startup is never blocked by a failed
+    /// decimals call.
+    async fn fetch_and_apply_token_decimals(
+        &self,
+        provider: &DynProvider<Ethereum>,
+        pools: &[(Address, PoolMetadata)],
+    ) {
+        alloy::sol! {
+            function decimals() external view returns (uint8);
+        }
+
+        // Deduplicate tokens by address, keeping the graph vertex index.
+        let mut unique: HashMap<Address, usize> = HashMap::new();
+        for (_, meta) in pools {
+            unique.entry(meta.token0).or_insert(meta.token0_idx);
+            unique.entry(meta.token1).or_insert(meta.token1_idx);
+        }
+
+        let mut join_set = tokio::task::JoinSet::new();
+        for (token, vertex) in unique {
+            let provider = provider.clone();
+            join_set.spawn(async move {
+                let calldata = decimalsCall {}.abi_encode();
+                let tx = alloy::rpc::types::TransactionRequest::default()
+                    .to(token)
+                    .input(calldata.into());
+                match provider.call(tx).await {
+                    // decimals() returns uint8 right-aligned in a 32-byte word.
+                    Ok(output) if !output.is_empty() => {
+                        let dec = output[output.len() - 1];
+                        Some((vertex, dec))
+                    }
+                    Ok(_) => {
+                        warn!(%token, "decimals() returned empty output; keeping fallback");
+                        None
+                    }
+                    Err(e) => {
+                        warn!(%token, error = %e, "decimals() RPC call failed; keeping fallback");
+                        None
+                    }
+                }
+            });
+        }
+
+        let mut results: Vec<(usize, u8)> = Vec::new();
+        while let Some(joined) = join_set.join_next().await {
+            match joined {
+                Ok(Some(pair)) => results.push(pair),
+                Ok(None) => {}
+                Err(e) => warn!(error = %e, "decimals() fetch task panicked"),
+            }
+        }
+
+        if results.is_empty() {
+            return;
+        }
+        let applied = results.len();
+        let mut graph = self.working_graph.lock().await;
+        for (vertex, dec) in results {
+            graph.set_token_decimals(vertex, dec);
+        }
+        debug!(applied, "Applied on-chain token decimals to price graph");
+    }
+
     /// Fetch initial on-chain reserves for all registered pools via RPC.
     ///
     /// For V2/SushiSwap pools: calls `getReserves()`.
@@ -726,6 +804,13 @@ impl AetherEngine {
         }
 
         info!(count = pools.len(), "Fetching initial reserves via RPC (concurrent)");
+
+        // Resolve per-token ERC20 decimals once per UNIQUE token address and
+        // apply them to the graph BEFORE any update_edge_from_reserves call, so
+        // the decimal correction uses on-chain truth. RPC failures degrade to
+        // the static/default decimals already seeded at registration — startup
+        // is never blocked.
+        self.fetch_and_apply_token_decimals(&provider, &pools).await;
 
         // ABI for getReserves() / slot0() / Curve A + balances /
         // Balancer pool/vault helpers.
