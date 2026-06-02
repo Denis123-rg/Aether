@@ -169,7 +169,7 @@
 
 ### SEV3: High Revert Rate
 
-**Detection**: >3 consecutive reverts in 10 minutes, system enters PAUSED state.
+**Detection**: 10 consecutive bug reverts in 10 minutes, system enters PAUSED state.
 
 **Actions:**
 

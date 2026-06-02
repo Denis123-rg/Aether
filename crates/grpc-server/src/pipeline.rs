@@ -103,6 +103,10 @@ pub fn validated_arb_to_proto(arb: &ValidatedArb) -> aether_proto::ValidatedArb 
         flashloan_amount: u256_to_bytes(&arb.flashloan_amount),
         steps: arb.steps.iter().map(swap_step_to_proto).collect(),
         calldata: Bytes::from(arb.calldata.clone()),
+        source: aether_proto::ArbSource::BlockDriven as i32,
+        victim_tx_hash: Bytes::new(),
+        target_block: arb.block_number.saturating_add(1),
+        victim_raw_tx: Bytes::new(),
     }
 }
 
@@ -154,6 +158,10 @@ pub fn build_validated_arb(
         flashloan_amount: u256_to_bytes(&flashloan_amount),
         steps: steps.into_iter().map(swap_step_into_proto).collect(),
         calldata: Bytes::from(calldata),
+        source: aether_proto::ArbSource::BlockDriven as i32,
+        victim_tx_hash: Bytes::new(),
+        target_block: opportunity.block_number.saturating_add(1),
+        victim_raw_tx: Bytes::new(),
     }
 }
 

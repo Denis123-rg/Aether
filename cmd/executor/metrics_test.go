@@ -147,22 +147,25 @@ func TestMetricsEndpoint_ContainsRequiredMetrics(t *testing.T) {
 }
 
 func TestMetricsCounters_Increment(t *testing.T) {
-	baseSubmitted := testutil.ToFloat64(bundlesSubmitted)
-	baseIncluded := testutil.ToFloat64(bundlesIncluded)
+	submittedVec := bundlesSubmitted.WithLabelValues(SourceBlockDriven)
+	includedVec := bundlesSubmitted.WithLabelValues(SourceBlockDriven)
+	_ = includedVec
+	baseSubmitted := testutil.ToFloat64(submittedVec)
+	baseIncluded := testutil.ToFloat64(bundlesIncluded.WithLabelValues(SourceBlockDriven))
 	baseProfit := testutil.ToFloat64(profitTotalWei)
 	baseGas := testutil.ToFloat64(gasSpentWei)
 	baseRisk := testutil.ToFloat64(riskRejections)
 
-	recordBundleSubmitted()
-	recordBundleIncluded(big.NewInt(200), 30.0, 21000)
+	recordBundleSubmitted(SourceBlockDriven)
+	recordBundleIncluded(SourceBlockDriven, big.NewInt(200), 30.0, 21000)
 	recordRiskRejection()
 
-	gotSubmitted := testutil.ToFloat64(bundlesSubmitted)
+	gotSubmitted := testutil.ToFloat64(bundlesSubmitted.WithLabelValues(SourceBlockDriven))
 	if gotSubmitted != baseSubmitted+1 {
 		t.Fatalf("bundles_submitted: got %.0f, want %.0f", gotSubmitted, baseSubmitted+1)
 	}
 
-	gotIncluded := testutil.ToFloat64(bundlesIncluded)
+	gotIncluded := testutil.ToFloat64(bundlesIncluded.WithLabelValues(SourceBlockDriven))
 	if gotIncluded != baseIncluded+1 {
 		t.Fatalf("bundles_included: got %.0f, want %.0f", gotIncluded, baseIncluded+1)
 	}

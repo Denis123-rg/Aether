@@ -31,7 +31,7 @@ graph TB
 
     N1 -->|"WebSocket events"| I
     SIM -->|"gRPC over UDS ‹1μs"| B
-    SUB -->|"eth_sendBundle"| BLD[Block Builders<br/>Flashbots / Titan / Beaver / rsync]
+    SUB -->|"eth_sendBundle"| BLD[Block Builders<br/>Flashbots / Titan / Eden / rsync]
     BLD --> EX
 
     style RUST fill:#1a1520,stroke:#9580ff,stroke-width:2px,color:#fff
@@ -75,7 +75,7 @@ Go constructs a Flashbots bundle: an arb transaction calling `executeArb()` and 
   </TimelineItem>
   <TimelineItem time="10 — 12ms" title="Multi-Builder Submission" color="green">
 
-The signed bundle is submitted simultaneously to all configured builders via goroutine fan-out — Flashbots, Titan, Beaver, and rsync.
+The signed bundle is submitted simultaneously to all configured builders via goroutine fan-out — Flashbots, Titan, Eden, and rsync.
 
   </TimelineItem>
 </Timeline>
@@ -150,6 +150,17 @@ The simulation **must** use the same block state as the execution target. Stale 
 :::
 
 The simulator forks the latest block state into a `CacheDB`, executes the exact calldata that will be submitted on-chain, and verifies the output. Only opportunities that pass simulation are forwarded to the Go executor.
+
+## Mempool Backrun Mode
+
+The hot path above is the **block-driven** flow: it reacts to confirmed state changes. Aether also runs a second, **mempool-driven** flow that backruns *pending* transactions:
+
+1. A `pendingTransactions` subscription feeds a calldata decoder that recognises UniswapV2/V3 routers, SushiSwap, the Uniswap Universal Router, 1inch v6, Balancer V2, Bancor V3, and pool-direct Curve swaps.
+2. The affected pools are advanced past the victim swap — analytically (Curve, Bancor) or by replaying it in `revm` (Balancer, UniV3) — to predict the post-victim reserves.
+3. The detector searches for a profitable backrun against that predicted state, simulating with the `AetherExecutor` bytecode injected into the fork.
+4. The bundle is `[victim_raw_tx, arb_tx]` — the victim's raw signed transaction (not its hash) followed by the backrun — so it only lands atomically behind the victim.
+
+This path is **shadow-gated** (`AETHER_SHADOW`) by default: it logs and dumps forensics rather than submitting until explicitly promoted. The rollout procedure lives in the repo at `docs/runbook/mempool-backrun-rollout.md`.
 
 ## Next Steps
 

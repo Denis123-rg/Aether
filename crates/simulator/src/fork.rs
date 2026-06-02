@@ -1,9 +1,22 @@
+use std::sync::Arc;
+
 use alloy::network::Ethereum;
 use alloy::primitives::{Address, Bytes, B256, U256};
 use alloy::providers::{DynProvider, Provider};
-use futures::future::join_all;
+use futures::StreamExt;
 use revm::bytecode::Bytecode;
+
+use crate::bytecode_cache::BytecodeCache;
+use crate::slot_prefetch::{batch_v2_reserves, V2ReservesResult};
+use crate::v2_reserves_cache::{V2CacheLookup, V2ReservesCache};
 use revm::database::CacheDB;
+
+/// How many blocks of WS lag the pre-warm reads-from-cache path tolerates
+/// before falling back to RPC. `Sync` events arrive within ~50 ms of a
+/// block landing on the WS subscription; one block of slack (~12 s) is
+/// more than enough headroom under normal latency while still rejecting
+/// clearly stale snapshots after a reconnect or reorg.
+pub const V2_RESERVES_MAX_LAG_BLOCKS: u64 = 1;
 use revm::database_interface::EmptyDB;
 use revm::state::AccountInfo;
 use revm_database::{AlloyDB, BlockId, WrapDatabaseAsync};
@@ -17,6 +30,7 @@ use tracing::{debug, warn};
 /// Injected into each task's `RpcForkedState` cache so that per-task cold
 /// RPC fetches are eliminated — all simulations sharing the same block see
 /// the same contract state without redundant network round-trips.
+#[derive(Default)]
 pub struct PrewarmedState {
     /// Bytecode cache: (code_hash, bytecode) pairs for pre-fetched contracts.
     ///
@@ -27,6 +41,46 @@ pub struct PrewarmedState {
     code_cache: Vec<(B256, Bytecode)>,
     /// (address, slot, value) — pre-fetched storage slots (e.g. V2 reserves).
     storage: Vec<(Address, U256, U256)>,
+    /// Per-cycle counters surfaced for Prometheus instrumentation. Callers
+    /// read these once after `prewarm_state` returns and bump their counter
+    /// vectors — keeping the metric registration in the grpc-server crate
+    /// avoids a dependency edge from `aether_simulator` into Prometheus.
+    pub stats: PrewarmStats,
+}
+
+/// Lightweight counters describing what `prewarm_state` did this cycle.
+/// All fields are post-hoc — they describe work that already completed by
+/// the time the struct is returned.
+#[derive(Default, Clone, Copy, Debug)]
+pub struct PrewarmStats {
+    /// Code addresses served from the persistent bytecode cache without
+    /// touching RPC.
+    pub bytecode_cache_hits: usize,
+    /// Code addresses that missed the cache and required an `eth_getCode`
+    /// round-trip.
+    pub bytecode_rpc_fetches: usize,
+    /// V2 pool addresses served from the WS-fed reserves cache.
+    pub v2_reserves_cache_hits: usize,
+    /// V2 pool addresses present in the cache but rejected by the
+    /// freshness gate; they still cost an RPC fetch but the metric
+    /// captures lag visibility.
+    pub v2_reserves_cache_stale: usize,
+    /// V2 pool addresses absent from the cache (never recorded by the WS
+    /// writer); fell through to `eth_getStorageAt`.
+    pub v2_reserves_cache_missing: usize,
+    /// Multicall3 batches dispatched this cycle. At most one per
+    /// `prewarm_state` invocation today; expressed as a counter so future
+    /// expansion (V3 slot0, ERC20 balances) can increment it without API
+    /// churn.
+    pub multicall_batches: usize,
+    /// V2 pool reserves served by a Multicall3 batch instead of an
+    /// individual `eth_getStorageAt`. Each entry saves ~20 Alchemy CU.
+    pub multicall_v2_slots: usize,
+    /// Multicall batches that errored end-to-end and forced a per-pool
+    /// fallback. Should sit at zero in steady state; a non-zero value
+    /// usually means the Multicall3 contract is unreachable on the
+    /// configured chain or the response decoder hit malformed bytes.
+    pub multicall_fallbacks: usize,
 }
 
 impl PrewarmedState {
@@ -35,49 +89,161 @@ impl PrewarmedState {
     /// Bytecode is inserted by code hash only — balance and nonce are left for
     /// lazy RPC fetch so on-chain ETH holdings are never clobbered with zero.
     pub fn inject_into(&self, state: &mut RpcForkedState) {
-        for (code_hash, bytecode) in &self.code_cache {
-            state.db.cache.contracts.insert(*code_hash, bytecode.clone());
-        }
+        self.inject_into_db(&mut state.db);
+    }
+
+    /// Generic core of [`Self::inject_into`], factored out so it can run
+    /// against any `CacheDB` backing (incl. `EmptyDB` in unit tests).
+    fn inject_into_db<DB>(&self, db: &mut CacheDB<DB>)
+    where
+        DB: revm::database_interface::DatabaseRef,
+        CacheDB<DB>: revm::database_interface::Database,
+    {
+        self.inject_code_into_db(db);
         for &(addr, slot, value) in &self.storage {
-            if let Err(e) = state.db.insert_account_storage(addr, slot, value) {
-                warn!(%addr, %slot, error = %e, "pre-warm: failed to insert storage slot");
+            if let Err(e) = db.insert_account_storage(addr, slot, value) {
+                warn!(%addr, %slot, error = ?e, "pre-warm: failed to insert storage slot");
             }
         }
     }
+
+    /// Inject ONLY the pre-fetched bytecode, never the storage slots.
+    ///
+    /// Use this for any sim that forks at `BlockId::latest()` and must
+    /// observe *current* mutable state (e.g. the mempool-backrun victim
+    /// replay). Bytecode for a deployed contract is immutable, so warming
+    /// it by code hash is always safe and removes the dominant cold-fetch
+    /// cost. Mutable slots — chiefly the V2 packed-reserve word at slot 8 —
+    /// are deliberately left for lazy RPC fetch: injecting a pinned
+    /// snapshot here would *shadow* the fresh `latest` read in the CacheDB
+    /// overlay. Because the prewarm snapshot is refreshed only every few
+    /// blocks, the victim's replay would then run against reserves up to
+    /// several blocks stale and trip its own `amountOutMin` slippage guard,
+    /// reverting a tx that is perfectly valid against current state.
+    pub fn inject_code_only(&self, state: &mut RpcForkedState) {
+        self.inject_code_into_db(&mut state.db);
+    }
+
+    /// Generic core of [`Self::inject_code_only`].
+    fn inject_code_into_db<DB>(&self, db: &mut CacheDB<DB>) {
+        for (code_hash, bytecode) in &self.code_cache {
+            db.cache.contracts.insert(*code_hash, bytecode.clone());
+        }
+    }
+
+    /// Test-only constructor: build a `PrewarmedState` from explicit
+    /// bytecode and storage parts (the production path goes through
+    /// [`prewarm_state`], which needs a live provider).
+    #[cfg(test)]
+    fn from_parts(
+        code_cache: Vec<(B256, Bytecode)>,
+        storage: Vec<(Address, U256, U256)>,
+    ) -> Self {
+        Self {
+            code_cache,
+            storage,
+            stats: PrewarmStats::default(),
+        }
+    }
+}
+
+/// Maximum number of pre-warm RPC requests in flight at once.
+///
+/// Free-tier RPC providers (notably Alchemy at 25 CU/s) collapse into 429
+/// throttling when `eth_getCode` + `eth_getStorageAt` batches are dispatched
+/// without a concurrency cap. Capping in-flight requests at this value keeps
+/// pre-warm under typical free-tier burst ceilings while still parallelising
+/// enough to keep wall-clock latency low.
+///
+/// Override via `AETHER_PREWARM_MAX_CONCURRENT`.
+pub const DEFAULT_PREWARM_MAX_CONCURRENT: usize = 8;
+
+/// Resolve the prewarm concurrency cap. Reads `AETHER_PREWARM_MAX_CONCURRENT`
+/// if set and positive, otherwise returns [`DEFAULT_PREWARM_MAX_CONCURRENT`].
+fn resolve_prewarm_max_concurrent() -> usize {
+    std::env::var("AETHER_PREWARM_MAX_CONCURRENT")
+        .ok()
+        .and_then(|s| s.parse::<usize>().ok())
+        .filter(|&n| n > 0)
+        .unwrap_or(DEFAULT_PREWARM_MAX_CONCURRENT)
 }
 
 /// Fetch contract code and known storage slots for `code_addresses` and
 /// `v2_pool_addresses` at `block_number`, returning a `PrewarmedState` ready
 /// to be injected into parallel simulation tasks.
 ///
-/// All RPC calls are issued concurrently via `join_all`. Errors on individual
-/// addresses are logged and skipped — pre-warming is best-effort; missing
-/// entries simply result in a per-task cache miss (lazy RPC fetch) rather
-/// than a hard failure.
+/// RPC calls are dispatched concurrently but capped by a shared in-flight
+/// semaphore (default [`DEFAULT_PREWARM_MAX_CONCURRENT`], overridable via
+/// `AETHER_PREWARM_MAX_CONCURRENT`). Errors on individual addresses are logged
+/// and skipped — pre-warming is best-effort; missing entries simply result in
+/// a per-task cache miss (lazy RPC fetch) rather than a hard failure.
 ///
 /// **`v2_pool_addresses`**: UniswapV2 / SushiSwap pools whose packed-reserve
 /// slot (slot 8) is pre-fetched. This is the single most impactful storage
 /// slot to warm — `getReserves()` reads it on every V2 swap path.
+///
+/// **`bytecode_cache`**: when supplied, addresses already resident in the
+/// cache short-circuit the `eth_getCode` call entirely; freshly fetched
+/// bytecode is persisted back so subsequent block cycles serve from the
+/// cache. Pass `None` to retain the historical RPC-every-time behaviour.
+///
+/// **`v2_reserves_cache`**: when supplied, V2 pool addresses whose latest
+/// `Sync` event landed within [`V2_RESERVES_MAX_LAG_BLOCKS`] of
+/// `block_number` synthesise the slot-8 storage value locally and skip the
+/// `eth_getStorageAt` round-trip. Stale pools fall back to RPC.
 pub async fn prewarm_state(
     provider: &DynProvider<Ethereum>,
     block_number: u64,
     code_addresses: &[Address],
     v2_pool_addresses: &[Address],
+    bytecode_cache: Option<&BytecodeCache>,
+    v2_reserves_cache: Option<&V2ReservesCache>,
 ) -> PrewarmedState {
+    let max_concurrent = resolve_prewarm_max_concurrent();
+    // Shared in-flight gate across both the code and storage streams so the
+    // total RPC pressure is bounded by `max_concurrent`, not 2× that value.
+    let gate = Arc::new(tokio::sync::Semaphore::new(max_concurrent));
     let block_id = BlockId::from(block_number);
 
-    // Fetch contract code for every address in parallel.
-    // Returns (code_hash, bytecode) pairs — we warm the bytecode cache only,
-    // leaving account balance/nonce for lazy RPC fetch.
-    let code_futs = code_addresses.iter().map(|&addr| {
-        let p = provider.clone();
+    // Partition addresses into cache hits (served locally) and misses (must
+    // RPC). Hits bypass the entire RPC fan-out so they don't even contribute
+    // to the in-flight burst that drives free-tier 429s.
+    let mut cached: Vec<(B256, Bytecode)> = Vec::new();
+    let mut to_fetch: Vec<Address> = Vec::with_capacity(code_addresses.len());
+    if let Some(cache) = bytecode_cache {
+        for &addr in code_addresses {
+            match cache.get(addr) {
+                Some(hit) => cached.push(hit),
+                None => to_fetch.push(addr),
+            }
+        }
+    } else {
+        to_fetch.extend_from_slice(code_addresses);
+    }
+
+    // Fetch contract code for every cache-miss via a bounded-concurrency
+    // stream. Each future acquires a semaphore permit before issuing the
+    // request and releases it on completion, keeping at most `max_concurrent`
+    // in flight across both code and storage streams combined.
+    let code_gate = gate.clone();
+    let code_provider = provider.clone();
+    let code_cache_handle = bytecode_cache.cloned();
+    let code_stream = futures::stream::iter(to_fetch.into_iter().map(move |addr| {
+        let p = code_provider.clone();
+        let g = code_gate.clone();
+        let cache = code_cache_handle.clone();
         async move {
+            let _permit = g.acquire().await.ok()?;
             match p.get_code_at(addr).block_id(block_id).await {
                 Ok(code) if !code.is_empty() => {
                     let code_hash = alloy::primitives::keccak256(&code);
-                    let bytecode = Bytecode::new_raw(
-                        revm::primitives::Bytes::copy_from_slice(&code),
-                    );
+                    let bytecode =
+                        Bytecode::new_raw(revm::primitives::Bytes::copy_from_slice(&code));
+                    if let Some(c) = cache.as_ref() {
+                        if let Err(e) = c.put(addr, code_hash, &code) {
+                            warn!(%addr, error = %e, "pre-warm: bytecode cache persist failed");
+                        }
+                    }
                     Some((code_hash, bytecode))
                 }
                 Ok(_) => None, // empty bytecode (EOA)
@@ -87,20 +253,125 @@ pub async fn prewarm_state(
                 }
             }
         }
-    });
+    }))
+    .buffer_unordered(max_concurrent);
 
-    // Fetch slot 8 (packed reserves: reserve0 | reserve1 | blockTimestampLast)
-    // for UniswapV2 / SushiSwap pools in parallel.
+    // Slot 8 of every UniV2 pair packs `(blockTimestampLast << 224) |
+    // (reserve1 << 112) | reserve0`. Two paths feed it:
+    //
+    // 1. WS-fed `V2ReservesCache`: synthesise the slot locally for any pool
+    //    whose latest `Sync` event landed within `V2_RESERVES_MAX_LAG_BLOCKS`
+    //    of the target block. Stale or missing entries fall through.
+    // 2. Throttled RPC `eth_getStorageAt` for the remaining addresses,
+    //    sharing the in-flight semaphore with the code-fetch stream so the
+    //    combined RPC pressure is bounded by `max_concurrent`.
     const V2_RESERVES_SLOT: u64 = 8;
-    let storage_futs = v2_pool_addresses.iter().map(|&addr| {
-        let p = provider.clone();
+    let mut ws_storage: Vec<(Address, U256, U256)> = Vec::new();
+    let mut storage_to_fetch: Vec<Address> = Vec::with_capacity(v2_pool_addresses.len());
+    let mut v2_stale: usize = 0;
+    let mut v2_missing: usize = 0;
+    if let Some(rcache) = v2_reserves_cache {
+        for &addr in v2_pool_addresses {
+            match rcache.get_fresh_status(addr, block_number, V2_RESERVES_MAX_LAG_BLOCKS) {
+                V2CacheLookup::Fresh(snap) => {
+                    ws_storage.push((addr, U256::from(V2_RESERVES_SLOT), snap.pack_slot8()));
+                }
+                V2CacheLookup::Stale => {
+                    v2_stale += 1;
+                    storage_to_fetch.push(addr);
+                }
+                V2CacheLookup::Missing => {
+                    v2_missing += 1;
+                    storage_to_fetch.push(addr);
+                }
+            }
+        }
+    } else {
+        v2_missing += v2_pool_addresses.len();
+        storage_to_fetch.extend_from_slice(v2_pool_addresses);
+    }
+
+    // Multicall3 batch path: collapse N `eth_getStorageAt` round-trips
+    // into one `eth_call`. Saves ~(N-1) × 20 CU on Alchemy and drops the
+    // in-flight RPC count from N to 1 — the real win under burst load that
+    // drives free-tier 429 throttling. Falls back transparently to the
+    // per-pool stream on multicall failure (network, decode, or contract
+    // unreachable on this chain), so behaviour is strictly additive.
+    let mut multicall_v2_storage: Vec<(Address, U256, U256)> = Vec::new();
+    let mut multicall_batches = 0usize;
+    let mut multicall_fallbacks = 0usize;
+    if !storage_to_fetch.is_empty() {
+        multicall_batches = 1;
+        match batch_v2_reserves(provider, block_number, &storage_to_fetch).await {
+            Ok(results) => {
+                let mut served: std::collections::HashSet<Address> =
+                    std::collections::HashSet::with_capacity(results.len());
+                for V2ReservesResult {
+                    pool,
+                    reserve0,
+                    reserve1,
+                } in &results
+                {
+                    let snap = crate::v2_reserves_cache::ReserveSnapshot {
+                        reserve0: *reserve0,
+                        reserve1: *reserve1,
+                        block_number,
+                    };
+                    multicall_v2_storage.push((
+                        *pool,
+                        U256::from(V2_RESERVES_SLOT),
+                        snap.pack_slot8(),
+                    ));
+                    if let Some(c) = v2_reserves_cache {
+                        c.record(*pool, *reserve0, *reserve1, block_number);
+                    }
+                    served.insert(*pool);
+                }
+                // Per-pool fallback handles only pools whose individual
+                // sub-call reverted inside the batch (typically a stale
+                // address that no longer hosts a V2 pair).
+                storage_to_fetch.retain(|a| !served.contains(a));
+            }
+            Err(e) => {
+                multicall_fallbacks = 1;
+                warn!(
+                    error = %e,
+                    pools = storage_to_fetch.len(),
+                    "pre-warm: multicall3 batch failed; falling back to per-pool eth_getStorageAt",
+                );
+            }
+        }
+    }
+
+    let storage_gate = gate.clone();
+    let storage_provider = provider.clone();
+    // Clone the cache handle into the closure so the storage stream can
+    // write fresh fetch results back. Cheap — `V2ReservesCache` is
+    // `Arc<DashMap>` under the hood. `None` keeps the original
+    // RPC-every-time behaviour for callers that opt out.
+    let storage_cache_handle = v2_reserves_cache.cloned();
+    let storage_stream = futures::stream::iter(storage_to_fetch.into_iter().map(move |addr| {
+        let p = storage_provider.clone();
+        let g = storage_gate.clone();
+        let cache = storage_cache_handle.clone();
         async move {
+            let _permit = g.acquire().await.ok()?;
             match p
                 .get_storage_at(addr, U256::from(V2_RESERVES_SLOT))
                 .block_id(block_id)
                 .await
             {
                 Ok(value) if value != U256::ZERO => {
+                    // Write back into the WS-fed cache so the next
+                    // pre-warm cycle for this pool hits locally. The
+                    // recorded `block_number` is the target block of this
+                    // fetch — same value the freshness gate will compare
+                    // against on the next cycle, so a fetch at block N
+                    // makes the pool fresh for block N+1.
+                    if let Some(c) = cache.as_ref() {
+                        let (r0, r1) = crate::v2_reserves_cache::unpack_slot8(value);
+                        c.record(addr, r0, r1, block_number);
+                    }
                     Some((addr, U256::from(V2_RESERVES_SLOT), value))
                 }
                 Ok(_) => None,
@@ -110,20 +381,55 @@ pub async fn prewarm_state(
                 }
             }
         }
-    });
+    }))
+    .buffer_unordered(max_concurrent);
 
-    let (code_results, storage_results) =
-        tokio::join!(join_all(code_futs), join_all(storage_futs));
+    let (code_results, storage_results) = tokio::join!(
+        code_stream.collect::<Vec<_>>(),
+        storage_stream.collect::<Vec<_>>(),
+    );
 
+    let bytecode_cache_hits = cached.len();
+    let bytecode_rpc_fetches = code_results.iter().filter(|r| r.is_some()).count();
+    let v2_reserves_cache_hits = ws_storage.len();
+    let storage_warmed = storage_results.iter().filter(|r| r.is_some()).count();
+    let multicall_v2_slots = multicall_v2_storage.len();
     debug!(
-        code_warmed = code_results.iter().filter(|r| r.is_some()).count(),
-        storage_warmed = storage_results.iter().filter(|r| r.is_some()).count(),
+        bytecode_cache_hits,
+        bytecode_rpc_fetches,
+        v2_reserves_cache_hits,
+        v2_reserves_cache_stale = v2_stale,
+        v2_reserves_cache_missing = v2_missing,
+        storage_warmed,
+        multicall_batches,
+        multicall_v2_slots,
+        multicall_fallbacks,
+        max_concurrent,
         "Block pre-warm complete"
     );
 
+    // Merge cached + freshly fetched entries. Order doesn't matter because
+    // injection is keyed by code hash on the consumer side.
+    let mut code_cache = cached;
+    code_cache.extend(code_results.into_iter().flatten());
+
+    let mut storage = ws_storage;
+    storage.extend(multicall_v2_storage);
+    storage.extend(storage_results.into_iter().flatten());
+
     PrewarmedState {
-        code_cache: code_results.into_iter().flatten().collect(),
-        storage: storage_results.into_iter().flatten().collect(),
+        code_cache,
+        storage,
+        stats: PrewarmStats {
+            bytecode_cache_hits,
+            bytecode_rpc_fetches,
+            v2_reserves_cache_hits,
+            v2_reserves_cache_stale: v2_stale,
+            v2_reserves_cache_missing: v2_missing,
+            multicall_batches,
+            multicall_v2_slots,
+            multicall_fallbacks,
+        },
     }
 }
 
@@ -271,12 +577,7 @@ impl ForkedState {
     }
 
     /// Insert an account with balance and nonce
-    pub fn insert_account_with_nonce(
-        &mut self,
-        address: Address,
-        balance: U256,
-        nonce: u64,
-    ) {
+    pub fn insert_account_with_nonce(&mut self, address: Address, balance: U256, nonce: u64) {
         let info = AccountInfo {
             balance,
             nonce,
@@ -473,8 +774,298 @@ mod tests {
 
         let db_account = state.db.cache.accounts.get(&addr).unwrap();
         assert_eq!(db_account.storage.len(), 3);
-        assert_eq!(*db_account.storage.get(&U256::from(0)).unwrap(), U256::from(111));
-        assert_eq!(*db_account.storage.get(&U256::from(1)).unwrap(), U256::from(222));
-        assert_eq!(*db_account.storage.get(&U256::from(2)).unwrap(), U256::from(333));
+        assert_eq!(
+            *db_account.storage.get(&U256::from(0)).unwrap(),
+            U256::from(111)
+        );
+        assert_eq!(
+            *db_account.storage.get(&U256::from(1)).unwrap(),
+            U256::from(222)
+        );
+        assert_eq!(
+            *db_account.storage.get(&U256::from(2)).unwrap(),
+            U256::from(333)
+        );
+    }
+
+    // ── Pre-warm concurrency cap ───────────────────────────────────
+
+    /// Mutex serialises tests that mutate the shared `AETHER_PREWARM_MAX_CONCURRENT`
+    /// env var so they cannot race with each other.
+    fn prewarm_env_guard() -> std::sync::MutexGuard<'static, ()> {
+        use std::sync::{Mutex, OnceLock};
+        static M: OnceLock<Mutex<()>> = OnceLock::new();
+        M.get_or_init(|| Mutex::new(()))
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+    }
+
+    #[test]
+    fn prewarm_max_concurrent_defaults_when_env_absent() {
+        let _guard = prewarm_env_guard();
+        // SAFETY: tests in this module are serialised through `prewarm_env_guard`.
+        unsafe { std::env::remove_var("AETHER_PREWARM_MAX_CONCURRENT") };
+        assert_eq!(
+            resolve_prewarm_max_concurrent(),
+            DEFAULT_PREWARM_MAX_CONCURRENT
+        );
+    }
+
+    #[test]
+    fn prewarm_max_concurrent_reads_env_override() {
+        let _guard = prewarm_env_guard();
+        unsafe { std::env::set_var("AETHER_PREWARM_MAX_CONCURRENT", "3") };
+        assert_eq!(resolve_prewarm_max_concurrent(), 3);
+        unsafe { std::env::remove_var("AETHER_PREWARM_MAX_CONCURRENT") };
+    }
+
+    #[test]
+    fn prewarm_max_concurrent_rejects_zero_and_garbage() {
+        let _guard = prewarm_env_guard();
+        // Zero must fall back to the default — a 0-permit semaphore would
+        // deadlock the pre-warm path.
+        unsafe { std::env::set_var("AETHER_PREWARM_MAX_CONCURRENT", "0") };
+        assert_eq!(
+            resolve_prewarm_max_concurrent(),
+            DEFAULT_PREWARM_MAX_CONCURRENT
+        );
+        unsafe { std::env::set_var("AETHER_PREWARM_MAX_CONCURRENT", "not-a-number") };
+        assert_eq!(
+            resolve_prewarm_max_concurrent(),
+            DEFAULT_PREWARM_MAX_CONCURRENT
+        );
+        unsafe { std::env::remove_var("AETHER_PREWARM_MAX_CONCURRENT") };
+    }
+
+    /// Verifies the shared semaphore actually caps in-flight work. We dispatch
+    /// 50 futures against a 4-permit gate built the same way `prewarm_state`
+    /// builds its own, observe the peak concurrency reached, and confirm it
+    /// never exceeds the configured cap.
+    #[tokio::test]
+    async fn prewarm_semaphore_bounds_in_flight_concurrency() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        const TASKS: usize = 50;
+        const CAP: usize = 4;
+
+        let in_flight = Arc::new(AtomicUsize::new(0));
+        let peak = Arc::new(AtomicUsize::new(0));
+        let gate = Arc::new(tokio::sync::Semaphore::new(CAP));
+
+        let stream = futures::stream::iter((0..TASKS).map(|_| {
+            let g = gate.clone();
+            let inf = in_flight.clone();
+            let pk = peak.clone();
+            async move {
+                let _permit = g.acquire().await.unwrap();
+                let current = inf.fetch_add(1, Ordering::SeqCst) + 1;
+                pk.fetch_max(current, Ordering::SeqCst);
+                // Hold the permit long enough for concurrency to build up.
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+                inf.fetch_sub(1, Ordering::SeqCst);
+            }
+        }))
+        .buffer_unordered(CAP);
+
+        stream.collect::<Vec<_>>().await;
+
+        assert!(
+            peak.load(Ordering::SeqCst) <= CAP,
+            "peak in-flight {} exceeded cap {}",
+            peak.load(Ordering::SeqCst),
+            CAP
+        );
+        assert_eq!(in_flight.load(Ordering::SeqCst), 0);
+    }
+
+    // ── prewarm + bytecode cache wiring ────────────────────────────
+
+    /// When every requested address is already resident in the bytecode
+    /// cache, `prewarm_state` must surface those entries without issuing a
+    /// single RPC. We exercise this by handing the function a provider
+    /// pointed at an unreachable port: any cache miss would trip the
+    /// connection refusal and produce a `warn!` log, but with a fully warm
+    /// cache the RPC code path is never entered and the returned state
+    /// reflects exactly what was pre-populated.
+    #[tokio::test]
+    async fn prewarm_state_skips_rpc_on_full_cache_hit() {
+        use crate::bytecode_cache::BytecodeCache;
+        use alloy::providers::ProviderBuilder;
+
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let cache = BytecodeCache::open(tmp.path()).unwrap();
+
+        // Two addresses, each pre-populated with a distinct bytecode.
+        let addr_a = address!("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+        let code_a = vec![0x60u8, 0x80, 0x60, 0x40, 0x52];
+        let hash_a = alloy::primitives::keccak256(&code_a);
+        cache.put(addr_a, hash_a, &code_a).unwrap();
+
+        let addr_b = address!("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
+        let code_b = vec![0x60u8, 0x00, 0x60, 0x00, 0xf3];
+        let hash_b = alloy::primitives::keccak256(&code_b);
+        cache.put(addr_b, hash_b, &code_b).unwrap();
+
+        // Localhost on a port we'll never bind to — guarantees any RPC
+        // attempt fails fast (and surfaces a `warn!`) instead of hanging.
+        let provider = ProviderBuilder::new()
+            .connect_http("http://127.0.0.1:1/".parse().unwrap())
+            .erased();
+
+        let state = prewarm_state(&provider, 1, &[addr_a, addr_b], &[], Some(&cache), None).await;
+
+        assert_eq!(
+            state.code_cache.len(),
+            2,
+            "both addresses must come back via the cache, not RPC"
+        );
+        let returned_hashes: std::collections::HashSet<_> =
+            state.code_cache.iter().map(|(h, _)| *h).collect();
+        assert!(returned_hashes.contains(&hash_a));
+        assert!(returned_hashes.contains(&hash_b));
+    }
+
+    /// Without a cache, the function must behave exactly as before. Pointing
+    /// at an unreachable RPC and supplying no addresses gives us a stable
+    /// "all paths empty" baseline that verifies the new signature did not
+    /// break the historical `None`-cache code path.
+    #[tokio::test]
+    async fn prewarm_state_without_cache_returns_empty_for_empty_input() {
+        use alloy::providers::ProviderBuilder;
+        let provider = ProviderBuilder::new()
+            .connect_http("http://127.0.0.1:1/".parse().unwrap())
+            .erased();
+        let state = prewarm_state(&provider, 1, &[], &[], None, None).await;
+        assert!(state.code_cache.is_empty());
+        assert!(state.storage.is_empty());
+    }
+
+    /// Verifies the WS-fed V2 reserves cache short-circuits the storage
+    /// fetch path. A fully populated reserves cache must let `prewarm_state`
+    /// return slot-8 entries for every V2 pool address without ever
+    /// touching the RPC endpoint (which here is unreachable).
+    #[tokio::test]
+    async fn prewarm_state_skips_rpc_on_full_v2_reserves_hit() {
+        use crate::v2_reserves_cache::V2ReservesCache;
+        use alloy::providers::ProviderBuilder;
+
+        let rcache = V2ReservesCache::new();
+        let p1 = address!("1111111111111111111111111111111111111111");
+        let p2 = address!("2222222222222222222222222222222222222222");
+        let r0_p1 = U256::from(1_000u64);
+        let r1_p1 = U256::from(2_000u64);
+        let r0_p2 = U256::from(5_000u64);
+        let r1_p2 = U256::from(6_000u64);
+        rcache.record(p1, r0_p1, r1_p1, 100);
+        rcache.record(p2, r0_p2, r1_p2, 100);
+
+        let provider = ProviderBuilder::new()
+            .connect_http("http://127.0.0.1:1/".parse().unwrap())
+            .erased();
+
+        // Target the same block the cache recorded — well inside the lag
+        // window — so both pools must surface via the WS cache.
+        let state = prewarm_state(&provider, 100, &[], &[p1, p2], None, Some(&rcache)).await;
+
+        assert_eq!(
+            state.storage.len(),
+            2,
+            "both pools must surface slot-8 entries via the WS cache"
+        );
+        let by_addr: std::collections::HashMap<_, _> =
+            state.storage.iter().map(|(a, _, v)| (*a, *v)).collect();
+        // Decode the packed slot-8 layout to confirm reserve0 and reserve1
+        // round-trip intact for at least one pool.
+        let packed_p1 = by_addr.get(&p1).copied().expect("p1 entry");
+        let mask112 = (U256::from(1u64) << 112) - U256::from(1u64);
+        assert_eq!(packed_p1 & mask112, r0_p1);
+        assert_eq!((packed_p1 >> 112) & mask112, r1_p1);
+    }
+
+    /// Stale reserve snapshots (older than the lag window) must NOT short-
+    /// circuit the RPC call. The cache hit is rejected and the address
+    /// falls through to the normal RPC path; with an unreachable provider
+    /// that path errors and the address is simply absent from the result.
+    #[tokio::test]
+    async fn prewarm_state_falls_through_when_v2_cache_is_stale() {
+        use crate::v2_reserves_cache::V2ReservesCache;
+        use alloy::providers::ProviderBuilder;
+
+        let rcache = V2ReservesCache::new();
+        let p1 = address!("3333333333333333333333333333333333333333");
+        rcache.record(p1, U256::from(1u64), U256::from(2u64), 10);
+
+        let provider = ProviderBuilder::new()
+            .connect_http("http://127.0.0.1:1/".parse().unwrap())
+            .erased();
+
+        // Target block 100, cache entry at block 10 — well outside the
+        // 1-block lag window. RPC is unreachable so the result is empty.
+        let state = prewarm_state(&provider, 100, &[], &[p1], None, Some(&rcache)).await;
+        assert!(
+            state.storage.is_empty(),
+            "stale cache entries must not surface in pre-warm output"
+        );
+    }
+
+    /// The packed V2 reserve slot (slot 8) of a tracked pool.
+    const V2_RESERVES_SLOT: u64 = 8;
+
+    fn prewarm_fixture() -> (PrewarmedState, Address, Bytecode) {
+        let pool = address!("b4e16d0168e52d35cacd2c6185b44281ec28c9dc"); // UNIV2 WETH/USDC
+        // PUSH1 0x00 PUSH1 0x00 RETURN — any non-empty program; we only
+        // assert the bytecode lands in the contracts cache.
+        let code = Bytecode::new_raw(Bytes::from(vec![0x60, 0x00, 0x60, 0x00, 0xf3]));
+        let stale_reserves = U256::from(1_234_567u64);
+        let warm = PrewarmedState::from_parts(
+            vec![(code.hash_slow(), code.clone())],
+            vec![(pool, U256::from(V2_RESERVES_SLOT), stale_reserves)],
+        );
+        (warm, pool, code)
+    }
+
+    #[test]
+    fn inject_code_only_warms_bytecode_but_never_storage() {
+        // Regression guard for the mempool-backrun victim-revert fix: the
+        // validator forks at `latest` and must NOT have stale reserve slots
+        // shadow the fresh chain read, or the victim's `amountOutMin`
+        // slippage guard reverts a valid tx. `inject_code_only` warms the
+        // bytecode cache yet leaves slot 8 untouched (lazy fresh fetch).
+        let (warm, pool, code) = prewarm_fixture();
+        let mut db: CacheDB<EmptyDB> = CacheDB::new(EmptyDB::default());
+        warm.inject_code_into_db(&mut db);
+
+        assert!(
+            db.cache.contracts.contains_key(&code.hash_slow()),
+            "bytecode must be warmed by code hash"
+        );
+        assert!(
+            db.cache
+                .accounts
+                .get(&pool)
+                .is_none_or(|a| a.storage.is_empty()),
+            "inject_code_only must NOT pre-populate the stale V2 reserve slot"
+        );
+    }
+
+    #[test]
+    fn inject_into_warms_both_bytecode_and_storage() {
+        // The full inject is still available (tests / non-latest forks):
+        // it populates both the bytecode cache and the storage overlay.
+        let (warm, pool, code) = prewarm_fixture();
+        let mut db: CacheDB<EmptyDB> = CacheDB::new(EmptyDB::default());
+        warm.inject_into_db(&mut db);
+
+        assert!(db.cache.contracts.contains_key(&code.hash_slow()));
+        let slot = db
+            .cache
+            .accounts
+            .get(&pool)
+            .and_then(|a| a.storage.get(&U256::from(V2_RESERVES_SLOT)).copied());
+        assert_eq!(
+            slot,
+            Some(U256::from(1_234_567u64)),
+            "inject_into must write the prewarmed reserve slot"
+        );
     }
 }

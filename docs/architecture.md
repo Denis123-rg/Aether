@@ -38,7 +38,7 @@ Eth Nodes (WS/IPC)
 └───────┼────────────────────────────────────────────────────────────┘
         │ eth_sendBundle
         ▼
-   Block Builders (Flashbots, Titan, Beaver, rsync)
+   Block Builders (Flashbots, Titan, Eden, rsync)
         │
         ▼
 ┌──────────────────── ON-CHAIN (Solidity) ──────────────────────────┐
@@ -100,7 +100,7 @@ tonic gRPC server binary entry point.
 ### `cmd/executor/`
 Bundle construction and multi-builder submission.
 - EIP-1559 transaction construction (arb_tx + tip_tx)
-- Goroutine fan-out to Flashbots, Titan, Beaver, rsync builders
+- Goroutine fan-out to Flashbots, Titan, Eden, rsync builders
 - Atomic nonce management with periodic sync
 
 ### `cmd/risk/`

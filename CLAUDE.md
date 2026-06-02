@@ -60,7 +60,7 @@ Eth Nodes (WS/IPC)
 4. **Simulation** (<5ms) — Fork latest block state in `revm`, execute calldata, verify profit
 5. **gRPC Handoff** (<1ms) — `ValidatedArb` sent to Go executor over UDS
 6. **Bundle Build + Sign** (<2ms) — EIP-1559 tx + tip tx, sign with searcher key
-7. **Submission** — Fan-out `eth_sendBundle` to Flashbots, Titan, Beaver, rsync builders
+7. **Submission** — Fan-out `eth_sendBundle` to Flashbots, Titan, Eden, rsync builders
 
 ---
 
@@ -129,11 +129,13 @@ aether/
 │   │       ├── main.rs
 │   │       └── service.rs        # ArbService, HealthService, ControlService
 │   │
-│   └── common/                   # Shared types, utils, errors
-│       └── src/
-│           ├── lib.rs
-│           ├── types.rs
-│           └── error.rs
+│   ├── common/                   # Shared types, utils, errors
+│   │   └── src/
+│   │       ├── lib.rs
+│   │       ├── types.rs
+│   │       └── error.rs
+│   │
+│   └── integration-tests/        # Cross-crate integration test suite
 │
 ├── cmd/                          # ── Go Services ──
 │   ├── executor/
@@ -147,10 +149,22 @@ aether/
 │   │   ├── manager.go            # PreflightCheck, circuit breakers, limits
 │   │   └── state.go              # SystemState: Running/Degraded/Paused/Halted
 │   │
-│   └── monitor/
-│       ├── metrics.go            # Prometheus /metrics exposition
-│       ├── dashboard.go          # HTTP dashboard server
-│       └── alerter.go            # Alert dispatch (PagerDuty/Telegram/Discord)
+│   ├── monitor/
+│   │   ├── metrics.go            # Prometheus /metrics exposition
+│   │   ├── dashboard.go          # HTTP dashboard server
+│   │   └── alerter.go            # Alert dispatch (PagerDuty/Telegram/Discord)
+│   │
+│   ├── pooldiscovery/            # Factory-event pool discovery & qualification
+│   └── reconciler/               # Mempool prediction-vs-actual reconciliation
+│
+├── internal/                     # ── Go Shared Packages ──
+│   ├── config/                   # Config loading (YAML/TOML) & validation
+│   ├── db/                       # Postgres trade/mempool ledger
+│   ├── grpc/                     # gRPC client to the Rust core
+│   ├── pb/                       # Generated protobuf bindings
+│   ├── risk/                     # Risk state machine & circuit breakers
+│   ├── testutil/                 # Test fixtures & helpers
+│   └── tracing/                  # OpenTelemetry / structured logging setup
 │
 ├── contracts/                    # ── Solidity ──
 │   ├── src/
@@ -161,24 +175,33 @@ aether/
 │
 ├── config/
 │   ├── pools.toml                # Pool registry (hot-reloadable)
+│   ├── pools_staging.toml        # Pool registry — staging environment
+│   ├── pools_historical_replay.toml # Pool registry — historical replay/backtest
 │   ├── risk.yaml                 # Risk parameters & circuit breaker thresholds
 │   ├── nodes.yaml                # Ethereum node provider endpoints
+│   ├── executor.yaml             # Go executor tuning (timeouts, fan-out, retries)
 │   └── builders.yaml             # Block builder API endpoints
+│
+├── migrations/                   # Postgres schema migrations (ledger + mempool)
 │
 ├── deploy/
 │   ├── systemd/                  # aether-rust.service, aether-go.service
 │   ├── ansible/                  # Server provisioning playbooks
 │   └── docker/                   # Dev/test containers
 │
-├── scripts/
-│   ├── backtest.py               # Historical opportunity analysis
-│   ├── gas_profiler.py           # Gas usage profiling
-│   └── deploy.sh                 # Deployment automation
+├── scripts/                      # backtest, gas profiling, deploy, db_migrate,
+│                                 # mempool capture/smoke/backrun-shadow, canary,
+│                                 # historical replay, staging test, watchdog
+│
+├── demo.sh                       # End-to-end shadow-mode demo runner
+├── start.sh                      # Local service startup helper
 │
 └── docs/
     ├── architecture.md
     ├── runbook.md
-    └── incident-response.md
+    ├── incident-response.md
+    ├── runbook/                  # Mempool backrun rollout & observability
+    └── research/                 # Strategy, builder, tx-ordering research
 ```
 
 ---
@@ -216,11 +239,21 @@ aether/
 - **Flow**: Build exact `AetherExecutor.executeArb()` calldata → execute in forked EVM → check `Success`/`Revert`/`Halt` → extract profit, gas used → emit `SimulationResult`.
 - **Critical rule**: Simulation MUST use same block state as execution target. Stale simulations → reverted bundles.
 
+### 5a. Mempool Backrun (`crates/simulator/src/mempool_backrun.rs`, `crates/grpc-server/src/mempool_pipeline.rs`)
+
+A second arb source alongside block-driven cyclic detection. `ArbSource` (proto) distinguishes `BLOCK_DRIVEN` from `MEMPOOL_BACKRUN`.
+
+- **Decode**: Alchemy `pendingTransactions` subscription → calldata decoder (`crates/pools/src/router_decoder.rs`, `crates/ingestion/src/mempool.rs`) for UniswapV2/V3 routers, SushiSwap, the Uniswap **Universal Router**, **1inch v6** AggregationRouter, Balancer V2 Vault, Bancor V3, and pool-direct Curve.
+- **Predict victim post-state**: analytical predictors for Curve and Bancor (multi-hop), `revm` post-state replay for Balancer and UniV3 — yields the reserves the victim swap will leave behind.
+- **Validate**: detector/simulator search for a profitable backrun against the predicted state, with the `AetherExecutor` deployed bytecode spliced into the `revm` `CacheDB` (env-pointed artifact) so the Aave flash-loan path is exercised.
+- **Bundle**: envelope is `[victim_raw_tx, arb_tx]` — the victim's **raw signed transaction** captured from the mempool (builders reject bare hashes), so the backrun lands only if the victim lands.
+- **Shadow-gated**: `AETHER_SHADOW` blocks submission and dumps forensics JSON until promoted. See `docs/runbook/mempool-backrun-rollout.md` and `docs/runbook/mempool-observability.md`.
+
 ### 6. Transaction Execution (`cmd/executor/`)
 
 - **Bundle**: `[arb_tx, tip_tx]` — arb tx calls `AetherExecutor.executeArb()`, tip tx sends 90% of profit to builder coinbase.
 - **Tx Type**: EIP-1559 `DynamicFeeTx` with current base fee + suggested priority fee.
-- **Submission**: Goroutine fan-out to all configured builders (Flashbots, Titan, Beaver, rsync) simultaneously.
+- **Submission**: Goroutine fan-out to all configured builders (Flashbots, Titan, Eden, rsync) simultaneously.
 - **Nonce Manager**: Atomic local counter + periodic `eth_getTransactionCount` sync + pending tx tracker.
 
 ### 7. Smart Contract (`contracts/src/AetherExecutor.sol`)
@@ -235,7 +268,7 @@ aether/
 ### 8. Risk Management (`cmd/risk/`)
 
 - **System States**: `Running → Degraded → Paused → Halted` (manual reset to resume from Halted).
-- **Circuit Breakers**: Gas >300 gwei → HALT, 3 consecutive reverts in 10m → PAUSE, daily loss >0.5 ETH → HALT, ETH balance <0.1 ETH → HALT, node latency >500ms → DEGRADE, bundle miss rate >80%/1h → ALERT.
+- **Circuit Breakers**: Gas >300 gwei → HALT, 10 consecutive reverts in 10m → PAUSE, daily loss >0.5 ETH → HALT, ETH balance <0.1 ETH → HALT, node latency >500ms → DEGRADE, bundle miss rate >80%/1h → ALERT.
 - **Position Limits**: Max single trade 50 ETH, max daily volume 500 ETH, min profit 0.001 ETH, max tip share 95%.
 
 ---

@@ -200,6 +200,16 @@ grpcurl -plaintext localhost:50051 aether.ControlService/ReloadConfig \
 | `BALANCER_V2` | 5 | Balancer V2 (weighted pools) |
 | `BANCOR_V3` | 6 | Bancor V3 (bonding curve) |
 
+### ArbSource
+
+Identifies how an arbitrage opportunity was found. Mempool-backrun publishers set `MEMPOOL_BACKRUN` and additionally populate `victim_tx_hash`, `target_block`, and `victim_raw_tx` on `ValidatedArb`.
+
+| Value | Number | Description |
+|---|---|---|
+| `SOURCE_UNKNOWN` | 0 | Unset — treated as block-driven for backward compatibility |
+| `BLOCK_DRIVEN` | 1 | Cyclic arbitrage found from confirmed block/log state |
+| `MEMPOOL_BACKRUN` | 2 | Backrun of a pending mempool transaction |
+
 ### SystemState
 
 | Value | Number | Description |
@@ -230,6 +240,10 @@ A simulation-verified arbitrage opportunity ready for execution.
 | `flashloan_amount` | 10 | bytes | Amount to borrow (big-endian U256) |
 | `steps` | 11 | repeated SwapStep | Execution steps with calldata |
 | `calldata` | 12 | bytes | Pre-built AetherExecutor calldata |
+| `source` | 13 | ArbSource | Origin of the arb — block-driven or mempool backrun |
+| `victim_tx_hash` | 14 | bytes | Backrun target tx hash (set for `MEMPOOL_BACKRUN`) |
+| `target_block` | 15 | uint64 | Slot the bundle targets (block the victim is expected to land in) |
+| `victim_raw_tx` | 16 | bytes | Victim's raw signed tx; the Go executor places it as `txs[0]` in the backrun bundle |
 
 ### ArbHop
 

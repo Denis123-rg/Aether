@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -23,6 +24,7 @@ import (
 	"go.opentelemetry.io/otel/trace"
 
 	"github.com/aether-arb/aether/internal/config"
+	"github.com/aether-arb/aether/internal/db"
 	aethergrpc "github.com/aether-arb/aether/internal/grpc"
 	pb "github.com/aether-arb/aether/internal/pb"
 	"github.com/aether-arb/aether/internal/risk"
@@ -30,6 +32,16 @@ import (
 )
 
 var tracer trace.Tracer = otel.Tracer("aether-executor")
+
+// Package-level mempool risk state — populated by main() at startup
+// from env vars. Read by processArb on the mempool-backrun path; the
+// block-driven path ignores them. Globals (vs threading through every
+// call) keep the existing processArb signature stable for the existing
+// test suite.
+var (
+	mempoolRiskCfg  MempoolRiskConfig
+	mempoolInflight *MempoolInflightTracker
+)
 
 // Config holds executor service configuration.
 // ChainID, ExecutorAddr, and the live ETH balance are no longer carried here —
@@ -212,6 +224,18 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
+	// Trade ledger: graceful no-op when DATABASE_URL is unset, so dev /
+	// shadow runs against a fork keep working without Postgres. Connect
+	// failure also degrades to NoopLedger so a misconfigured URL does not
+	// stall executor boot.
+	ledgerMetrics := db.NewLedgerMetrics()
+	ledger := db.LedgerFromEnv(ctx, os.Getenv("DATABASE_URL"), ledgerMetrics)
+	defer func() {
+		if pg, ok := ledger.(*db.PgLedger); ok {
+			pg.Close()
+		}
+	}()
+
 	// Initialize components
 	nonceManager := NewNonceManager(0)
 	if txSigner != nil {
@@ -232,6 +256,22 @@ func main() {
 	bundler := NewBundleConstructor(nonceManager, gasOracle, txSigner, chainID.Int64())
 	riskMgr := risk.NewRiskManager(loadRiskConfig())
 	riskMgr.SetMetricsObserver(executorMetricsObserver{})
+
+	// Mempool-backrun gate state. The risk config snapshots env at boot;
+	// the inflight tracker spans the executor process lifetime so per-
+	// target-block dedup survives across the candidate burst from a hot
+	// block.
+	mempoolRiskCfg = LoadMempoolRiskConfig()
+	mempoolInflight = NewMempoolInflightTracker()
+	slog.Info("mempool-backrun risk gates configured",
+		"min_profit_wei", mempoolRiskCfg.MinProfitWei.String(),
+		"max_tip_bps", mempoolRiskCfg.MaxTipShareBps,
+		"victim_freshness_ms", mempoolRiskCfg.MaxVictimFreshnessMs,
+		"max_inflight_per_block", mempoolRiskCfg.MaxInflightPerTargetBlock,
+	)
+	if isShadowMode() {
+		slog.Warn("SHADOW MODE ENABLED — eth_sendBundle calls will be blocked for both block-driven and mempool-backrun bundles")
+	}
 
 	// Live searcher ETH balance, written by balanceWatchLoop and read by
 	// consumeArbStream → processArb → risk.PreflightCheck. When no searcher
@@ -299,7 +339,7 @@ func main() {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			consumeArbStream(ctx, grpcClient, bundler, submitter, riskMgr, execCfg.ExecutorAddress, liveBalance)
+			consumeArbStream(ctx, grpcClient, bundler, submitter, riskMgr, ledger, execCfg.ExecutorAddress, liveBalance)
 		}()
 	}
 
@@ -316,6 +356,29 @@ func main() {
 	slog.Info("executor service stopped")
 }
 
+// arbSourceLabel maps the proto enum onto the canonical metric label.
+// Treats unset / unknown source as block-driven so pre-#138 publishers
+// (no `source` field on the wire) land in the historical row.
+func arbSourceLabel(arb *pb.ValidatedArb) string {
+	if arb.GetSource() == pb.ArbSource_MEMPOOL_BACKRUN {
+		return SourceMempoolBackrun
+	}
+	return SourceBlockDriven
+}
+
+// targetBlockForArb picks the right target block per arb source.
+// Mempool publishers stamp `target_block` directly; block-driven
+// publishers leave it at zero (defaulted by the proto) so we fall back
+// to `block_number + 1`. Treating `target_block == 0` as the fallback
+// signal keeps the executor backward-compatible with publishers that
+// pre-date the proto field.
+func targetBlockForArb(arb *pb.ValidatedArb) uint64 {
+	if arb.GetTargetBlock() != 0 {
+		return arb.GetTargetBlock()
+	}
+	return arb.BlockNumber + 1
+}
+
 // processArb handles a single validated arb through the full pipeline:
 // parse -> preflight -> bundle -> submit -> record result.
 // receivedAt is the Go-side wall clock when the arb arrived from the gRPC
@@ -327,14 +390,17 @@ func processArb(
 	rm *risk.RiskManager,
 	bundler *BundleConstructor,
 	submitter *Submitter,
+	ledger db.Ledger,
 	executorAddr string,
 	ethBalance float64,
 ) (submitted bool, err error) {
+	sourceLbl := arbSourceLabel(arb)
 	ctx, span := tracer.Start(ctx, "processArb",
 		trace.WithAttributes(
 			attribute.String("arb_id", arb.Id),
 			attribute.Int("hops", len(arb.Hops)),
-			attribute.Int64("target_block", int64(arb.BlockNumber+1)),
+			attribute.Int64("target_block", int64(targetBlockForArb(arb))),
+			attribute.String("source", sourceLbl),
 		),
 	)
 	defer span.End()
@@ -360,8 +426,73 @@ func processArb(
 		return false, nil
 	}
 
+	targetBlock := targetBlockForArb(arb)
+
+	// Mempool-specific risk gates run AFTER the shared preflight so the
+	// existing system-state / gas / balance / position-limit checks
+	// always fire first. Reject decisions are stamped onto a trace
+	// passed forward to the shadow JSON dump for forensics.
+	var mempoolDecision MempoolPreflightResult
+	if sourceLbl == SourceMempoolBackrun {
+		victimHex := "0x" + hex.EncodeToString(arb.VictimTxHash)
+		victimSeenAt := time.Unix(0, arb.TimestampNs)
+		mempoolDecision = MempoolRiskGate(
+			mempoolRiskCfg,
+			MempoolPreflightArgs{
+				GrossProfitWei:  profitWei,
+				TipShareBps:     uint16(tipSharePct * 100), // pct → bps
+				VictimSeenAt:    victimSeenAt,
+				TargetBlock:     targetBlock,
+				VictimTxHashHex: victimHex,
+			},
+			mempoolInflight,
+			time.Now(),
+		)
+		if !mempoolDecision.Approved {
+			recordRiskRejection()
+			slog.InfoContext(ctx, "mempool arb rejected by mempool gate",
+				"arb_id", arb.Id,
+				"reason", mempoolDecision.Reason,
+				"victim_tx_hash", victimHex,
+				"target_block", targetBlock,
+			)
+			span.SetAttributes(attribute.String("outcome", "mempool_rejected"))
+			return false, nil
+		}
+	}
+
 	_, buildSpan := tracer.Start(ctx, "bundle.build")
-	bundle, err := bundler.BuildBundle(arb.Calldata, executorAddr, arb.TotalGas, arb.BlockNumber+1)
+	var bundle *Bundle
+	if sourceLbl == SourceMempoolBackrun {
+		buildStart := time.Now()
+		victimHex := "0x" + hex.EncodeToString(arb.VictimTxHash)
+		victimRawTx := arb.GetVictimRawTx()
+		// A mempool-backrun bundle MUST carry the victim's raw signed tx as
+		// txs[0]; without it the bundle would land our arb unconditionally
+		// (no victim coupling), which is the exact bug this path fixes.
+		if len(victimRawTx) == 0 {
+			recordMempoolMissingVictimRawTx()
+			buildSpan.SetStatus(codes.Error, "missing victim_raw_tx")
+			buildSpan.End()
+			slog.ErrorContext(ctx, "mempool arb missing victim_raw_tx, skipping",
+				"arb_id", arb.Id,
+				"victim_tx_hash", victimHex,
+				"target_block", targetBlock,
+			)
+			span.SetAttributes(attribute.String("outcome", "missing_victim_raw_tx"))
+			return false, nil
+		}
+		bundle, err = bundler.BuildMempoolBackrunBundle(arb.Calldata, executorAddr, arb.TotalGas, targetBlock, victimHex, victimRawTx)
+		recordMempoolBundleBuildLatency(time.Since(buildStart))
+		slog.InfoContext(ctx, "mempool_arb_received",
+			"arb_id", arb.Id,
+			"victim_tx_hash", victimHex,
+			"target_block", targetBlock,
+			"expected_profit_wei", new(big.Int).SetBytes(arb.NetProfitWei).String(),
+		)
+	} else {
+		bundle, err = bundler.BuildBundle(arb.Calldata, executorAddr, arb.TotalGas, targetBlock)
+	}
 	if err != nil {
 		buildSpan.RecordError(err)
 		buildSpan.SetStatus(codes.Error, "build bundle failed")
@@ -370,7 +501,20 @@ func processArb(
 		span.SetStatus(codes.Error, "build bundle failed")
 		return false, fmt.Errorf("build bundle: %w", err)
 	}
+	if bundle.Source == "" {
+		bundle.Source = sourceLbl
+	}
+	recordBundleBuilt(sourceLbl)
 	buildSpan.End()
+
+	// Derive deterministic ledger ids before either branch so the same
+	// (arb, target_block) pair always maps to the same row, regardless of
+	// shadow vs live submission. Mirrors the Rust engine's
+	// `arb_id_for_opp` so log↔DB joins work end-to-end across the gRPC
+	// boundary.
+	arbDBID := db.ArbIDFromOppID(arb.Id)
+	bundleID := db.BundleIDFor(arbDBID, targetBlock)
+	signedTxHex := signedTxsHex(bundle)
 
 	// Shadow mode: the bundle is fully built and signed, but we skip the
 	// network submission. Used by historical replay + pre-prod measurement
@@ -378,37 +522,118 @@ func processArb(
 	if isShadowMode() {
 		recordEndToEndLatency(receivedAt)
 		recordShadowBundle()
+		recordShadowBlocked(sourceLbl)
 		profitEth := weiToEth(profitWei)
 		slog.InfoContext(ctx, "shadow bundle built, skipping submission",
 			"arb_id", arb.Id,
-			"target_block", arb.BlockNumber+1,
+			"arb_db_id", arbDBID,
+			"bundle_id", bundleID,
+			"source", sourceLbl,
+			"target_block", targetBlock,
 			"tip_tx_count", len(bundle.RawTxs),
 			"profit_eth", profitEth,
 			"gas", arb.TotalGas,
 			"tip_share_pct", tipSharePct,
 		)
-		if err := dumpShadowBundle(arb, bundle, profitEth, gasGwei, tipSharePct); err != nil {
+		if sourceLbl == SourceMempoolBackrun {
+			if err := dumpMempoolShadowBundle(arb, bundle, gasFees, tipSharePct, mempoolDecision); err != nil {
+				slog.WarnContext(ctx, "mempool shadow bundle json dump failed", "arb_id", arb.Id, "err", err)
+			}
+		} else if err := dumpShadowBundle(arb, bundle, profitEth, gasGwei, tipSharePct); err != nil {
 			slog.WarnContext(ctx, "shadow bundle json dump failed", "arb_id", arb.Id, "err", err)
 		}
+		// Persist a `bundles` row for the shadow build so query traffic
+		// can answer "what would we have submitted today" off SQL.
+		ledger.InsertBundle(db.NewBundle{
+			BundleID:    bundleID,
+			ArbID:       arbDBID,
+			SubmittedAt: time.Now().UTC(),
+			TargetBlock: targetBlock,
+			SignedTxHex: signedTxHex,
+			IsShadow:    true,
+			Builders:    nil,
+		})
 		span.SetAttributes(attribute.String("outcome", "shadow"))
 		return true, nil
 	}
 
 	// Submit to all builders
 	recordEndToEndLatency(receivedAt)
-	recordBundleSubmitted()
+	recordBundleSubmitted(sourceLbl)
 	results := submitter.SubmitToAll(ctx, bundle)
 	recordSubmissionReverts(rm, results)
 	successes := SuccessCount(results)
 
-	slog.InfoContext(ctx, "arb submitted", "arb_id", arb.Id, "builders", len(results), "accepted", successes)
+	slog.InfoContext(ctx, "arb submitted",
+		"arb_id", arb.Id,
+		"arb_db_id", arbDBID,
+		"bundle_id", bundleID,
+		"builders", len(results),
+		"accepted", successes,
+	)
+
+	// Persist the live bundle and the per-builder submission outcome.
+	// IMPORTANT: `Included` here reflects builder *acceptance* of the
+	// bundle for inclusion in the next block, not on-chain inclusion.
+	// True inclusion is resolved later by a `GetBundleStats` poll loop
+	// (separate followup), which UPSERTs the same (bundle_id, builder)
+	// row with `included_block` and `landed_tx_hash` populated.
+	builderNames := make([]string, 0, len(results))
+	for _, r := range results {
+		builderNames = append(builderNames, r.Builder)
+	}
+	now := time.Now().UTC()
+	ledger.InsertBundle(db.NewBundle{
+		BundleID:    bundleID,
+		ArbID:       arbDBID,
+		SubmittedAt: now,
+		TargetBlock: targetBlock,
+		SignedTxHex: signedTxHex,
+		IsShadow:    false,
+		Builders:    builderNames,
+	})
+	// Per-builder submission row. `included` stays false here even when the
+	// builder ACKs the bundle — `inclusion_results.included` is the on-chain
+	// outcome the schema's `WHERE included` partial index expects, not the
+	// JSON-RPC ACK. The future GetBundleStats poll loop UPSERTs the same
+	// (bundle_id, builder) row with the on-chain truth (included = true,
+	// included_block, landed_tx_hash). Submit-time Error is preserved on
+	// failure so dashboards can distinguish 'builder rejected' from 'never
+	// landed'.
+	for _, r := range results {
+		var errStr *string
+		if !r.Success && r.Error != nil {
+			s := r.Error.Error()
+			errStr = &s
+		}
+		ledger.InsertInclusion(db.NewInclusion{
+			BundleID:   bundleID,
+			Builder:    r.Builder,
+			Included:   false,
+			Error:      errStr,
+			ResolvedAt: now,
+		})
+	}
 
 	// Record result for miss rate tracking
 	included := successes > 0
 	if included {
-		recordBundleIncluded(profitWei, gasGwei, arb.TotalGas)
+		recordBundleIncluded(sourceLbl, profitWei, gasGwei, arb.TotalGas)
 	}
 	rm.RecordBundleResult(included)
+
+	// Inline daily roll-up so `pnl_daily` accumulates during fork / live
+	// runs without a separate cron. bundle_count bumps every submit. The
+	// inclusion_count + realized_profit_wei increments are deferred to the
+	// future GetBundleStats poll loop so they reflect on-chain inclusion,
+	// not builder ACK. gas_spent_wei approximates with total_gas *
+	// gas_price for now; the poll loop replaces this with actual gas_used.
+	ledger.UpsertPnLDaily(db.PnLDailyDelta{
+		Day:               now,
+		RealizedProfitWei: new(big.Int),
+		GasSpentWei:       gasSpentApprox(arb.TotalGas, gasFees),
+		BundleCount:       1,
+	})
 
 	span.SetAttributes(
 		attribute.Int("builders", len(results)),
@@ -416,6 +641,51 @@ func processArb(
 		attribute.Bool("included", included),
 	)
 	return included, nil
+}
+
+// signedTxsHex concatenates every raw tx in the bundle as a single hex
+// string for the `bundles.signed_tx_hex` TEXT column. Multi-tx bundles are
+// joined with newlines so a future split-and-decode is trivial.
+func signedTxsHex(bundle *Bundle) string {
+	if bundle == nil {
+		return ""
+	}
+	var b strings.Builder
+	for i, raw := range bundle.RawTxs {
+		if i > 0 {
+			b.WriteByte('\n')
+		}
+		b.WriteString("0x")
+		b.WriteString(hexEncode(raw))
+	}
+	return b.String()
+}
+
+// gasSpentApprox estimates wei spent on gas as `gas * gas_price`. Computed
+// in *big.Int (not float64) so the wei value round-trips into the schema's
+// NUMERIC(78,0) column without losing precision in the cumulative pnl_daily
+// total. Gwei float is converted to integer wei via *1e9 + truncation; sub-
+// gwei drift is acceptable for this approximation since the GetBundleStats
+// poll loop replaces the row with the on-chain `gas_used` later anyway.
+func gasSpentApprox(gasUnits uint64, fees GasFees) *big.Int {
+	if gasUnits == 0 || fees.GasPriceGwei <= 0 {
+		return new(big.Int)
+	}
+	gasPriceWei := new(big.Int).SetUint64(uint64(fees.GasPriceGwei * 1e9))
+	gas := new(big.Int).SetUint64(gasUnits)
+	return new(big.Int).Mul(gasPriceWei, gas)
+}
+
+// hexEncode is a thin wrapper around encoding/hex.EncodeToString reused by
+// signedTxsHex so the import surface in this file stays minimal.
+func hexEncode(b []byte) string {
+	const hexdigits = "0123456789abcdef"
+	out := make([]byte, len(b)*2)
+	for i, v := range b {
+		out[i*2] = hexdigits[v>>4]
+		out[i*2+1] = hexdigits[v&0x0f]
+	}
+	return string(out)
 }
 
 // recordSubmissionReverts classifies and records a single revert per arb
@@ -466,7 +736,7 @@ func looksLikeRevert(errMsg string) bool {
 // processes validated arbitrage opportunities as they arrive. On stream
 // errors it reconnects with a backoff delay. The function exits when ctx
 // is cancelled.
-func consumeArbStream(ctx context.Context, client *aethergrpc.Client, bundler *BundleConstructor, submitter *Submitter, rm *risk.RiskManager, executorAddr string, liveBalance *LiveBalance) {
+func consumeArbStream(ctx context.Context, client *aethergrpc.Client, bundler *BundleConstructor, submitter *Submitter, rm *risk.RiskManager, ledger db.Ledger, executorAddr string, liveBalance *LiveBalance) {
 	const (
 		minProfitETH   = 0.001 // Minimum profit threshold in ETH
 		reconnectDelay = 5 * time.Second
@@ -502,7 +772,7 @@ func consumeArbStream(ctx context.Context, client *aethergrpc.Client, bundler *B
 
 			slog.InfoContext(ctx, "arb received", "arb_id", arb.Id, "hops", len(arb.Hops), "gas", arb.TotalGas, "block", arb.BlockNumber)
 
-			submitted, err := processArb(ctx, arb, receivedAt, rm, bundler, submitter, executorAddr, liveBalance.Get())
+			submitted, err := processArb(ctx, arb, receivedAt, rm, bundler, submitter, ledger, executorAddr, liveBalance.Get())
 			switch {
 			case err != nil:
 				slog.ErrorContext(ctx, "error processing arb", "arb_id", arb.Id, "err", err)
@@ -683,6 +953,116 @@ func dumpShadowBundle(
 	}
 	filename := filepath.Join(dir, safeID+".json")
 	return os.WriteFile(filename, out, 0o644)
+}
+
+// mempoolShadowSessionDir is resolved once per process and reused for every
+// mempool-shadow bundle dump. One `shadow_mempool_<ts>` per run keeps
+// stage-rollout reports self-contained instead of interleaving bundles from
+// multiple deploys.
+//
+// Resolved via a function pointer so tests can inject a deterministic dir
+// via resetMempoolShadowSessionForTest without dancing around sync.Once.
+var mempoolShadowSessionDir = newMempoolShadowSessionDirOnce()
+
+func newMempoolShadowSessionDirOnce() func() string {
+	var (
+		once sync.Once
+		path string
+	)
+	return func() string {
+		once.Do(func() {
+			base := strings.TrimSpace(os.Getenv("AETHER_REPORTS_DIR"))
+			if base == "" {
+				base = "reports"
+			}
+			ts := time.Now().UTC().Format("20060102T150405Z")
+			path = filepath.Join(base, "shadow_mempool_"+ts, "bundles")
+		})
+		return path
+	}
+}
+
+// dumpMempoolShadowBundle writes the mempool-backrun bundle to a forensics
+// JSON per the #140 schema. Layout:
+//   ${AETHER_REPORTS_DIR:-reports}/shadow_mempool_<ts>/bundles/<arb_id>.json
+// One file per arb so the orchestrator can `ls | wc -l` straight into stage
+// gates. Gross profit is reconstructed as net + (gas × max_fee) since the
+// proto carries only net.
+func dumpMempoolShadowBundle(
+	arb *pb.ValidatedArb,
+	bundle *Bundle,
+	gasFees GasFees,
+	tipSharePct float64,
+	decision MempoolPreflightResult,
+) error {
+	dir := mempoolShadowSessionDir()
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return fmt.Errorf("mkdir %s: %w", dir, err)
+	}
+
+	netProfitWei := new(big.Int).SetBytes(arb.NetProfitWei)
+	gasCostWei := new(big.Int).Mul(new(big.Int).SetUint64(arb.TotalGas), gasFees.MaxFeePerGas)
+	grossProfitWei := new(big.Int).Add(netProfitWei, gasCostWei)
+
+	// RawTxs[0] is already the victim's raw signed tx for mempool bundles,
+	// so the envelope is simply the hex of every RawTxs entry — no separate
+	// victim-hash prepend.
+	envelopeTxs := make([]string, 0, len(bundle.RawTxs))
+	for _, raw := range bundle.RawTxs {
+		envelopeTxs = append(envelopeTxs, fmt.Sprintf("0x%x", raw))
+	}
+	envelope := map[string]interface{}{
+		"txs":               envelopeTxs,
+		"block_number":      bundle.BlockNumber,
+		"revertingTxHashes": bundle.RevertingTxHashes,
+	}
+
+	gates := make([]map[string]interface{}, 0, len(decision.Gates))
+	for _, g := range decision.Gates {
+		gates = append(gates, map[string]interface{}{
+			"gate":   g.Gate,
+			"passed": g.Passed,
+			"value":  g.Value,
+		})
+	}
+
+	payload := map[string]interface{}{
+		"arb_id":                    arb.Id,
+		"source":                    SourceMempoolBackrun,
+		"victim_tx_hash":            bundle.VictimTxHashHex,
+		"target_block":              bundle.BlockNumber,
+		"built_at":                  time.Now().UTC().Format(time.RFC3339Nano),
+		"envelope":                  envelope,
+		"expected_gross_profit_wei": grossProfitWei.String(),
+		"expected_net_profit_wei":   netProfitWei.String(),
+		"tip_share_bps":             uint64(tipSharePct * 100),
+		"gas_used":                  arb.TotalGas,
+		"base_fee_wei":              gasFees.BaseFee.String(),
+		"priority_fee_wei":          gasFees.MaxPriorityFee.String(),
+		"max_fee_per_gas_wei":       gasFees.MaxFeePerGas.String(),
+		"flashloan_provider":        "aave_v3",
+		"flashloan_token":           fmt.Sprintf("0x%x", arb.FlashloanToken),
+		"flashloan_amount":          new(big.Int).SetBytes(arb.FlashloanAmount).String(),
+		"risk_decisions":            gates,
+	}
+
+	out, err := json.MarshalIndent(payload, "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshal: %w", err)
+	}
+
+	safeID := strings.Map(func(r rune) rune {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '-', r == '_':
+			return r
+		default:
+			return '_'
+		}
+	}, arb.Id)
+	if safeID == "" {
+		safeID = "anon"
+	}
+	return os.WriteFile(filepath.Join(dir, safeID+".json"), out, 0o644)
 }
 
 func weiToEth(wei *big.Int) float64 {

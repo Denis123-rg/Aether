@@ -24,11 +24,19 @@ use anyhow::{Context, Result};
 use clap::Parser;
 use tracing_subscriber::EnvFilter;
 
-use aether_common::types::{PoolId, ProtocolType, SwapStep};
+use aether_common::types::{known_token_decimals, PoolId, ProtocolType, SwapStep};
 use aether_detector::bellman_ford::BellmanFord;
 use aether_detector::gas as gas_model;
 use aether_detector::opportunity::DetectedCycle;
+use aether_grpc_server::cycle_gating::{
+    build_fingerprint_index, gate_pre_sim, GatingConfig, PreSimGateVerdict,
+};
+use aether_grpc_server::EngineMetrics;
 use aether_detector::optimizer::ternary_search_optimal_input;
+use aether_grpc_server::historical::{
+    fetch_pool_state_at, getReservesCall, liquidityCall, load_executor_init_bytecode, load_pools, slot0Call,
+    u256_to_f64, uniswap_v2_get_amount_out, LoadedPool, PoolState,
+};
 use aether_simulator::calldata::{
     build_execute_arb_calldata, build_univ2_swap_calldata, build_univ3_swap_calldata,
 };
@@ -36,22 +44,6 @@ use aether_simulator::fork::{RpcForkedState, SimConfig};
 use aether_simulator::EvmSimulator;
 use aether_state::price_graph::PriceGraph;
 use aether_state::token_index::TokenIndex;
-
-sol! {
-    function getReserves() external view returns (uint112 reserve0, uint112 reserve1, uint32 blockTimestampLast);
-    function slot0() external view returns (uint160 sqrtPriceX96, int24 tick, uint16 observationIndex, uint16 observationCardinality, uint16 observationCardinalityNext, uint8 feeProtocol, bool unlocked);
-}
-
-/// 2^96 as f64, used to convert UniswapV3 `sqrtPriceX96` into a floating-point price.
-const Q96: f64 = 79_228_162_514_264_337_593_543_950_336.0;
-
-/// Per-pool state fetched from the chain. V3 carries `sqrtPriceX96`; V2/Sushi
-/// carry `(reserve0, reserve1)`.
-#[derive(Clone, Copy)]
-enum PoolState {
-    V2 { r0: U256, r1: U256 },
-    V3 { sqrt_price_x96: U256 },
-}
 
 /// Well-known mainnet token labels for readable output.
 fn token_label(addr: &Address) -> String {
@@ -183,41 +175,6 @@ struct Args {
     no_optimizer: bool,
 }
 
-#[derive(serde::Deserialize)]
-struct PoolEntry {
-    protocol: String,
-    address: String,
-    token0: String,
-    token1: String,
-    fee_bps: u32,
-}
-
-#[derive(serde::Deserialize)]
-struct PoolsConfig {
-    #[serde(default)]
-    pools: Vec<PoolEntry>,
-}
-
-struct LoadedPool {
-    address: Address,
-    token0: Address,
-    token1: Address,
-    protocol: ProtocolType,
-    fee_bps: u32,
-}
-
-fn parse_protocol(s: &str) -> Option<ProtocolType> {
-    match s {
-        "uniswap_v2" => Some(ProtocolType::UniswapV2),
-        "sushiswap" => Some(ProtocolType::SushiSwap),
-        "uniswap_v3" => Some(ProtocolType::UniswapV3),
-        "curve" => Some(ProtocolType::Curve),
-        "balancer_v2" => Some(ProtocolType::BalancerV2),
-        "bancor_v3" => Some(ProtocolType::BancorV3),
-        _ => None,
-    }
-}
-
 /// Built-in 7-pool set matching the integration tests. Enough token diversity
 /// (WETH/USDC/USDT/DAI) to produce real triangle-arb cycles when reserves are
 /// fetched from any recent mainnet block.
@@ -266,83 +223,6 @@ fn default_pool_set() -> Vec<LoadedPool> {
     ]
 }
 
-fn load_pools(path: &PathBuf) -> Result<Vec<LoadedPool>> {
-    let raw = std::fs::read_to_string(path)
-        .with_context(|| format!("read pool config {}", path.display()))?;
-    let cfg: PoolsConfig = toml::from_str(&raw).context("parse pool config")?;
-
-    let mut out = Vec::new();
-    for entry in cfg.pools {
-        // Phase 1 supports V2/Sushi (via `getReserves`) and UniswapV3 (via
-        // `slot0().sqrtPriceX96`). Curve / Balancer / Bancor are deferred.
-        let Some(protocol) = parse_protocol(&entry.protocol) else {
-            continue;
-        };
-        if !matches!(
-            protocol,
-            ProtocolType::UniswapV2 | ProtocolType::SushiSwap | ProtocolType::UniswapV3
-        ) {
-            continue;
-        }
-        out.push(LoadedPool {
-            address: entry.address.parse().context("pool address")?,
-            token0: entry.token0.parse().context("token0")?,
-            token1: entry.token1.parse().context("token1")?,
-            protocol,
-            fee_bps: entry.fee_bps,
-        });
-    }
-    Ok(out)
-}
-
-async fn fetch_pool_state_at(
-    provider: &impl Provider,
-    pool: &LoadedPool,
-    block: u64,
-) -> Option<PoolState> {
-    let block_id = BlockId::Number(BlockNumberOrTag::Number(block));
-    match pool.protocol {
-        ProtocolType::UniswapV2 | ProtocolType::SushiSwap => {
-            let calldata = getReservesCall {}.abi_encode();
-            let tx = TransactionRequest::default()
-                .to(pool.address)
-                .input(calldata.into());
-            match provider.call(tx).block(block_id).await {
-                Ok(out) if out.len() >= 64 => Some(PoolState::V2 {
-                    r0: U256::from_be_slice(&out[0..32]),
-                    r1: U256::from_be_slice(&out[32..64]),
-                }),
-                _ => None,
-            }
-        }
-        ProtocolType::UniswapV3 => {
-            let calldata = slot0Call {}.abi_encode();
-            let tx = TransactionRequest::default()
-                .to(pool.address)
-                .input(calldata.into());
-            match provider.call(tx).block(block_id).await {
-                // slot0 returns 7 values; only the first 32-byte word (sqrtPriceX96) is used.
-                Ok(out) if out.len() >= 32 => Some(PoolState::V3 {
-                    sqrt_price_x96: U256::from_be_slice(&out[0..32]),
-                }),
-                _ => None,
-            }
-        }
-        _ => None,
-    }
-}
-
-/// Truncate a U256 reserve to f64 for graph weight computation.
-/// Loss of precision is acceptable: we only care about the ratio.
-fn u256_to_f64(v: U256) -> f64 {
-    let limbs = v.as_limbs();
-    let mut acc = 0.0f64;
-    for (i, &limb) in limbs.iter().enumerate() {
-        acc += (limb as f64) * (2f64).powi((64 * i) as i32);
-    }
-    acc
-}
-
 fn build_graph(
     pools: &[LoadedPool],
     states: &[(usize, PoolState)],
@@ -356,30 +236,23 @@ fn build_graph(
         let t1 = token_index.get_or_insert(p.token1);
         graph.resize(token_index.len());
 
-        // Raw atomic rate token0 -> token1 (before fee).
-        // For V2: rate_0to1 = r1 / r0.
-        // For V3: sqrtPriceX96 = sqrt(token1/token0) * 2^96, so rate_0to1 = (s/2^96)^2.
-        let rate_0to1 = match state {
-            PoolState::V2 { r0, r1 } => {
-                let r0f = u256_to_f64(r0);
-                let r1f = u256_to_f64(r1);
-                if r0f == 0.0 || r1f == 0.0 {
-                    continue;
-                }
-                r1f / r0f
-            }
-            PoolState::V3 { sqrt_price_x96 } => {
-                let s = u256_to_f64(sqrt_price_x96);
-                if s == 0.0 {
-                    continue;
-                }
-                let root = s / Q96;
-                root * root
-            }
-        };
+        // Seed per-vertex decimals before adding edges so the decimal
+        // correction inside `update_edge_from_reserves` matches the engine.
+        // Unknown tokens default to the ERC20 standard of 18.
+        graph.set_token_decimals(t0, known_token_decimals(&p.token0).unwrap_or(18));
+        graph.set_token_decimals(t1, known_token_decimals(&p.token1).unwrap_or(18));
 
-        if !rate_0to1.is_finite() || rate_0to1 <= 0.0 {
-            continue;
+        // Enable the WETH-denominated min-liquidity floor when a WETH vertex is
+        // present (matching the engine + scorer default of 1.0 WETH) so the
+        // diagnostic detector skips drained WETH-paired pools. Set before
+        // `update_edge_from_reserves` so the `filtered` flags are computed on
+        // seeding. Synthetic graphs without WETH keep `weth_vertex = None`.
+        if p.token0 == aether_common::types::addresses::WETH {
+            graph.set_weth_vertex(t0);
+            graph.set_min_liquidity_weth(1.0);
+        } else if p.token1 == aether_common::types::addresses::WETH {
+            graph.set_weth_vertex(t1);
+            graph.set_min_liquidity_weth(1.0);
         }
 
         let fee = (10_000 - p.fee_bps) as f64 / 10_000.0;
@@ -388,28 +261,74 @@ fn build_graph(
             protocol: p.protocol,
         };
 
-        // Both directions. Weight = -ln(rate * fee).
-        graph.add_edge(
-            t0,
-            t1,
-            rate_0to1 * fee,
-            pool_id,
-            p.address,
-            p.protocol,
-            U256::ZERO,
-        );
-        graph.add_edge(
-            t1,
-            t0,
-            (1.0 / rate_0to1) * fee,
-            pool_id,
-            p.address,
-            p.protocol,
-            U256::ZERO,
-        );
+        // Match the engine convention exactly: add neutral placeholder edges,
+        // then seed the real rate via `update_edge_from_reserves` so the
+        // `10^(dec_in - dec_out)` correction is applied uniformly. Raw reserves
+        // are passed un-divided — the correction lives entirely in the graph.
+        // For V2: rate_0to1 = r1 / r0 (real reserves).
+        // For V3: sqrtPriceX96 = sqrt(token1/token0) * 2^96, so the synthetic
+        // mapping is `(reserve_in, reserve_out) = (1.0, (s/2^96)^2)`.
+        match state {
+            PoolState::V2 { r0, r1 } => {
+                let r0f = u256_to_f64(r0);
+                let r1f = u256_to_f64(r1);
+                if r0f == 0.0 || r1f == 0.0 {
+                    continue;
+                }
+                let rate_0to1 = r1f / r0f;
+                if !rate_0to1.is_finite() || rate_0to1 <= 0.0 {
+                    continue;
+                }
+                graph.add_edge(t0, t1, 1.0, pool_id, p.address, p.protocol, U256::ZERO);
+                graph.add_edge(t1, t0, 1.0, pool_id, p.address, p.protocol, U256::ZERO);
+                graph.update_edge_from_reserves(t0, t1, pool_id, r0f, r1f, fee);
+                graph.update_edge_from_reserves(t1, t0, pool_id, r1f, r0f, fee);
+            }
+            PoolState::V3 { sqrt_price_x96, liquidity } => {
+                // Virtual constant-product reserves (x_v, y_v) = (token0,
+                // token1) raw units from sqrtPrice + L (`virtual_reserves`).
+                // `y_v/x_v == spot`, so the detection edge weight matches the
+                // legacy `(1.0, raw_spot)` seed; the virtual pair keeps the
+                // stored reserves consistent with the engine. (Replay measures
+                // V3 profit via the on-chain executeArb revm sim, not the f64
+                // graph optimizer.) A zero/unavailable L leaves the pool
+                // unpriced (skip).
+                let Some((x_v, y_v)) =
+                    aether_pools::uniswap_v3::virtual_reserves(sqrt_price_x96, liquidity)
+                else {
+                    continue;
+                };
+                let liq = U256::from(liquidity);
+                graph.add_edge(t0, t1, 1.0, pool_id, p.address, p.protocol, liq);
+                graph.add_edge(t1, t0, 1.0, pool_id, p.address, p.protocol, liq);
+                graph.update_edge_from_reserves(t0, t1, pool_id, x_v, y_v, fee);
+                graph.update_edge_from_reserves(t1, t0, pool_id, y_v, x_v, fee);
+            }
+        }
     }
 
     (graph, token_index)
+}
+
+/// Apply the engine's pre-simulation gates to a freshly detected cycle batch,
+/// keeping only the cycles the production engine would actually act on. The
+/// `aether-rust` engine runs this same `gate_pre_sim` between detection and
+/// simulation; mirroring it here keeps the diagnostic output free of phantom
+/// cycles (e.g. f64-overflow profit factors from a transiently corrupted fork
+/// pool) that the engine drops at the `profit_factor_impossible` cap.
+fn gate_cycles(cycles: Vec<DetectedCycle>, graph: &PriceGraph) -> Vec<DetectedCycle> {
+    let config = GatingConfig::default();
+    let metrics = EngineMetrics::new();
+    let fingerprint_index = build_fingerprint_index(&cycles, &config);
+    cycles
+        .into_iter()
+        .filter(|c| {
+            matches!(
+                gate_pre_sim(c, graph, &fingerprint_index, &config, &metrics),
+                PreSimGateVerdict::Pass
+            )
+        })
+        .collect()
 }
 
 fn print_cycles(cycles: &[DetectedCycle], token_index: &TokenIndex, top: usize) {
@@ -535,7 +454,11 @@ async fn main() -> Result<()> {
     let pre_state_block = args.block - 1;
     let mut states = Vec::with_capacity(pools.len());
     for (i, pool) in pools.iter().enumerate() {
-        if let Some(state) = fetch_pool_state_at(&provider, pool, pre_state_block).await {
+        if let Some(state) = fetch_pool_state_at(&provider, pool, pre_state_block)
+            .await
+            .ok()
+            .flatten()
+        {
             states.push((i, state));
         }
     }
@@ -566,7 +489,10 @@ async fn main() -> Result<()> {
     // Run detector — same code path as production.
     let t_detect = Instant::now();
     let detector = BellmanFord::new(args.max_hops, args.max_time_us);
-    let cycles = detector.detect_negative_cycles(&graph);
+    // Mirror the engine: gate the raw cycle batch so phantom cycles (graph
+    // f64-overflow / corrupted-edge signatures the engine drops pre-sim) never
+    // surface in the diagnostic output.
+    let cycles = gate_cycles(detector.detect_negative_cycles(&graph), &graph);
     let detect_ms = t_detect.elapsed().as_millis();
 
     let profitable = cycles.iter().filter(|c| c.is_profitable()).count();
@@ -681,8 +607,22 @@ async fn fetch_one_state_latest(
                 .input(calldata.into());
             let output = provider.call(tx).block(block_id).await.ok()?;
             if output.len() >= 32 {
+                // Second call at the same block: active-tick liquidity for
+                // virtual-reserve seeding. Short/failed read → L=0 (edge left
+                // unpriced downstream).
+                let liq_calldata = liquidityCall {}.abi_encode();
+                let liq_tx = TransactionRequest::default()
+                    .to(pool.address)
+                    .input(liq_calldata.into());
+                let liquidity: u128 = match provider.call(liq_tx).block(block_id).await {
+                    Ok(lout) if lout.len() >= 32 => {
+                        U256::from_be_slice(&lout[0..32]).try_into().unwrap_or(0u128)
+                    }
+                    _ => 0u128,
+                };
                 Some(PoolState::V3 {
                     sqrt_price_x96: U256::from_be_slice(&output[0..32]),
+                    liquidity,
                 })
             } else {
                 None
@@ -1340,7 +1280,10 @@ async fn run_full_block_replay(
             running_states.iter().map(|(&i, &s)| (i, s)).collect();
 
         let (graph, token_index) = build_graph(&pools, &states);
-        let cycles = detector.detect_negative_cycles(&graph);
+        // Mirror the engine's pre-sim gating so corrupted-fork-state phantoms
+        // (e.g. an impersonated tx transiently draining a pool) don't pollute
+        // the per-tx diagnostic the way the ungated detector did.
+        let cycles = gate_cycles(detector.detect_negative_cycles(&graph), &graph);
         let profitable = cycles.iter().filter(|c| c.is_profitable()).count();
 
         if profitable > 0 {
@@ -1697,22 +1640,6 @@ struct SimOutcome {
 /// We use `bytecode.object` (deploy bytecode, runs constructor + installs
 /// runtime) not `deployedBytecode` — the constructor fills `aavePool`
 /// immutable and sets `owner = msg.sender`.
-fn load_executor_init_bytecode(artifact_path: &PathBuf) -> Result<Vec<u8>> {
-    let raw = std::fs::read_to_string(artifact_path)
-        .with_context(|| format!("read executor artifact {}", artifact_path.display()))?;
-    let v: serde_json::Value = serde_json::from_str(&raw).context("parse executor artifact JSON")?;
-    let hex_str = v
-        .pointer("/bytecode/object")
-        .and_then(|x| x.as_str())
-        .ok_or_else(|| anyhow::anyhow!("missing /bytecode/object in artifact"))?;
-    let stripped = hex_str.strip_prefix("0x").unwrap_or(hex_str);
-    let bytes = alloy::hex::decode(stripped).context("decode bytecode hex")?;
-    if bytes.is_empty() {
-        anyhow::bail!("executor bytecode is empty — artifact may be abstract / interface-only");
-    }
-    Ok(bytes)
-}
-
 /// Deploy `AetherExecutor` on the Anvil fork from `SIM_OWNER` with constructor
 /// args `(AAVE_POOL, BALANCER_VAULT, BANCOR_NETWORK)`. Returns the deployed
 /// contract address. Impersonation + balance seeding are done here so the
@@ -1890,29 +1817,6 @@ async fn build_steps_from_cycle<P: Provider>(
     }
 
     Some(steps)
-}
-
-/// UniswapV2 `getAmountOut` — exact math, no rounding. Returns `None` on
-/// zero-liquidity input (prevents the "drained pool" outlier from producing
-/// a non-zero forecast).
-fn uniswap_v2_get_amount_out(
-    amount_in: U256,
-    reserve_in: U256,
-    reserve_out: U256,
-    fee_bps: u32,
-) -> Option<U256> {
-    if reserve_in.is_zero() || reserve_out.is_zero() || amount_in.is_zero() {
-        return None;
-    }
-    // Default UniV2 fee: 30 bps → multiplier 997/1000.
-    let fee_multiplier = U256::from(10_000u64 - fee_bps as u64);
-    let amount_in_with_fee = amount_in.checked_mul(fee_multiplier)?;
-    let numerator = amount_in_with_fee.checked_mul(reserve_out)?;
-    let denom = reserve_in.checked_mul(U256::from(10_000u64))?.checked_add(amount_in_with_fee)?;
-    if denom.is_zero() {
-        return None;
-    }
-    Some(numerator / denom)
 }
 
 /// WETH's `balanceOf` mapping is at storage slot 3 (verified against mainnet
@@ -2107,6 +2011,7 @@ fn truncate_err(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use aether_grpc_server::historical::parse_protocol;
 
     #[test]
     fn token_label_known_symbols() {

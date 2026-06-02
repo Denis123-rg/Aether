@@ -29,7 +29,7 @@ tokio = { version = "1", features = ["full"] }
 # Ethereum
 alloy = { version = "1", features = ["full"] }
 # EVM simulation
-revm = { version = "34", default-features = false, features = ["std", "serde", "optional_balance_check", "optional_no_base_fee"] }
+revm = { version = "34", default-features = false, features = ["std", "serde", "optional_balance_check", "optional_no_base_fee", "optional_eip3607"] }
 revm-database = { version = "10", default-features = false, features = ["std", "alloydb"] }
 # gRPC
 tonic = "0.13"
@@ -63,3 +63,11 @@ config = "0.14"
 serde_yml = "0.0.12"
 # Benchmarking
 criterion = { version = "0.5", features = ["html_reports"] }
+# Database (trade ledger)
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio-rustls", "postgres", "uuid", "chrono", "json", "macros", "bigdecimal"] }
+uuid = { version = "1", features = ["v4", "v5", "serde"] }
+chrono = { version = "0.4", default-features = false, features = ["clock", "serde"] }
+bigdecimal = "0.4"
+# Embedded ACID key/value store (used for the bytecode disk cache: pure Rust,
+# zero C dependencies, copy-on-write semantics).
+redb = "2"

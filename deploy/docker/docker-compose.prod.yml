@@ -1,0 +1,169 @@
+# Production / 24-7 overlay for the Aether stack.
+#
+# Layers on top of docker-compose.yml and adds everything needed to keep the
+# stack alive unattended on a remote box:
+#   - health checks on the two app services (so `depends_on: service_healthy`
+#     and `docker ps` STATUS reflect real liveness, not just "container up")
+#   - restart policies on the monitoring services the base file omitted
+#   - bounded json-file logging on every service (a 24-7 run otherwise fills
+#     the disk with container logs)
+#   - aether-go waits for aether-rust to be healthy before starting
+#   - the operational env knobs (shadow mode, mempool tracking, executor
+#     address, searcher key, …) sourced from the .env file
+#
+# Usage (on the remote host, from deploy/docker/):
+#   docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build
+#
+# restart: unless-stopped + an enabled docker daemon (`systemctl enable docker`)
+# is what makes this survive both container crashes and host reboots.
+
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "20m"
+    max-file: "5"
+
+services:
+  aether-rust:
+    logging: *default-logging
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:9092/metrics"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      # Cold boot fetches pool reserves over RPC; give it room before the
+      # first probe so a slow bootstrap is not flagged unhealthy.
+      start_period: 90s
+    volumes:
+      # Ship the forge artifact into the container so the backrun simulator
+      # injects the AetherExecutor runtime bytecode (+ AAVE immutable splice)
+      # into the revm CacheDB — the contract need NOT be deployed on the
+      # forked chain. Requires a local `forge build` to have produced it.
+      - ../../contracts/out:/app/contracts/out:ro
+    environment:
+      # Mempool backrun tracking — the path the recent fixes harden. Set to 0
+      # to fall back to block-driven detection only.
+      - MEMPOOL_TRACKING=${MEMPOOL_TRACKING:-1}
+      # Pending-tx WebSocket (Alchemy `pendingTransactions`). Falls back to
+      # ETH_RPC_URL's ws when unset; keep explicit for the mempool feed.
+      - MEMPOOL_WS_URL=${MEMPOOL_WS_URL:-}
+      - AETHER_CHAIN_ID=${AETHER_CHAIN_ID:-1}
+      # ABSOLUTE path to the pool registry. The engine otherwise defaults to
+      # the RELATIVE "config/pools.toml", which the container (workdir /)
+      # cannot find against the /app/config mount -> 0 pools loaded -> every
+      # mempool swap is not_in_registry -> 0 candidates. The base compose sets
+      # AETHER_NODES_CONFIG but forgot this one.
+      - AETHER_POOLS_CONFIG=/app/config/pools.toml
+      # Executor address must hold code on the forked chain so the Go
+      # executor's startup eth_getCode passes. The revm sim injects the real
+      # AetherExecutor bytecode at this address regardless, so a placeholder
+      # mainnet contract (here: UniV3 SwapRouter02, as in demo.sh) works in
+      # shadow. Override with your actual deployment.
+      - AETHER_EXECUTOR_ADDRESS=${AETHER_EXECUTOR_ADDRESS:-0x68b3465833fb72A70ecDF485E0e4C7bD8665Fc45}
+      # Forge artifact (mounted above) injected into the CacheDB each sim, so
+      # the executor need not be deployed on-chain. Produced by `forge build`.
+      - AETHER_EXECUTOR_BYTECODE_PATH=${AETHER_EXECUTOR_BYTECODE_PATH:-/app/contracts/out/AetherExecutor.sol/AetherExecutor.json}
+      # In-sim caller of executeArb. MUST be a code-free EOA and MUST NOT
+      # equal AETHER_EXECUTOR_ADDRESS: the sim injects executor bytecode at
+      # the executor address, so a caller-with-code trips revm EIP-3607
+      # (RejectCallerWithCode) and every arb leg is rejected as sim_error.
+      # The disable_eip3607 sim flag now guards this too, but a clean EOA is
+      # defense in depth. 0x..dEaD is a well-known burn address (no code).
+      - AETHER_SEARCHER_CALLER=${AETHER_SEARCHER_CALLER:-0x000000000000000000000000000000000000dEaD}
+      - AETHER_PROFIT_TOKEN=${AETHER_PROFIT_TOKEN:-}
+      # revm post-state replay for V3/Balancer tick-crossing victims.
+      - MEMPOOL_POST_STATE_REPLAY=${MEMPOOL_POST_STATE_REPLAY:-1}
+      # Leave UNSET in production: the backrun fork now pins to the detected
+      # block (the fix). Set to 1 only when the fork provider is an Anvil node
+      # whose locally-mined blocks do not resolve for state queries.
+      - AETHER_BACKRUN_FORK_LATEST=${AETHER_BACKRUN_FORK_LATEST:-}
+      # Min net profit (wei) a sized cycle must clear to reach the revm sim.
+      # Code default 0.001 ETH. 1e14 = 0.0001 ETH filters dust yet still lets
+      # the hardened sim path be exercised in shadow; set 0 to admit all.
+      - AETHER_MEMPOOL_MIN_PROFIT_WEI=${AETHER_MEMPOOL_MIN_PROFIT_WEI:-100000000000000}
+      # ── 429 / RPC transport hardening (the fork provider) ──────────────
+      # The fork provider now wraps an alloy RetryBackoffLayer: it
+      # self-throttles to AETHER_RPC_CUPS compute-units/sec and retries HTTP
+      # 429 with exponential backoff, so Alchemy rate-limits no longer
+      # propagate into revm as DB errors and bomb the sim funnel. Raise CUPS
+      # to match your Alchemy tier (free/growth ≈ 300; scale tiers higher).
+      - AETHER_RPC_CUPS=${AETHER_RPC_CUPS:-300}
+      - AETHER_RPC_MAX_RETRIES=${AETHER_RPC_MAX_RETRIES:-10}
+      - AETHER_RPC_BACKOFF_MS=${AETHER_RPC_BACKOFF_MS:-200}
+      # Per-request socket timeout (ms, 0=off): a cold fetch can no longer
+      # stall the synchronous revm fork ~16s and starve the sim semaphore.
+      - AETHER_RPC_REQUEST_TIMEOUT_MS=${AETHER_RPC_REQUEST_TIMEOUT_MS:-10000}
+      # Per-sim retry on a transient transport error (rebuilds the fork) +
+      # the elapsed-budget above which a slow failure is relabeled sim_timeout.
+      - AETHER_MEMPOOL_SIM_RETRIES=${AETHER_MEMPOOL_SIM_RETRIES:-1}
+      - AETHER_MEMPOOL_SIM_TIMEOUT_MS=${AETHER_MEMPOOL_SIM_TIMEOUT_MS:-30000}
+      # Conservative fan-out for a low-tier key: boot reserve hydration and
+      # per-block prewarm otherwise burst past the rps budget into a 429 storm.
+      - AETHER_BOOT_FETCH_CONCURRENCY=${AETHER_BOOT_FETCH_CONCURRENCY:-3}
+      - AETHER_PREWARM_CONCURRENCY=${AETHER_PREWARM_CONCURRENCY:-4}
+      - AETHER_MEMPOOL_SIM_CONCURRENCY=${AETHER_MEMPOOL_SIM_CONCURRENCY:-4}
+
+  aether-go:
+    logging: *default-logging
+    depends_on:
+      aether-rust:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:9090/metrics"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    environment:
+      # SHADOW MODE ON BY DEFAULT — blocks real bundle submission and dumps
+      # forensics JSON. Set AETHER_SHADOW=0 ONLY to go live (real funds).
+      - AETHER_SHADOW=${AETHER_SHADOW:-1}
+      - AETHER_SHADOW_DUMP_DIR=/app/reports
+      # Go reads config/executor.yaml (+ risk/builders/nodes) from here. The
+      # base compose mounts config/ into aether-rust only, so wire it for go
+      # too — without it executor.yaml is missing and the service crash-loops.
+      - AETHER_CONFIG_DIR=/app/config
+      # executor.yaml expands ${AETHER_EXECUTOR_ADDRESS}; the Go executor runs
+      # eth_getCode on it at startup and aborts if empty. ETH_RPC_URL must be
+      # passed here too — the base file only feeds it via the repo-root
+      # env_file, not deploy/docker/.env (the file compose interpolates from).
+      - AETHER_EXECUTOR_ADDRESS=${AETHER_EXECUTOR_ADDRESS:-0x68b3465833fb72A70ecDF485E0e4C7bD8665Fc45}
+      - ETH_RPC_URL=${ETH_RPC_URL:-}
+      - AETHER_MEMPOOL_MIN_PROFIT_WEI=${AETHER_MEMPOOL_MIN_PROFIT_WEI:-}
+      # Searcher hot-wallet key. Optional in shadow (unsigned, never submitted).
+      # NEVER commit this — it comes from the .env file (chmod 600).
+      - SEARCHER_KEY=${SEARCHER_KEY:-}
+    volumes:
+      # Persist shadow forensics dumps across restarts.
+      - aether-reports:/app/reports
+      - ../../config:/app/config:ro
+
+  prometheus:
+    restart: unless-stopped
+    logging: *default-logging
+
+  grafana:
+    restart: unless-stopped
+    logging: *default-logging
+    # Host port 3000 is taken by another project on this shared box; remap.
+    # !override replaces the base "3000:3000" instead of appending to it.
+    ports: !override
+      - "3001:3000"
+
+  alertmanager:
+    logging: *default-logging
+
+  loki:
+    logging: *default-logging
+
+  promtail:
+    logging: *default-logging
+
+  tempo:
+    logging: *default-logging
+
+  canary:
+    logging: *default-logging
+
+volumes:
+  aether-reports:

@@ -209,7 +209,7 @@ sudo systemctl restart aether-rust
 
 ### Consecutive Reverts
 
-**Symptom**: System pauses after 3 reverts in 10 minutes.
+**Symptom**: System pauses after 10 consecutive bug reverts in 10 minutes.
 
 ```bash
 # Check revert reasons

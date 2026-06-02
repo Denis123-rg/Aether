@@ -38,7 +38,7 @@ graph LR
 
     G1 --> FB["Flashbots"]
     G2 --> TT["Titan"]
-    G3 --> BV["Beaver"]
+    G3 --> BV["Eden"]
     G4 --> RC["rsync"]
 
     style B fill:#1a1520,stroke:#9580ff,stroke-width:2px,color:#fff

@@ -39,7 +39,7 @@ graph TB
     subgraph BUILDERS["Block Builders"]
         FB["Flashbots"]
         TT["Titan"]
-        BV["Beaver"]
+        BV["Eden"]
         RC["rsync"]
     end
 
@@ -185,7 +185,7 @@ sequenceDiagram
     Rust->>Go: ValidatedArb via gRPC/UDS
     Note over Go: risk preflight + build + sign (<3ms)
     Go->>B: eth_sendBundle fan-out
-    Note over B: Flashbots · Titan · Beaver · rsync
+    Note over B: Flashbots · Titan · Eden · rsync
 ```
 
 ## Inter-Service Communication

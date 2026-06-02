@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -11,12 +11,19 @@ use alloy::primitives::{Address, U256};
 use alloy::providers::{DynProvider, Provider};
 use alloy::sol_types::SolCall;
 
-use aether_common::types::{ArbHop, ArbOpportunity, PoolId, ProtocolType, SwapStep};
+use aether_common::db::{protocol_label, Ledger, NewArb, NewPool, NoopLedger};
+use aether_common::types::{
+    known_token_decimals, ArbHop, ArbOpportunity, PoolId, ProtocolType, SwapStep,
+};
+use sha2::{Digest, Sha256};
+use uuid::Uuid;
 use aether_detector::bellman_ford::BellmanFord;
 use aether_detector::gas::{estimate_total_gas, gas_cost_wei};
 use aether_detector::optimizer::ternary_search_optimal_input;
 use aether_ingestion::event_decoder::PoolEvent;
 use aether_ingestion::subscription::{EventChannels, NewBlockEvent};
+use aether_pools::uniswap_v2::UniswapV2Pool;
+use aether_pools::{new_pool_state_cache, Pool, PoolState, PoolStateCache};
 use aether_simulator::calldata::build_execute_arb_calldata;
 use aether_simulator::fork::{prewarm_state, ForkedState, PrewarmedState, RpcForkedState};
 use aether_simulator::EvmSimulator;
@@ -27,8 +34,31 @@ use aether_state::token_index::TokenIndex;
 // Import the proto ValidatedArb type from service module
 use aether_grpc_server::EngineMetrics;
 
+use aether_grpc_server::cycle_gating::{
+    self, GatingConfig, PostSimGateVerdict, PreSimGateVerdict,
+};
 use crate::pipeline;
 use crate::service::aether_proto::ValidatedArb as ProtoValidatedArb;
+
+/// Rewrite a `wss://` / `ws://` URL into the corresponding `https://` /
+/// `http://` URL so the revm fork backend (HTTP-only `eth_getStorageAt`
+/// requests via AlloyDB) can talk to the same provider the streaming
+/// subscription uses. Returns the input unchanged if the scheme is
+/// already HTTP(S) or anything else — the URL parser downstream will
+/// surface a clear error in the unknown-scheme case.
+///
+/// Only the scheme portion is rewritten; host, path, and query string
+/// are left intact, so Alchemy / Infura / QuickNode endpoints that share
+/// the same hostname across transports map cleanly.
+fn normalize_to_http_scheme(url: &str) -> String {
+    if let Some(rest) = url.strip_prefix("wss://") {
+        format!("https://{rest}")
+    } else if let Some(rest) = url.strip_prefix("ws://") {
+        format!("http://{rest}")
+    } else {
+        url.to_string()
+    }
+}
 
 /// Configuration for the AetherEngine.
 pub struct EngineConfig {
@@ -54,6 +84,17 @@ pub struct EngineConfig {
     /// Maximum number of parallel EVM simulations per block cycle.
     /// Should match the number of pinned CPUs (CPU 0-3 → 4).
     pub max_parallel_sims: usize,
+    /// Configuration for the multi-signal candidate gating layer that
+    /// sits between cycle detection and EVM simulation. See
+    /// [`crate::cycle_gating::GatingConfig`] for per-gate semantics.
+    /// Tests that exercise the detection cycle with synthetic graphs
+    /// (`add_edge` without seeded reserves) should override this with a
+    /// permissive config; production runs use the strict default.
+    pub gating: GatingConfig,
+    /// Minimum WETH-side reserve (≈ half pool TVL) for a WETH-paired pool to
+    /// participate in detection; aligns with the >$10K qualification rule; 0
+    /// disables.
+    pub min_liquidity_weth: f64,
 }
 
 impl Default for EngineConfig {
@@ -68,6 +109,8 @@ impl Default for EngineConfig {
             tip_bps: 9000,
             slippage_bps: 100,
             max_parallel_sims: 4,
+            gating: GatingConfig::default(),
+            min_liquidity_weth: 1.0,
         }
     }
 }
@@ -84,6 +127,11 @@ pub struct PoolMetadata {
     pub pool_id: PoolId,
     pub protocol: ProtocolType,
     pub fee_bps: u32,
+    /// V3-only — tick spacing from `pools.toml`. `None` for non-V3
+    /// protocols (where the field is meaningless) and as a fallback
+    /// when the config entry omitted it. Required to construct a valid
+    /// `UniswapV3Pool` for the post-state cache.
+    pub tick_spacing: Option<i32>,
 }
 
 impl PoolMetadata {
@@ -91,6 +139,25 @@ impl PoolMetadata {
     pub fn fee_factor(&self) -> f64 {
         (10000 - self.fee_bps) as f64 / 10000.0
     }
+}
+
+/// Whether a pool's config-declared token identity matches the on-chain truth.
+///
+/// Returns `true` only when the config `token0`/`token1` equal the chain's
+/// `token0()`/`token1()` in the SAME order. A swapped-order pool (config t0/t1
+/// equal chain t1/t0) returns `false`: order matters because graph edges and
+/// decimal lookups are keyed on `token0_idx`/`token1_idx`, so a swap silently
+/// inverts every rate and corrupts the decimal correction.
+///
+/// `Address` comparison is exact over the raw 20 bytes (alloy `Address` is
+/// case-insensitive by construction), so no checksum normalization is needed.
+fn token_identity_matches(
+    meta_t0: Address,
+    meta_t1: Address,
+    chain_t0: Address,
+    chain_t1: Address,
+) -> bool {
+    meta_t0 == chain_t0 && meta_t1 == chain_t1
 }
 
 /// Core pipeline orchestrator that wires the Rust detection crates together.
@@ -120,12 +187,35 @@ pub struct AetherEngine {
     /// Pool address → metadata mapping for event handling.
     /// Writers clone-modify-swap; readers load() zero-copy.
     pool_registry: Arc<ArcSwap<HashMap<Address, PoolMetadata>>>,
+    /// Live pool-state cache for the mempool post-state simulator.
+    /// Holds `Arc<PoolState>` values keyed by pool address; readers
+    /// (mempool decode pipeline) clone the inner Arc for a snapshot, while
+    /// the engine writes new entries on bootstrap and replaces them on
+    /// every pool-update event. Intentionally distinct from
+    /// `pool_registry` (which carries static metadata only) — this cache
+    /// owns the *mutable* protocol state that `predict_post_state` needs.
+    pool_states: PoolStateCache,
     /// Optional type-erased alloy provider for RPC-backed simulation.
     /// When `Some`, `run_detection_cycle` uses `RpcForkedState` instead of
     /// the empty `ForkedState`.
     rpc_provider: Option<DynProvider<Ethereum>>,
+    /// Optional persistent bytecode cache. When opened (via the
+    /// `AETHER_BYTECODE_CACHE_PATH` env var) `prewarm_state` consults it
+    /// before issuing `eth_getCode` and writes back any freshly fetched
+    /// bytecode so subsequent block cycles serve cache hits. `None`
+    /// preserves the historical RPC-every-time behaviour.
+    bytecode_cache: Option<Arc<aether_simulator::bytecode_cache::BytecodeCache>>,
+    /// In-memory cache of UniswapV2 / SushiSwap pool reserves populated by
+    /// the WS `Sync` event handler. `prewarm_state` consults it before
+    /// issuing `eth_getStorageAt` for slot 8 of each pool. Always present
+    /// (lock-free `DashMap`-backed) but only effective once Sync events
+    /// have populated entries for the monitored pools.
+    v2_reserves_cache: aether_simulator::v2_reserves_cache::V2ReservesCache,
     /// Prometheus metrics for engine operations.
     metrics: Arc<EngineMetrics>,
+    /// Persistent trade ledger. NoopLedger by default; PgLedger when
+    /// `DATABASE_URL` is set at startup.
+    ledger: Arc<dyn Ledger>,
 }
 
 /// Lightweight snapshot of the current block's key fields.
@@ -168,6 +258,84 @@ fn token_label(addr: &Address) -> String {
     }
 }
 
+/// Stable UUID namespace for deriving DB `arb_id` values from the engine's
+/// log-side `ArbOpportunity::id` strings. Hard-coded so the same opportunity
+/// id always maps to the same UUID across runs and machines, making
+/// `grep <id> logs/* | xargs psql -c 'SELECT … WHERE arb_id = …'` work without
+/// a second lookup table.
+const ARB_ID_NAMESPACE: Uuid = Uuid::from_bytes([
+    0x6e, 0xc6, 0xfd, 0x05, 0xb1, 0xc8, 0x4c, 0x4d,
+    0x8d, 0x57, 0x4e, 0xc1, 0x77, 0xa2, 0x47, 0x6e,
+]);
+
+/// Derive a deterministic `arb_id` (UUIDv5) from the engine's free-form
+/// `ArbOpportunity::id`. Same input string always produces the same UUID, so
+/// log-side ids and DB ids correlate without a side table.
+pub(crate) fn arb_id_for_opp(opp_id: &str) -> Uuid {
+    Uuid::new_v5(&ARB_ID_NAMESPACE, opp_id.as_bytes())
+}
+
+/// Build a [`NewArb`] row from a published opportunity.
+///
+/// `arb_id` is derived from `ArbOpportunity::id` via UUIDv5 so the engine's
+/// log-side id and the DB row share a stable mapping; this is the only join
+/// key between Loki / structured logs and the trade ledger. `path_hash` is
+/// sha256 of the pool address sequence so equivalent paths collapse to the
+/// same key for grouping.
+fn build_new_arb(
+    opp: &ArbOpportunity,
+    flashloan_token: Address,
+    flashloan_amount: U256,
+    net_profit_u128: u128,
+    tip_bps: u64,
+    sim_us: u128,
+    path_label: &str,
+) -> NewArb {
+    let pool_addrs: Vec<String> = opp
+        .hops
+        .iter()
+        .map(|h| format!("{:#x}", h.pool_address))
+        .collect();
+    // Use the same `protocol_label` adapter the PgLedger uses for
+    // pool_registry.protocol so the JSONB array on arbs.protocols stays
+    // join-compatible with the TEXT column. format!("{:?}", _) silently
+    // diverges if ProtocolType variants are renamed; the serde-tag-pinned
+    // label is the single source of truth.
+    let protocols: Vec<&'static str> = opp
+        .hops
+        .iter()
+        .map(|h| protocol_label(h.protocol))
+        .collect();
+
+    let mut hasher = Sha256::new();
+    for h in &opp.hops {
+        hasher.update(h.pool_address.as_slice());
+    }
+    let digest = hasher.finalize();
+    let mut path_hash = [0u8; 32];
+    path_hash.copy_from_slice(&digest);
+
+    NewArb {
+        arb_id: arb_id_for_opp(&opp.id),
+        ts: chrono::Utc::now(),
+        target_block: opp.block_number,
+        path_hash: path_hash.into(),
+        hops: u8::try_from(opp.hops.len()).unwrap_or(u8::MAX),
+        path: serde_json::Value::String(path_label.to_string()),
+        protocols: serde_json::json!(protocols),
+        pool_addresses: serde_json::json!(pool_addrs),
+        flashloan_token,
+        flashloan_amount,
+        gross_profit_wei: opp.total_profit_wei,
+        net_profit_wei: U256::from(net_profit_u128),
+        gas_estimate: opp.total_gas,
+        tip_bps: u32::try_from(tip_bps).unwrap_or(u32::MAX),
+        detection_us: None,
+        sim_us: Some(u64::try_from(sim_us).unwrap_or(u64::MAX)),
+        git_sha: option_env!("GIT_SHA").map(|s| s.to_string()),
+    }
+}
+
 /// Build a path like "WETH -> AAVE -> WETH" from an `ArbOpportunity`'s hop list.
 fn arb_path_labels(opp: &ArbOpportunity) -> String {
     if opp.hops.is_empty() {
@@ -187,6 +355,22 @@ fn u256_to_f64(val: U256) -> f64 {
         + limbs[1] as f64 * 18_446_744_073_709_551_616.0 // 2^64
         + limbs[2] as f64 * 3.402_823_669_209_385e38      // 2^128
         + limbs[3] as f64 * 1.157_920_892_373_162e77       // 2^192
+}
+
+/// Whether an edge's `liquidity` field may be used as the optimizer's wei
+/// input-size cap (`min_liquidity` across a cycle's hops).
+///
+/// UniswapV3 edges are excluded: their `liquidity` is the active-tick L
+/// (units of `sqrt(x·y)·2^96`), NOT a wei token amount, so it cannot serve as
+/// a wei trade-size bound — using it would clamp `max_input` to a meaningless
+/// value (e.g. under-size the trade, or fall below `min_input` and collapse
+/// the search). V3 hop sizing is instead bounded by the virtual-reserve
+/// constant-product profit function (which self-limits as output saturates
+/// past the pool's depth) and validated by the downstream revm tick-traversal
+/// sim. Zero-liquidity placeholder edges carry no usable signal either.
+#[inline]
+fn edge_caps_optimizer_input(edge: &aether_state::price_graph::PriceEdge) -> bool {
+    edge.protocol != ProtocolType::UniswapV3 && !edge.liquidity.is_zero()
 }
 
 /// Intermediate data extracted from a detected cycle under the graph read lock.
@@ -220,23 +404,163 @@ impl AetherEngine {
         arb_tx: broadcast::Sender<ProtoValidatedArb>,
         metrics: Arc<EngineMetrics>,
     ) -> Self {
+        Self::new_with_metrics_and_ledger(config, arb_tx, metrics, Arc::new(NoopLedger::new()))
+    }
+
+    /// Build an engine with an explicit ledger backend. Production callers
+    /// pass a `PgLedger` constructed from `DATABASE_URL`; tests and dev mode
+    /// use `NoopLedger`.
+    pub fn new_with_metrics_and_ledger(
+        config: EngineConfig,
+        arb_tx: broadcast::Sender<ProtoValidatedArb>,
+        metrics: Arc<EngineMetrics>,
+        ledger: Arc<dyn Ledger>,
+    ) -> Self {
         let event_channels = Arc::new(EventChannels::new());
         let detector = BellmanFord::new(config.max_hops, config.detection_time_budget_us);
         let simulator = EvmSimulator::with_defaults();
 
         // Build the RPC provider when an RPC URL is configured.
+        //
+        // `ETH_RPC_URL` is shared with the streaming subscription path (newHeads,
+        // logs, pending tx) which requires a `wss://` or `ws://` scheme for the
+        // persistent connection. The revm-backed fork backend, by contrast,
+        // issues one-shot `eth_getStorageAt` / `eth_getBalance` requests and
+        // only speaks `http(s)`. Without normalisation, a wss URL is rejected
+        // by `connect_http` and every detected cycle fails to simulate with
+        // `Transport error: builder error for url (wss://...)`.
+        //
+        // Major providers (Alchemy, Infura, QuickNode) expose both transports
+        // on the same hostname + path differing only in scheme, so a literal
+        // scheme rewrite produces the correct HTTP endpoint without forcing
+        // operators to maintain a second env var.
+        // Build the fork provider with TWO transport-layer protections:
+        //
+        // 1. A bounded per-request transport timeout
+        //    (`AETHER_RPC_REQUEST_TIMEOUT_MS`, default 10000ms; 0 disables)
+        //    so a single cold state fetch (`eth_getStorageAt` /
+        //    `eth_getBalance`) cannot stall the synchronous revm fork for
+        //    tens of seconds and starve the mempool-backrun sim semaphore.
+        //    A timed-out fetch surfaces as a transport error, which the
+        //    validator classifies as `rpc_transport` and retries.
+        //
+        // 2. An alloy `RetryBackoffLayer` that self-throttles against the
+        //    provider's compute-units budget and retries HTTP 429 with
+        //    exponential backoff (`AETHER_RPC_MAX_RETRIES` default 10,
+        //    `AETHER_RPC_BACKOFF_MS` default 200, `AETHER_RPC_CUPS` default
+        //    300). This is THE fix for the 429 storms — without it, an
+        //    Alchemy rate-limit reply propagates through the AlloyDB into
+        //    revm as a transient DB error, classified by the validator as
+        //    `rpc_transport` and bombing the funnel.
+        //
+        // This one provider feeds the block-driven sim, the mempool backrun
+        // validator (main.rs passes `engine.rpc_provider()`), and the prewarm
+        // refresher — so fixing it here fixes all three.
+        fn build_fork_http_provider(url: url::Url) -> DynProvider<Ethereum> {
+            use alloy::rpc::client::ClientBuilder;
+            use alloy::transports::http::reqwest;
+            use alloy::transports::layers::RetryBackoffLayer;
+            // Default 10s: a generous socket-level ceiling that catches the
+            // pathological ~16s cold-fetch hang without prematurely failing
+            // legitimately slow reads — e.g. an Anvil fork proxying a cold
+            // slot to a rate-limited upstream, or the one-shot boot reserve
+            // hydration. The sim hot-path latency is bounded separately by
+            // AETHER_MEMPOOL_SIM_TIMEOUT_MS + the sim concurrency semaphore,
+            // not by this timeout.
+            let timeout_ms = std::env::var("AETHER_RPC_REQUEST_TIMEOUT_MS")
+                .ok()
+                .and_then(|v| v.parse::<u64>().ok())
+                .unwrap_or(10000);
+            // 429-retry knobs. `max_retries=10` gives the rate-limit policy
+            // ~10 chances at exponential backoff before giving up; `200ms`
+            // initial backoff keeps the first retry inside a sub-second
+            // budget for the common single-burst case; `300 CU/s` is a
+            // sane default for an Alchemy free/growth tier — operators on
+            // higher tiers should raise `AETHER_RPC_CUPS` to match.
+            let max_retries = std::env::var("AETHER_RPC_MAX_RETRIES")
+                .ok()
+                .and_then(|v| v.parse::<u32>().ok())
+                .unwrap_or(10);
+            let backoff_ms = std::env::var("AETHER_RPC_BACKOFF_MS")
+                .ok()
+                .and_then(|v| v.parse::<u64>().ok())
+                .unwrap_or(200);
+            let cups = std::env::var("AETHER_RPC_CUPS")
+                .ok()
+                .and_then(|v| v.parse::<u64>().ok())
+                .unwrap_or(300);
+            let retry_layer = RetryBackoffLayer::new(max_retries, backoff_ms, cups);
+
+            // Build the underlying reqwest client. If the timeout knob is
+            // disabled (0) or the build fails, fall through to the default
+            // `reqwest::Client`, which has no per-request timeout but still
+            // gets the retry layer.
+            let http_client: reqwest::Client = if timeout_ms == 0 {
+                reqwest::Client::new()
+            } else {
+                match reqwest::Client::builder()
+                    .timeout(std::time::Duration::from_millis(timeout_ms))
+                    .build()
+                {
+                    Ok(c) => c,
+                    Err(e) => {
+                        tracing::warn!(
+                            error = %e,
+                            "reqwest client build failed; using default HTTP client (no per-request timeout)"
+                        );
+                        reqwest::Client::new()
+                    }
+                }
+            };
+
+            // Stack: ClientBuilder → layer(retry) → http_with_client(reqwest, url).
+            // `http_with_client` wraps the reqwest client in alloy's HTTP
+            // transport, then the retry layer wraps the transport's tower
+            // Service so 429s are retried before they surface as errors.
+            let rpc_client = ClientBuilder::default()
+                .layer(retry_layer)
+                .http_with_client(http_client, url);
+            alloy::providers::ProviderBuilder::new()
+                .connect_client(rpc_client)
+                .erased()
+        }
+
         let rpc_provider = config.rpc_url.as_ref().and_then(|url_str| {
-            let parsed: url::Url = match url_str.parse() {
+            let http_url = normalize_to_http_scheme(url_str);
+            let parsed: url::Url = match http_url.parse() {
                 Ok(u) => u,
                 Err(e) => {
                     tracing::warn!(error = %e, url = %url_str, "Invalid RPC URL, falling back to empty state");
                     return None;
                 }
             };
-            let provider = alloy::providers::ProviderBuilder::new().connect_http(parsed);
-            info!(url = %url_str, "RPC provider created for fork simulation");
-            Some(provider.erased())
+            let provider = build_fork_http_provider(parsed);
+            info!(
+                original = %url_str,
+                fork_url = %http_url,
+                "RPC provider created for fork simulation (timeout + 429 retry layer applied)"
+            );
+            Some(provider)
         });
+
+        // Open the persistent bytecode cache when configured. Failure to open
+        // never blocks engine startup — every cache operation degrades to
+        // `None` and falls through to the existing RPC path.
+        let bytecode_cache = std::env::var("AETHER_BYTECODE_CACHE_PATH")
+            .ok()
+            .filter(|s| !s.trim().is_empty())
+            .and_then(|path| {
+                match aether_simulator::bytecode_cache::BytecodeCache::open(&path) {
+                    Ok(c) => {
+                        info!(path = %path, "bytecode cache opened");
+                        Some(Arc::new(c))
+                    }
+                    Err(e) => {
+                        warn!(path = %path, error = %e, "bytecode cache open failed; running without cache");
+                        None
+                    }
+                }
+            });
 
         // Start with a reasonable initial graph size (can grow dynamically).
         let initial_graph = PriceGraph::new(100);
@@ -254,8 +578,46 @@ impl AetherEngine {
             current_block: Arc::new(ArcSwap::from_pointee(BlockInfo::default())),
             token_index: Arc::new(ArcSwap::from_pointee(TokenIndex::new())),
             pool_registry: Arc::new(ArcSwap::from_pointee(HashMap::new())),
+            pool_states: new_pool_state_cache(),
             rpc_provider,
+            bytecode_cache,
+            v2_reserves_cache: aether_simulator::v2_reserves_cache::V2ReservesCache::new(),
             metrics,
+            ledger,
+        }
+    }
+
+    /// Borrow the live pool-state cache so external consumers (mempool
+    /// post-state simulator, future analytics) can read accurate per-
+    /// protocol state without round-tripping to RPC. The returned
+    /// reference is to the engine's own clone of the `Arc<DashMap>` —
+    /// callers typically `Arc::clone` it for their own `SimContext`.
+    /// `dead_code` until the mempool decode pipeline lands on this
+    /// branch (or the pipeline branch rebases on top).
+    #[allow(dead_code)]
+    pub fn pool_states(&self) -> &PoolStateCache {
+        &self.pool_states
+    }
+
+    /// Build the V2-family `PoolState` variant that matches the pool's
+    /// configured protocol (UniswapV2 vs SushiSwap). Both share the
+    /// same `UniswapV2Pool` math; the variant lets the dispatcher route
+    /// to the correct protocol metadata downstream without an extra
+    /// address lookup.
+    fn build_v2_pool_state(
+        &self,
+        pool_addr: Address,
+        meta: &PoolMetadata,
+        reserve0: U256,
+        reserve1: U256,
+    ) -> PoolState {
+        let mut p = UniswapV2Pool::new(pool_addr, meta.token0, meta.token1, meta.fee_bps);
+        p.update_state(reserve0, reserve1);
+        match meta.protocol {
+            ProtocolType::SushiSwap => PoolState::SushiSwap(p),
+            // UniswapV2 is the natural default — anything else routed
+            // through this helper would be a bug at the call site.
+            _ => PoolState::UniswapV2(p),
         }
     }
 
@@ -287,6 +649,25 @@ impl AetherEngine {
         protocol: ProtocolType,
         fee_bps: u32,
     ) {
+        self.register_pool_with_tick_spacing(pool_addr, token0, token1, protocol, fee_bps, None)
+            .await
+    }
+
+    /// Same as [`Self::register_pool`] but accepts a tick_spacing hint
+    /// for V3-family pools. Required so the post-state cache can build
+    /// a valid `UniswapV3Pool` (which needs tick_spacing to know where
+    /// the active tick bucket ends). Non-V3 callers pass `None` and the
+    /// metadata stores it as `None` — the field is ignored at the
+    /// graph-edge update path which doesn't care about ticks.
+    pub async fn register_pool_with_tick_spacing(
+        &self,
+        pool_addr: Address,
+        token0: Address,
+        token1: Address,
+        protocol: ProtocolType,
+        fee_bps: u32,
+        tick_spacing: Option<i32>,
+    ) {
         let (t0_idx, t1_idx, num_tokens) = {
             let mut ti = (**self.token_index.load()).clone();
             let t0 = ti.get_or_insert(token0);
@@ -308,6 +689,7 @@ impl AetherEngine {
             pool_id,
             protocol,
             fee_bps,
+            tick_spacing,
         };
 
         {
@@ -320,25 +702,58 @@ impl AetherEngine {
         {
             let mut graph = self.working_graph.lock().await;
             graph.resize(num_tokens);
-            // Placeholder edges with rate 1.0 (neutral weight = 0).
-            graph.add_edge(
-                t0_idx,
-                t1_idx,
-                1.0,
-                pool_id,
-                pool_addr,
+            // Seed per-vertex decimals from the static curated map (fallback 18)
+            // so update_edge_from_reserves produces decimal-correct human rates
+            // even before any RPC decimals() truth is fetched. RPC results, when
+            // available, override these in fetch_initial_reserves.
+            graph.set_token_decimals(t0_idx, known_token_decimals(&token0).unwrap_or(18));
+            graph.set_token_decimals(t1_idx, known_token_decimals(&token1).unwrap_or(18));
+            // Register the WETH vertex + min-liquidity floor so the snapshot
+            // carries correct `filtered` flags once reserves are seeded. This
+            // must run BEFORE fetch_initial_reserves (called by the caller) so
+            // that update_edge_from_reserves can apply the floor. Idempotent:
+            // safe to call on every WETH-paired registration.
+            if token0 == aether_common::types::addresses::WETH {
+                graph.set_weth_vertex(t0_idx);
+                graph.set_min_liquidity_weth(self.config.min_liquidity_weth);
+            } else if token1 == aether_common::types::addresses::WETH {
+                graph.set_weth_vertex(t1_idx);
+                graph.set_min_liquidity_weth(self.config.min_liquidity_weth);
+            }
+            // Placeholder edges with rate 1.0 (neutral weight = 0). Only added
+            // for protocols whose graph integration is complete — V2/V3/Sushi.
+            // Balancer V2, Curve, and Bancor V3 are registered (so mempool path
+            // can find them via pool_registry + pool_states) but get NO graph
+            // edge until update_edge_from_reserves can be called against real
+            // post-state. Without this gate a placeholder rate=1.0 produces
+            // phantom Bellman-Ford cycles whenever a V3 leg supplies the real
+            // exchange rate — e.g. USDC --(Balancer placeholder)--> WETH
+            // --(real V3 WETH/USDT)--> USDT --(real V3 USDT/USDC)--> USDC
+            // synthesises a 2000x profit factor from a single dead edge.
+            let graph_integrated = matches!(
                 protocol,
-                U256::ZERO,
+                ProtocolType::UniswapV2 | ProtocolType::UniswapV3 | ProtocolType::SushiSwap
             );
-            graph.add_edge(
-                t1_idx,
-                t0_idx,
-                1.0,
-                pool_id,
-                pool_addr,
-                protocol,
-                U256::ZERO,
-            );
+            if graph_integrated {
+                graph.add_edge(
+                    t0_idx,
+                    t1_idx,
+                    1.0,
+                    pool_id,
+                    pool_addr,
+                    protocol,
+                    U256::ZERO,
+                );
+                graph.add_edge(
+                    t1_idx,
+                    t0_idx,
+                    1.0,
+                    pool_id,
+                    pool_addr,
+                    protocol,
+                    U256::ZERO,
+                );
+            }
             // Snapshot is published by callers (fetch_initial_reserves, handle_pool_update)
             // after batch operations, not per-registration, to avoid O(N) clones on startup.
         }
@@ -347,6 +762,16 @@ impl AetherEngine {
             %pool_addr, %token0, %token1, ?protocol, fee_bps,
             "Pool registered (t0={}, t1={})", t0_idx, t1_idx
         );
+
+        self.ledger.insert_pool(&NewPool {
+            address: pool_addr,
+            protocol,
+            token0,
+            token1,
+            fee_bps: Some(fee_bps),
+            tier: None,
+            source: "register_pool".to_string(),
+        });
     }
 
     /// Bootstrap pools from a TOML config file (e.g. `config/pools.toml`).
@@ -457,7 +882,9 @@ impl AetherEngine {
                 continue;
             }
 
-            self.register_pool(pool_addr, token0, token1, protocol, entry.fee_bps)
+            self.register_pool_with_tick_spacing(
+                pool_addr, token0, token1, protocol, entry.fee_bps, entry.tick_spacing,
+            )
                 .await;
             loaded += 1;
 
@@ -469,6 +896,203 @@ impl AetherEngine {
 
         info!(loaded, total = config.pools.len(), "Pool bootstrap complete");
         loaded
+    }
+
+    /// Resolve ERC20 `decimals()` for every unique token across `pools` and
+    /// write the result onto the working graph's per-vertex decimals table.
+    ///
+    /// Each unique token address is fetched at most once (deduplicated). On RPC
+    /// success the graph vertex decimals are overridden with the on-chain truth;
+    /// on failure the value seeded at registration (static map or the ERC20
+    /// default of 18) is left untouched. Startup is never blocked by a failed
+    /// decimals call.
+    async fn fetch_and_apply_token_decimals(
+        &self,
+        provider: &DynProvider<Ethereum>,
+        pools: &[(Address, PoolMetadata)],
+        sem: Arc<Semaphore>,
+    ) {
+        alloy::sol! {
+            function decimals() external view returns (uint8);
+        }
+
+        // Deduplicate tokens by address, keeping the graph vertex index.
+        let mut unique: HashMap<Address, usize> = HashMap::new();
+        for (_, meta) in pools {
+            unique.entry(meta.token0).or_insert(meta.token0_idx);
+            unique.entry(meta.token1).or_insert(meta.token1_idx);
+        }
+
+        let mut join_set = tokio::task::JoinSet::new();
+        for (token, vertex) in unique {
+            let provider = provider.clone();
+            let sem = Arc::clone(&sem);
+            join_set.spawn(async move {
+                let _permit = sem.acquire().await.ok()?;
+                let calldata = decimalsCall {}.abi_encode();
+                let tx = alloy::rpc::types::TransactionRequest::default()
+                    .to(token)
+                    .input(calldata.into());
+                match provider.call(tx).await {
+                    // decimals() returns uint8 right-aligned in a 32-byte word.
+                    Ok(output) if !output.is_empty() => {
+                        let dec = output[output.len() - 1];
+                        Some((vertex, dec))
+                    }
+                    Ok(_) => {
+                        warn!(%token, "decimals() returned empty output; keeping fallback");
+                        None
+                    }
+                    Err(e) => {
+                        warn!(%token, error = %e, "decimals() RPC call failed; keeping fallback");
+                        None
+                    }
+                }
+            });
+        }
+
+        let mut results: Vec<(usize, u8)> = Vec::new();
+        while let Some(joined) = join_set.join_next().await {
+            match joined {
+                Ok(Some(pair)) => results.push(pair),
+                Ok(None) => {}
+                Err(e) => warn!(error = %e, "decimals() fetch task panicked"),
+            }
+        }
+
+        if results.is_empty() {
+            return;
+        }
+        let applied = results.len();
+        let mut graph = self.working_graph.lock().await;
+        for (vertex, dec) in results {
+            graph.set_token_decimals(vertex, dec);
+        }
+        debug!(applied, "Applied on-chain token decimals to price graph");
+    }
+
+    /// Query on-chain `token0()`/`token1()` for every pair pool and return the
+    /// set of pool addresses whose config-declared token identity disagrees
+    /// with the chain.
+    ///
+    /// Only protocols that expose the `token0()`/`token1()` accessors are
+    /// checked — UniswapV2, SushiSwap and UniswapV3. Curve and Balancer use
+    /// different token-listing accessors and are skipped entirely (never
+    /// quarantined here).
+    ///
+    /// This is a fail-safe guard against config drift: a pool whose config
+    /// `token0`/`token1` are wrong (wrong address or swapped order) feeds bad
+    /// decimals and bad graph-edge identity into detection, which historically
+    /// produced phantom profit factors up to ~1e11. Quarantined pools are
+    /// skipped during reserve seeding so they never produce a live rate.
+    ///
+    /// Degrades open on RPC failure: a transient blip must not disable every
+    /// pool, and the corrected config remains the primary correctness
+    /// guarantee. Failures are logged at debug level and the pool is NOT
+    /// quarantined.
+    async fn fetch_token_identity_quarantine(
+        &self,
+        provider: &DynProvider<Ethereum>,
+        pools: &[(Address, PoolMetadata)],
+        sem: Arc<Semaphore>,
+    ) -> HashSet<Address> {
+        alloy::sol! {
+            function token0() external view returns (address);
+            function token1() external view returns (address);
+        }
+
+        let mut join_set = tokio::task::JoinSet::new();
+        for (pool_addr, meta) in pools.iter().cloned() {
+            // Only pair pools expose token0()/token1(). Skip the rest.
+            if !matches!(
+                meta.protocol,
+                ProtocolType::UniswapV2 | ProtocolType::SushiSwap | ProtocolType::UniswapV3
+            ) {
+                continue;
+            }
+            let provider = provider.clone();
+            let sem = Arc::clone(&sem);
+            join_set.spawn(async move {
+                // Hold the permit across both token accessor calls so the
+                // per-pool fetch counts as one in-flight slot, not two.
+                let _permit = sem.acquire().await.ok()?;
+                let chain_t0 = match Self::call_token_accessor(
+                    &provider,
+                    pool_addr,
+                    token0Call {}.abi_encode(),
+                )
+                .await
+                {
+                    Some(a) => a,
+                    None => return None,
+                };
+                let chain_t1 = match Self::call_token_accessor(
+                    &provider,
+                    pool_addr,
+                    token1Call {}.abi_encode(),
+                )
+                .await
+                {
+                    Some(a) => a,
+                    None => return None,
+                };
+
+                if token_identity_matches(meta.token0, meta.token1, chain_t0, chain_t1) {
+                    None
+                } else {
+                    warn!(
+                        pool_addr = %pool_addr,
+                        config_t0 = ?meta.token0,
+                        config_t1 = ?meta.token1,
+                        chain_t0 = ?chain_t0,
+                        chain_t1 = ?chain_t1,
+                        "pool token identity mismatch vs on-chain; skipping reserve seeding (fail-safe)"
+                    );
+                    Some(pool_addr)
+                }
+            });
+        }
+
+        let mut quarantined: HashSet<Address> = HashSet::new();
+        while let Some(joined) = join_set.join_next().await {
+            match joined {
+                Ok(Some(pool_addr)) => {
+                    quarantined.insert(pool_addr);
+                }
+                Ok(None) => {}
+                Err(e) => debug!(error = %e, "token identity check task panicked"),
+            }
+        }
+        quarantined
+    }
+
+    /// Execute a single `token0()`/`token1()` eth_call and decode the trailing
+    /// 20 bytes of the returned 32-byte word as an [`Address`].
+    ///
+    /// Returns `None` on RPC failure or a short/empty return — the caller
+    /// treats `None` as "could not verify" and degrades open (no quarantine).
+    async fn call_token_accessor(
+        provider: &DynProvider<Ethereum>,
+        pool_addr: Address,
+        calldata: Vec<u8>,
+    ) -> Option<Address> {
+        let tx = alloy::rpc::types::TransactionRequest::default()
+            .to(pool_addr)
+            .input(calldata.into());
+        match provider.call(tx).await {
+            // An address is the low 20 bytes of a right-aligned 32-byte word.
+            Ok(output) if output.len() >= 32 => {
+                Some(Address::from_slice(&output[12..32]))
+            }
+            Ok(output) => {
+                debug!(%pool_addr, len = output.len(), "token accessor output too short; cannot verify identity");
+                None
+            }
+            Err(e) => {
+                debug!(%pool_addr, error = %e, "token accessor RPC call failed; cannot verify identity");
+                None
+            }
+        }
     }
 
     /// Fetch initial on-chain reserves for all registered pools via RPC.
@@ -497,19 +1121,73 @@ impl AetherEngine {
             return;
         }
 
-        info!(count = pools.len(), "Fetching initial reserves via RPC (concurrent)");
+        // Cap in-flight provider.call concurrency at AETHER_BOOT_FETCH_CONCURRENCY
+        // (default 20). The unbounded `join_all` / `join_set` fan-out that used
+        // to fire all ~300 boot RPCs at once cascaded a free-tier upstream into
+        // 429s, which in turn wedged the local Anvil fork's connection pool to
+        // its backend and froze the engine at boot. A shared semaphore caps
+        // peak parallelism so the burst trickles into the upstream's rate
+        // budget rather than spiking past it.
+        let boot_concurrency = std::env::var("AETHER_BOOT_FETCH_CONCURRENCY")
+            .ok()
+            .and_then(|v| v.parse::<usize>().ok())
+            .filter(|n| *n > 0)
+            .unwrap_or(20);
+        let sem = Arc::new(Semaphore::new(boot_concurrency));
+        info!(
+            count = pools.len(),
+            concurrency = boot_concurrency,
+            "Fetching initial reserves via RPC (concurrent, capped)"
+        );
 
-        // ABI for getReserves() and slot0()
+        // Resolve per-token ERC20 decimals once per UNIQUE token address and
+        // apply them to the graph BEFORE any update_edge_from_reserves call, so
+        // the decimal correction uses on-chain truth. RPC failures degrade to
+        // the static/default decimals already seeded at registration — startup
+        // is never blocked.
+        self.fetch_and_apply_token_decimals(&provider, &pools, Arc::clone(&sem))
+            .await;
+
+        // Validate that each pair pool's config token0/token1 agree with the
+        // on-chain contract. Mismatched pools are quarantined: they are skipped
+        // during reserve seeding below so a config-drift error cannot inject a
+        // phantom rate into detection. Degrades open on RPC failure.
+        let quarantined = self
+            .fetch_token_identity_quarantine(&provider, &pools, Arc::clone(&sem))
+            .await;
+        if !quarantined.is_empty() {
+            warn!(
+                count = quarantined.len(),
+                "quarantined pools with on-chain token identity mismatch; excluded from reserve seeding"
+            );
+        }
+
+        // ABI for getReserves() / slot0() / Curve A + balances /
+        // Balancer pool/vault helpers.
         alloy::sol! {
             function getReserves() external view returns (uint112 reserve0, uint112 reserve1, uint32 blockTimestampLast);
             function slot0() external view returns (uint160 sqrtPriceX96, int24 tick, uint16 observationIndex, uint16 observationCardinality, uint16 observationCardinalityNext, uint8 feeProtocol, bool unlocked);
+            function liquidity() external view returns (uint128);
+            function A() external view returns (uint256);
+            function balances(uint256 i) external view returns (uint256);
+            function getPoolId() external view returns (bytes32);
+            function getNormalizedWeights() external view returns (uint256[]);
+            function getPoolTokens(bytes32 poolId) external view returns (address[], uint256[], uint256);
         }
 
         // Result type for each concurrent RPC fetch.
         enum ReserveResult {
             V2 { pool_addr: Address, meta: PoolMetadata, r0: U256, r1: U256 },
-            V3 { pool_addr: Address, meta: PoolMetadata, sqrt_price_x96: U256 },
-            Skipped,
+            V3 { pool_addr: Address, meta: PoolMetadata, sqrt_price_x96: U256, tick: i32, liquidity: u128 },
+            Curve { pool_addr: Address, meta: PoolMetadata, a: U256, b0: U256, b1: U256 },
+            Balancer { pool_addr: Address, meta: PoolMetadata, b0: U256, b1: U256, w0: U256, w1: U256 },
+            // Carry the meta so the consumer can mark the placeholder graph
+            // edges filtered. Without this Bellman-Ford can traverse the dead
+            // edge at the boot-seeded rate=1.0 and synthesise phantom cycles
+            // (e.g. WETH --(real V3)--> COMP --(dead Sushi)--> WETH at ~108x).
+            // `meta` is `None` for branches that fail before metadata is
+            // bound (none today — keep the variant tolerant for future safety).
+            Skipped { meta: Option<PoolMetadata> },
         }
 
         // Fire off all RPC calls concurrently.
@@ -517,7 +1195,15 @@ impl AetherEngine {
 
         for (pool_addr, meta) in pools.iter().cloned() {
             let provider = provider.clone();
+            let sem = Arc::clone(&sem);
             join_set.spawn(async move {
+                // Acquire one permit per pool. Multi-call protocols (Curve,
+                // Balancer) hold the permit across their sequential calls so
+                // each pool counts as one in-flight slot, not three+.
+                let permit_guard = sem.acquire().await;
+                if permit_guard.is_err() {
+                    return ReserveResult::Skipped { meta: Some(meta.clone()) };
+                }
                 match meta.protocol {
                     ProtocolType::UniswapV2 | ProtocolType::SushiSwap => {
                         let calldata = getReservesCall {}.abi_encode();
@@ -533,11 +1219,11 @@ impl AetherEngine {
                             }
                             Ok(output) => {
                                 warn!(%pool_addr, len = output.len(), "getReserves output too short");
-                                ReserveResult::Skipped
+                                ReserveResult::Skipped { meta: Some(meta.clone()) }
                             }
                             Err(e) => {
                                 warn!(%pool_addr, error = %e, "getReserves RPC call failed");
-                                ReserveResult::Skipped
+                                ReserveResult::Skipped { meta: Some(meta.clone()) }
                             }
                         }
                     }
@@ -550,21 +1236,179 @@ impl AetherEngine {
                         match provider.call(tx).await {
                             Ok(output) if output.len() >= 64 => {
                                 let sqrt_price_x96 = U256::from_be_slice(&output[0..32]);
-                                ReserveResult::V3 { pool_addr, meta, sqrt_price_x96 }
+                                // slot0 returns int24 tick, ABI-encoded as a
+                                // sign-extended 32-byte word at offset 32. Read
+                                // the high byte's MSB to detect a negative
+                                // value, then take the low 24 bits and apply
+                                // two's-complement if needed.
+                                let raw = &output[32..64];
+                                let mut tick_low24: i32 = ((raw[29] as i32) << 16)
+                                    | ((raw[30] as i32) << 8)
+                                    | (raw[31] as i32);
+                                if raw[0] != 0 {
+                                    // Top bytes set → negative; sign-extend.
+                                    tick_low24 -= 1 << 24;
+                                }
+                                // Second call (same permit): liquidity() so the
+                                // graph edge can be seeded with virtual reserves
+                                // (x_v, y_v) derived from L + sqrtPrice. Without
+                                // L the edge can only carry the marginal rate,
+                                // not pool depth, and the optimizer's
+                                // constant-product profit function mis-sizes
+                                // every V3 hop. A failed/zero liquidity read
+                                // leaves the edge unpriced (placeholder) — the
+                                // first live V3 swap event re-seeds it.
+                                let liq_calldata = liquidityCall {}.abi_encode();
+                                let liq_tx = alloy::rpc::types::TransactionRequest::default()
+                                    .to(pool_addr)
+                                    .input(liq_calldata.into());
+                                let liquidity: u128 = match provider.call(liq_tx).await {
+                                    Ok(out) if out.len() >= 32 => {
+                                        // uint128 right-aligned in a 32-byte word.
+                                        U256::from_be_slice(&out[0..32])
+                                            .try_into()
+                                            .unwrap_or(0u128)
+                                    }
+                                    Ok(out) => {
+                                        warn!(%pool_addr, len = out.len(), "V3 liquidity() output too short");
+                                        0u128
+                                    }
+                                    Err(e) => {
+                                        warn!(%pool_addr, error = %e, "V3 liquidity() RPC call failed");
+                                        0u128
+                                    }
+                                };
+                                ReserveResult::V3 { pool_addr, meta, sqrt_price_x96, tick: tick_low24, liquidity }
                             }
                             Ok(output) => {
                                 warn!(%pool_addr, len = output.len(), "slot0 output too short");
-                                ReserveResult::Skipped
+                                ReserveResult::Skipped { meta: Some(meta.clone()) }
                             }
                             Err(e) => {
                                 warn!(%pool_addr, error = %e, "slot0 RPC call failed");
-                                ReserveResult::Skipped
+                                ReserveResult::Skipped { meta: Some(meta.clone()) }
                             }
                         }
                     }
+                    ProtocolType::Curve => {
+                        // 2-coin Curve only: fetch A + balances(0) +
+                        // balances(1) sequentially. Three RPC round-trips
+                        // per pool — bounded by the join_set fan-out and
+                        // typically <100 pools at bootstrap so the cost is
+                        // a one-time second of warmup.
+                        let a_calldata = ACall {}.abi_encode();
+                        let a_tx = alloy::rpc::types::TransactionRequest::default()
+                            .to(pool_addr)
+                            .input(a_calldata.into());
+                        let a = match provider.call(a_tx).await {
+                            Ok(out) if out.len() >= 32 => U256::from_be_slice(&out[0..32]),
+                            Ok(out) => {
+                                warn!(%pool_addr, len = out.len(), "Curve A() output too short");
+                                return ReserveResult::Skipped { meta: Some(meta.clone()) };
+                            }
+                            Err(e) => {
+                                warn!(%pool_addr, error = %e, "Curve A() RPC call failed");
+                                return ReserveResult::Skipped { meta: Some(meta.clone()) };
+                            }
+                        };
+                        let mut bal = [U256::ZERO; 2];
+                        for (idx, slot) in bal.iter_mut().enumerate() {
+                            let calldata = balancesCall { i: U256::from(idx as u64) }.abi_encode();
+                            let tx = alloy::rpc::types::TransactionRequest::default()
+                                .to(pool_addr)
+                                .input(calldata.into());
+                            match provider.call(tx).await {
+                                Ok(out) if out.len() >= 32 => {
+                                    *slot = U256::from_be_slice(&out[0..32]);
+                                }
+                                Ok(out) => {
+                                    warn!(%pool_addr, idx, len = out.len(), "Curve balances() output too short");
+                                    return ReserveResult::Skipped { meta: Some(meta.clone()) };
+                                }
+                                Err(e) => {
+                                    warn!(%pool_addr, idx, error = %e, "Curve balances() RPC call failed");
+                                    return ReserveResult::Skipped { meta: Some(meta.clone()) };
+                                }
+                            }
+                        }
+                        ReserveResult::Curve { pool_addr, meta, a, b0: bal[0], b1: bal[1] }
+                    }
+                    ProtocolType::BalancerV2 => {
+                        // Balancer V2 reads need three sequential calls:
+                        // pool.getPoolId() → vault.getPoolTokens(poolId)
+                        // → pool.getNormalizedWeights(). The Vault address
+                        // is canonical and identical across every Balancer
+                        // V2 pool.
+                        const BALANCER_V2_VAULT: Address = alloy::primitives::address!(
+                            "BA12222222228d8Ba445958a75a0704d566BF2C8"
+                        );
+                        let pool_id_tx = alloy::rpc::types::TransactionRequest::default()
+                            .to(pool_addr)
+                            .input(getPoolIdCall {}.abi_encode().into());
+                        let pool_id_bytes = match provider.call(pool_id_tx).await {
+                            Ok(out) if out.len() >= 32 => {
+                                let mut buf = [0u8; 32];
+                                buf.copy_from_slice(&out[0..32]);
+                                buf
+                            }
+                            Ok(out) => {
+                                warn!(%pool_addr, len = out.len(), "Balancer getPoolId output too short");
+                                return ReserveResult::Skipped { meta: Some(meta.clone()) };
+                            }
+                            Err(e) => {
+                                warn!(%pool_addr, error = %e, "Balancer getPoolId RPC call failed");
+                                return ReserveResult::Skipped { meta: Some(meta.clone()) };
+                            }
+                        };
+                        let tokens_tx = alloy::rpc::types::TransactionRequest::default()
+                            .to(BALANCER_V2_VAULT)
+                            .input(
+                                getPoolTokensCall { poolId: pool_id_bytes.into() }
+                                    .abi_encode()
+                                    .into(),
+                            );
+                        let tokens_out = match provider.call(tokens_tx).await {
+                            Ok(out) => out,
+                            Err(e) => {
+                                warn!(%pool_addr, error = %e, "Balancer getPoolTokens RPC call failed");
+                                return ReserveResult::Skipped { meta: Some(meta.clone()) };
+                            }
+                        };
+                        let (b0, b1) = match getPoolTokensCall::abi_decode_returns(&tokens_out) {
+                            // 3-return tuple from getPoolTokens — fields are
+                            // (address[] tokens, uint256[] balances, uint256 lastChangeBlock)
+                            // → alloy synthesises `_0`, `_1`, `_2` for the
+                            // anonymous return slots. We need `_1` (balances).
+                            Ok(ret) if ret._1.len() >= 2 => (ret._1[0], ret._1[1]),
+                            _ => {
+                                warn!(%pool_addr, "Balancer getPoolTokens did not return 2-coin balances");
+                                return ReserveResult::Skipped { meta: Some(meta.clone()) };
+                            }
+                        };
+                        let weights_tx = alloy::rpc::types::TransactionRequest::default()
+                            .to(pool_addr)
+                            .input(getNormalizedWeightsCall {}.abi_encode().into());
+                        let weights_out = match provider.call(weights_tx).await {
+                            Ok(out) => out,
+                            Err(e) => {
+                                warn!(%pool_addr, error = %e, "Balancer getNormalizedWeights RPC call failed");
+                                return ReserveResult::Skipped { meta: Some(meta.clone()) };
+                            }
+                        };
+                        let (w0, w1) = match getNormalizedWeightsCall::abi_decode_returns(&weights_out) {
+                            // Single-return function — alloy unwraps the
+                            // tuple, so `ret` is the `Vec<U256>` directly.
+                            Ok(ret) if ret.len() >= 2 => (ret[0], ret[1]),
+                            _ => {
+                                warn!(%pool_addr, "Balancer getNormalizedWeights did not return 2 weights");
+                                return ReserveResult::Skipped { meta: Some(meta.clone()) };
+                            }
+                        };
+                        ReserveResult::Balancer { pool_addr, meta, b0, b1, w0, w1 }
+                    }
                     _ => {
                         debug!(%pool_addr, protocol = ?meta.protocol, "Reserve fetch not yet implemented for this protocol");
-                        ReserveResult::Skipped
+                        ReserveResult::Skipped { meta: Some(meta.clone()) }
                     }
                 }
             });
@@ -588,6 +1432,13 @@ impl AetherEngine {
             for reserve in all_results {
                 match reserve {
                     ReserveResult::V2 { pool_addr, meta, r0, r1 } => {
+                        if quarantined.contains(&pool_addr) {
+                            // Token identity disagrees with chain — leave the
+                            // neutral placeholder edge in place (no live rate)
+                            // and skip the pool-state cache insert so the
+                            // mempool post-state sim never uses it.
+                            continue;
+                        }
                         let r0_f = u256_to_f64(r0);
                         let r1_f = u256_to_f64(r1);
                         if r0_f > 0.0 && r1_f > 0.0 {
@@ -600,17 +1451,39 @@ impl AetherEngine {
                                 meta.token1_idx, meta.token0_idx,
                                 meta.pool_id, r1_f, r0_f, fee,
                             );
+                            // Mirror the reserves into the pool-state cache so
+                            // the mempool post-state simulator has live state
+                            // to call `predict_post_state` against.
+                            let state = self.build_v2_pool_state(pool_addr, &meta, r0, r1);
+                            self.pool_states.insert(pool_addr, Arc::new(state));
                             fetched += 1;
                             debug!(%pool_addr, reserve0 = %r0, reserve1 = %r1, "V2 reserves fetched");
                         }
                     }
-                    ReserveResult::V3 { pool_addr, meta, sqrt_price_x96 } => {
+                    ReserveResult::V3 { pool_addr, meta, sqrt_price_x96, tick, liquidity } => {
+                        if quarantined.contains(&pool_addr) {
+                            // Token identity disagrees with chain — skip both
+                            // the graph-edge seeding and the pool-state cache
+                            // insert (fail-safe). The neutral placeholder edge
+                            // from registration remains, so no live rate.
+                            continue;
+                        }
                         const TWO_POW_96: f64 = 79_228_162_514_264_337_593_543_950_336.0;
                         let sqrt_f64 = u256_to_f64(sqrt_price_x96);
                         let price = (sqrt_f64 / TWO_POW_96).powi(2);
+                        // Virtual reserves (x_v, y_v) = (token0, token1) raw
+                        // units derived from L + sqrtPrice. They make the
+                        // optimizer's constant-product profit function model V3
+                        // depth exactly (see `uniswap_v3::virtual_reserves`).
+                        let vr = aether_pools::uniswap_v3::virtual_reserves(
+                            sqrt_price_x96,
+                            liquidity,
+                        );
                         if price > 0.0 {
                             let fee = meta.fee_factor();
-                            let liq = U256::ZERO;
+                            // Carry L as the edge's `liquidity` so the optimizer
+                            // input-range cap reflects real pool depth.
+                            let liq = U256::from(liquidity);
                             graph.add_edge(
                                 meta.token0_idx, meta.token1_idx,
                                 price * fee, meta.pool_id, pool_addr,
@@ -621,11 +1494,127 @@ impl AetherEngine {
                                 (1.0 / price) * fee, meta.pool_id, pool_addr,
                                 meta.protocol, liq,
                             );
+                            // Seed the edge with virtual reserves when L is
+                            // known. `update_edge_from_reserves` derives the
+                            // weight as `(reserve_out/reserve_in)*fee*decimals`,
+                            // and `y_v/x_v == spot`, so the weight (hence
+                            // Bellman-Ford detection) is identical to the legacy
+                            // `(1.0, spot)` seed — only the curve depth changes.
+                            // When L is unknown/zero the edge is left as an
+                            // unpriced placeholder (reserves stay 0.0); the
+                            // cycle-gating V3 reserve guard then skips it until
+                            // the first live V3 swap event re-seeds real depth.
+                            if let Some((x_v, y_v)) = vr {
+                                graph.update_edge_from_reserves(
+                                    meta.token0_idx, meta.token1_idx,
+                                    meta.pool_id, x_v, y_v, fee,
+                                );
+                                graph.update_edge_from_reserves(
+                                    meta.token1_idx, meta.token0_idx,
+                                    meta.pool_id, y_v, x_v, fee,
+                                );
+                            } else {
+                                warn!(
+                                    %pool_addr, liquidity,
+                                    "V3 pool has zero/unavailable liquidity at active tick; \
+                                     edge left unpriced until first swap event"
+                                );
+                            }
+                            // Seed the V3 pool-state cache with the fetched
+                            // liquidity so the mempool post-state predictor has
+                            // real depth from bootstrap (previously seeded with
+                            // L=0, which forced `predict_post_state` to return
+                            // None until the first `PoolEvent::V3Update`).
+                            let mut v3 = aether_pools::uniswap_v3::UniswapV3Pool::new(
+                                pool_addr,
+                                meta.token0,
+                                meta.token1,
+                                meta.fee_bps,
+                                meta.tick_spacing.unwrap_or(0),
+                            );
+                            v3.update_sqrt_price(sqrt_price_x96, liquidity, tick);
+                            self.pool_states
+                                .insert(pool_addr, Arc::new(PoolState::UniswapV3(v3)));
                             fetched += 1;
-                            debug!(%pool_addr, %sqrt_price_x96, "V3 slot0 fetched");
+                            debug!(%pool_addr, %sqrt_price_x96, tick, liquidity, "V3 slot0 + liquidity fetched");
                         }
                     }
-                    ReserveResult::Skipped => {}
+                    ReserveResult::Curve { pool_addr, meta, a, b0, b1 } => {
+                        // Bootstrap-only Curve cache populate. The graph
+                        // edge for Curve isn't seeded here — the existing
+                        // engine code path doesn't fetch / construct Curve
+                        // edges yet (see PoolEvent::TokenExchange follow-up).
+                        // This commit only fills `pool_states` so the
+                        // mempool post-state simulator has live state to
+                        // call `predict_post_state` against; downstream
+                        // graph integration is its own commit.
+                        let amp_u64: u64 = if a > U256::from(u64::MAX) {
+                            warn!(%pool_addr, %a, "Curve A() overflows u64; saturating");
+                            u64::MAX
+                        } else {
+                            a.try_into().unwrap_or(u64::MAX)
+                        };
+                        let mut curve = aether_pools::curve::CurvePool::new(
+                            pool_addr,
+                            vec![meta.token0, meta.token1],
+                            amp_u64,
+                            meta.fee_bps,
+                        );
+                        curve.balances = vec![b0, b1];
+                        self.pool_states
+                            .insert(pool_addr, Arc::new(PoolState::Curve(curve)));
+                        fetched += 1;
+                        debug!(%pool_addr, %a, %b0, %b1, "Curve state fetched");
+                    }
+                    ReserveResult::Balancer { pool_addr, meta, b0, b1, w0, w1 } => {
+                        // Bootstrap-only Balancer cache populate. Same
+                        // graph-edge caveat as the Curve branch: this
+                        // commit only fills `pool_states`.
+                        //
+                        // BalancerPool::new takes weights as u64. Balancer
+                        // V2 weights are e18-fixed (1.0 = 1e18). Saturate
+                        // on overflow — real weights are below 1e18 and
+                        // fit in u64 fine.
+                        let to_u64 = |x: U256| -> u64 {
+                            x.try_into().unwrap_or(u64::MAX)
+                        };
+                        let mut bal = aether_pools::balancer::BalancerPool::new(
+                            pool_addr,
+                            meta.token0,
+                            meta.token1,
+                            to_u64(w0),
+                            to_u64(w1),
+                            meta.fee_bps,
+                        );
+                        bal.update_state(b0, b1);
+                        self.pool_states
+                            .insert(pool_addr, Arc::new(PoolState::Balancer(bal)));
+                        fetched += 1;
+                        debug!(%pool_addr, %b0, %b1, %w0, %w1, "Balancer state fetched");
+                    }
+                    ReserveResult::Skipped { meta } => {
+                        // Mark the placeholder graph edges (seeded at
+                        // register_pool with rate=1.0) as filtered so
+                        // Bellman-Ford skips them. Without this the dead
+                        // edge participates in cycle detection as a synthetic
+                        // "1 token0 base unit = 1 token1 base unit" rate and
+                        // combines with any real edge between the same two
+                        // vertices to fabricate a profit factor.
+                        if let Some(meta) = meta {
+                            graph.set_edge_filtered(
+                                meta.token0_idx,
+                                meta.token1_idx,
+                                meta.pool_id,
+                                true,
+                            );
+                            graph.set_edge_filtered(
+                                meta.token1_idx,
+                                meta.token0_idx,
+                                meta.pool_id,
+                                true,
+                            );
+                        }
+                    }
                 }
             }
 
@@ -694,6 +1683,17 @@ impl AetherEngine {
             } => {
                 debug!(%pool, ?protocol, "Pool reserve update");
 
+                // Capture the live reserves into the WS-fed cache so the
+                // next pre-warm cycle can serve slot 8 locally instead of
+                // round-tripping `eth_getStorageAt`. Only V2-family pools
+                // pack reserves at slot 8 in the format this cache emits;
+                // V3 / Curve / Balancer have richer state representations
+                // and stay on the existing RPC path.
+                if matches!(protocol, ProtocolType::UniswapV2 | ProtocolType::SushiSwap) {
+                    let block = self.current_block.load().number;
+                    self.v2_reserves_cache.record(pool, reserve0, reserve1, block);
+                }
+
                 // Look up pool metadata to get graph vertex indices.
                 let meta = self.pool_registry.load().get(&pool).cloned();
 
@@ -721,6 +1721,19 @@ impl AetherEngine {
                             fee,
                         );
                         // Snapshot is published once per detection cycle, not per event.
+                        // Refresh the V2-family pool-state cache entry alongside the
+                        // graph edge so the mempool post-state simulator stays in
+                        // lockstep with the detector. SushiSwap reuses the same
+                        // shape under a distinct variant; other protocols handled
+                        // by V3Update / future Curve / Balancer events.
+                        if matches!(
+                            meta.protocol,
+                            ProtocolType::UniswapV2 | ProtocolType::SushiSwap
+                        ) {
+                            let state =
+                                self.build_v2_pool_state(pool, &meta, reserve0, reserve1);
+                            self.pool_states.insert(pool, Arc::new(state));
+                        }
                     }
                 }
             }
@@ -748,9 +1761,9 @@ impl AetherEngine {
                 pool,
                 sqrt_price_x96,
                 liquidity,
-                tick: _,
+                tick,
             } => {
-                debug!(%pool, %sqrt_price_x96, liquidity, "V3 pool update");
+                debug!(%pool, %sqrt_price_x96, liquidity, tick, "V3 pool update");
 
                 let meta = self.pool_registry.load().get(&pool).cloned();
 
@@ -782,7 +1795,54 @@ impl AetherEngine {
                             meta.protocol,
                             liq,
                         );
+                        // Refresh the edge with virtual reserves (x_v, y_v)
+                        // derived from the event's L + sqrtPrice. This gives
+                        // the optimizer correct V3 depth and feeds
+                        // `mempool_pipeline::try_post_state_scan`'s
+                        // `reserves_zero` guard. `y_v/x_v == spot`, so the edge
+                        // weight (Bellman-Ford detection) is unchanged versus
+                        // the legacy `(1.0, spot)` seed. Same convention as the
+                        // bootstrap branch and the scorer's
+                        // `unified_to_post_reserves`. When L is zero the edge is
+                        // left unpriced (the cycle-gating V3 reserve guard then
+                        // skips it).
+                        if let Some((x_v, y_v)) = aether_pools::uniswap_v3::virtual_reserves(
+                            sqrt_price_x96,
+                            liquidity,
+                        ) {
+                            graph.update_edge_from_reserves(
+                                meta.token0_idx,
+                                meta.token1_idx,
+                                meta.pool_id,
+                                x_v,
+                                y_v,
+                                fee,
+                            );
+                            graph.update_edge_from_reserves(
+                                meta.token1_idx,
+                                meta.token0_idx,
+                                meta.pool_id,
+                                y_v,
+                                x_v,
+                                fee,
+                            );
+                        }
                         // Snapshot is published once per detection cycle, not per event.
+                        // Refresh the V3 pool-state cache entry. The event
+                        // carries everything `predict_post_state` needs
+                        // (sqrt + liquidity + tick), so this is the path
+                        // that actually populates real liquidity onto a
+                        // V3 cache seeded with `liquidity = 0` at bootstrap.
+                        let mut v3 = aether_pools::uniswap_v3::UniswapV3Pool::new(
+                            pool,
+                            meta.token0,
+                            meta.token1,
+                            meta.fee_bps,
+                            meta.tick_spacing.unwrap_or(0),
+                        );
+                        v3.update_sqrt_price(sqrt_price_x96, liquidity, tick);
+                        self.pool_states
+                            .insert(pool, Arc::new(PoolState::UniswapV3(v3)));
                     }
                 }
             }
@@ -866,8 +1926,33 @@ impl AetherEngine {
             let pool_registry = self.pool_registry.load();
             let mut candidates = Vec::new();
 
+            // Build the fingerprint index once over the full cycle batch
+            // so the multi-cycle gate is O(1) per cycle. Without this the
+            // gate degenerates to O(N) per cycle = O(N^2) across the
+            // batch, which dominates the detection budget on dense
+            // graphs.
+            let gating_config = self.config.gating;
+            let fingerprint_index =
+                cycle_gating::build_fingerprint_index(&cycles, &gating_config);
+
             for cycle in &cycles {
                 if !cycle.is_profitable() {
+                    continue;
+                }
+
+                // Pre-sim multi-signal gating. Drops cycles whose
+                // profit_factor is f64-overflow-territory (`> 10000%`),
+                // whose edges are below the TVL floor, or whose
+                // profit fingerprint clusters with five or more siblings
+                // — all signatures of corrupt graph state rather than
+                // real opportunity.
+                if let PreSimGateVerdict::Drop(_) = cycle_gating::gate_pre_sim(
+                    cycle,
+                    graph,
+                    &fingerprint_index,
+                    &gating_config,
+                    &self.metrics,
+                ) {
                     continue;
                 }
 
@@ -938,9 +2023,12 @@ impl AetherEngine {
                         .unwrap_or(30);
                     fee_factors.push((10000.0 - fee_bps as f64) / 10000.0);
 
-                    // Track minimum liquidity across hops to cap optimizer range.
-                    // Skip zero-liquidity edges (placeholders from register_pool).
-                    if !best_edge.liquidity.is_zero()
+                    // Track minimum liquidity across hops to cap optimizer
+                    // range. Only edges whose `liquidity` is a wei token amount
+                    // contribute (see `edge_caps_optimizer_input`): zero-liq
+                    // placeholders and UniswapV3 (sqrt-liquidity L, not wei) are
+                    // excluded.
+                    if edge_caps_optimizer_input(best_edge)
                         && best_edge.liquidity < min_liquidity
                     {
                         min_liquidity = best_edge.liquidity;
@@ -1074,10 +2162,14 @@ impl AetherEngine {
                     Err(_) => return None,
                 };
                 if net_profit < self.config.min_profit_threshold_wei {
-                    debug!(
-                        net_profit,
-                        threshold = self.config.min_profit_threshold_wei,
-                        "Below min profit threshold"
+                    let net_profit_eth = net_profit as f64 / 1e18;
+                    let threshold_eth = self.config.min_profit_threshold_wei as f64 / 1e18;
+                    info!(
+                        net_profit_wei = net_profit,
+                        net_profit_eth = format!("{:.6}", net_profit_eth),
+                        threshold_eth = format!("{:.6}", threshold_eth),
+                        hops = candidate.hops.len(),
+                        "CYCLE REJECTED: below min profit threshold"
                     );
                     return None;
                 }
@@ -1189,8 +2281,16 @@ impl AetherEngine {
             v2_addrs.sort_unstable();
             v2_addrs.dedup();
 
-            let state =
-                prewarm_state(provider, block_info.number, &code_addrs, &v2_addrs).await;
+            let state = prewarm_state(
+                provider,
+                block_info.number,
+                &code_addrs,
+                &v2_addrs,
+                self.bytecode_cache.as_deref(),
+                Some(&self.v2_reserves_cache),
+            )
+            .await;
+            self.metrics.record_prewarm_stats(state.stats);
             Some(Arc::new(state))
         } else {
             None
@@ -1314,7 +2414,41 @@ impl AetherEngine {
             self.metrics.observe_simulation_latency_us(sim_us);
 
             if !sim_result.success {
-                debug!(sim_us, reason = ?sim_result.revert_reason, "Simulation failed, skipping");
+                info!(
+                    sim_us,
+                    reason = ?sim_result.revert_reason,
+                    hops = input.opp.hops.len(),
+                    expected_net_wei = input.net_profit,
+                    "REVM SIM REVERTED"
+                );
+                continue;
+            }
+            info!(
+                sim_us,
+                hops = input.opp.hops.len(),
+                expected_net_wei = input.net_profit,
+                expected_net_eth = format!("{:.6}", input.net_profit as f64 / 1e18),
+                "REVM SIM OK"
+            );
+
+            // Post-sim cross-check (gate 4 of the candidate gating layer).
+            // The pre-sim gates catch corruption signatures visible from
+            // the graph alone; this gate catches the residual case where
+            // revm's fork sim reveals a graph-vs-chain mismatch the pre-
+            // sim gates could not have detected. `sim_result.profit_wei`
+            // is the gross profit revm measured against current chain
+            // state; `input.net_profit` is the detector's pre-sim
+            // estimate. A >50% fractional disagreement between the two
+            // indicates the local graph snapshot was stale at detection
+            // time — trust revm and drop the candidate before it ever
+            // reaches the executor or the published-arb stream.
+            let actual_profit_u128: u128 = sim_result.profit_wei.try_into().unwrap_or(u128::MAX);
+            if let PostSimGateVerdict::Drop(_) = cycle_gating::gate_post_sim(
+                input.net_profit,
+                actual_profit_u128,
+                &self.config.gating,
+                &self.metrics,
+            ) {
                 continue;
             }
 
@@ -1364,8 +2498,10 @@ impl AetherEngine {
                         sim_us,
                         "Published validated arb"
                     );
+                    let arb_id = arb_id_for_opp(&input.opp.id);
                     info!(
                         id = %input.opp.id,
+                        arb_id = %arb_id,
                         path = %path,
                         hops = hop_count,
                         flashloan = %flashloan_label,
@@ -1374,6 +2510,16 @@ impl AetherEngine {
                         sim_us,
                         "ARB PUBLISHED"
                     );
+
+                    self.ledger.insert_arb(&build_new_arb(
+                        &input.opp,
+                        input.flashloan_token,
+                        input.input_amount,
+                        input.net_profit,
+                        self.config.tip_bps,
+                        sim_us,
+                        &path,
+                    ));
                 }
             });
         }
@@ -1415,6 +2561,30 @@ impl AetherEngine {
     pub fn snapshot_manager(&self) -> &Arc<SnapshotManager> {
         &self.snapshot_manager
     }
+
+    /// Get a clone of the RPC provider used for revm fork simulations.
+    /// `None` when the engine was constructed without an `ETH_RPC_URL`
+    /// (empty-state mode). The mempool-backrun validator consumes this
+    /// to build `RpcForkedState` per validation attempt.
+    pub fn rpc_provider(&self) -> Option<DynProvider<Ethereum>> {
+        self.rpc_provider.clone()
+    }
+
+    /// Borrow the persistent bytecode cache handle. `None` when the cache is
+    /// disabled (no `AETHER_BYTECODE_CACHE_PATH`). Cheap to `Arc::clone` for
+    /// downstream consumers (mempool `SimContext`).
+    pub fn bytecode_cache(
+        &self,
+    ) -> Option<&Arc<aether_simulator::bytecode_cache::BytecodeCache>> {
+        self.bytecode_cache.as_ref()
+    }
+
+    /// Clone the V2 reserves cache populated by the WS `Sync` event handler.
+    /// The cache is internally `Arc`-backed so the clone is cheap; consumers
+    /// share a single underlying store with the engine writer side.
+    pub fn v2_reserves_cache(&self) -> aether_simulator::v2_reserves_cache::V2ReservesCache {
+        self.v2_reserves_cache.clone()
+    }
 }
 
 #[cfg(test)]
@@ -1429,6 +2599,50 @@ mod tests {
         assert_eq!(config.min_profit_threshold_wei, 1_000_000_000_000_000);
         assert!((config.gas_price_gwei - 30.0).abs() < f64::EPSILON);
         assert_eq!(config.tip_bps, 9000);
+    }
+
+    #[test]
+    fn normalize_to_http_rewrites_wss_to_https() {
+        assert_eq!(
+            normalize_to_http_scheme("wss://eth-mainnet.g.alchemy.com/v2/abc"),
+            "https://eth-mainnet.g.alchemy.com/v2/abc"
+        );
+    }
+
+    #[test]
+    fn normalize_to_http_rewrites_ws_to_http() {
+        assert_eq!(
+            normalize_to_http_scheme("ws://127.0.0.1:8545/"),
+            "http://127.0.0.1:8545/"
+        );
+    }
+
+    #[test]
+    fn normalize_to_http_passes_https_unchanged() {
+        let url = "https://eth-mainnet.g.alchemy.com/v2/abc";
+        assert_eq!(normalize_to_http_scheme(url), url);
+    }
+
+    #[test]
+    fn normalize_to_http_passes_http_unchanged() {
+        let url = "http://127.0.0.1:8545/";
+        assert_eq!(normalize_to_http_scheme(url), url);
+    }
+
+    #[test]
+    fn normalize_to_http_passes_unknown_scheme_unchanged() {
+        // IPC paths, file URLs, anything not ws(s) — leave for the downstream
+        // parser to either accept or reject with a clear error.
+        let url = "ipc:///tmp/reth.ipc";
+        assert_eq!(normalize_to_http_scheme(url), url);
+    }
+
+    #[test]
+    fn normalize_to_http_preserves_query_string_and_path() {
+        assert_eq!(
+            normalize_to_http_scheme("wss://example.com/ws/v2?key=secret&foo=bar"),
+            "https://example.com/ws/v2?key=secret&foo=bar"
+        );
     }
 
     #[test]
@@ -1500,6 +2714,7 @@ mod tests {
             timestamp: 1_700_500_000,
             base_fee: 25_000_000_000,
             gas_limit: 30_000_000,
+            ..Default::default()
         };
 
         engine.handle_new_block(block_event).await;
@@ -1540,6 +2755,7 @@ mod tests {
             timestamp: 1_710_000_000,
             base_fee: 20_000_000_000,
             gas_limit: 30_000_000,
+            ..Default::default()
         });
 
         // Give the engine time to process.
@@ -1575,6 +2791,35 @@ mod tests {
         assert_eq!(engine.min_profit_threshold_wei(), 2_000_000_000_000_000);
     }
 
+    #[test]
+    fn test_token_identity_matches() {
+        use alloy::primitives::address;
+        let a = address!("A0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48");
+        let b = address!("C02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2");
+        let c = address!("6B175474E89094C44Da98b954EedeAC495271d0F");
+
+        // Exact match in the same order.
+        assert!(token_identity_matches(a, b, a, b));
+
+        // Swapped order must fail — order is load-bearing for edge identity
+        // and decimal correction.
+        assert!(!token_identity_matches(a, b, b, a));
+
+        // Wrong token0 address.
+        assert!(!token_identity_matches(a, b, c, b));
+
+        // Wrong token1 address.
+        assert!(!token_identity_matches(a, b, a, c));
+
+        // Both wrong.
+        assert!(!token_identity_matches(a, b, c, c));
+
+        // Case-insensitivity: alloy addresses compare on raw bytes regardless
+        // of input checksum casing.
+        let lower = address!("a0b86991c6218b36c1d19d4a2e9eb0ce3606eb48");
+        assert!(token_identity_matches(a, b, lower, b));
+    }
+
     #[tokio::test]
     async fn test_engine_handle_pool_update_reserve() {
         let (tx, _rx) = broadcast::channel(100);
@@ -1589,6 +2834,212 @@ mod tests {
 
         // Should not panic.
         engine.handle_pool_update(event).await;
+    }
+
+    #[tokio::test]
+    async fn test_v2_pool_state_cache_populated_on_reserve_update() {
+        use alloy::primitives::address;
+        let (tx, _rx) = broadcast::channel(100);
+        let engine = AetherEngine::new(EngineConfig::default(), tx);
+
+        let pool = address!("B4e16d0168e52d35CaCD2c6185b44281Ec28C9Dc");
+        let token0 = address!("A0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48");
+        let token1 = address!("C02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2");
+        engine
+            .register_pool(pool, token0, token1, ProtocolType::UniswapV2, 30)
+            .await;
+
+        // Pre-update: registry knows the pool, but cache is empty (no
+        // reserves yet).
+        assert!(engine.pool_states().get(&pool).is_none());
+
+        engine
+            .handle_pool_update(PoolEvent::ReserveUpdate {
+                pool,
+                protocol: ProtocolType::UniswapV2,
+                reserve0: U256::from(1_000_000_000u64),
+                reserve1: U256::from(500_000_000_000_000_000u64),
+            })
+            .await;
+
+        let entry = engine
+            .pool_states()
+            .get(&pool)
+            .expect("cache entry written on reserve update")
+            .clone();
+        match entry.as_ref() {
+            PoolState::UniswapV2(p) => {
+                assert_eq!(p.address, pool);
+                assert_eq!(p.token0, token0);
+                assert_eq!(p.token1, token1);
+                assert_eq!(p.reserve0, U256::from(1_000_000_000u64));
+                assert_eq!(p.reserve1, U256::from(500_000_000_000_000_000u64));
+            }
+            other => panic!("expected UniswapV2 variant, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_curve_pool_state_cache_can_be_populated_directly() {
+        // Bootstrap-time Curve cache writes happen inside the RPC join
+        // set, which we can't drive headlessly here. Exercise the same
+        // shape by populating the cache directly the way the bootstrap
+        // result handler does, and verify the variant + balances + A
+        // round-trip cleanly.
+        use alloy::primitives::address;
+        let (tx, _rx) = broadcast::channel(100);
+        let engine = AetherEngine::new(EngineConfig::default(), tx);
+
+        let pool = address!("bEbc44782C7dB0a1A60Cb6fe97d0b483032FF1C7"); // 3pool (canonical)
+        let usdc = address!("A0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48");
+        let usdt = address!("dAC17F958D2ee523a2206206994597C13D831ec7");
+        let mut curve = aether_pools::curve::CurvePool::new(
+            pool,
+            vec![usdc, usdt],
+            100, // A
+            4,   // 4 bps
+        );
+        curve.balances = vec![
+            U256::from(10_000_000_000_000u64),
+            U256::from(10_000_000_000_000u64),
+        ];
+        engine
+            .pool_states
+            .insert(pool, Arc::new(PoolState::Curve(curve)));
+
+        let entry = engine.pool_states().get(&pool).expect("present").clone();
+        match entry.as_ref() {
+            PoolState::Curve(p) => {
+                assert_eq!(p.address, pool);
+                assert_eq!(p.amplification, U256::from(100u64));
+                assert_eq!(p.balances.len(), 2);
+                assert_eq!(p.balances[0], U256::from(10_000_000_000_000u64));
+            }
+            other => panic!("expected Curve variant, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_balancer_pool_state_cache_can_be_populated_directly() {
+        use alloy::primitives::address;
+        let (tx, _rx) = broadcast::channel(100);
+        let engine = AetherEngine::new(EngineConfig::default(), tx);
+
+        let pool = address!("32296969Ef14EB0c6d29669C550D4a0449130230"); // wstETH/WETH 50/50
+        let weth = address!("C02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2");
+        let wsteth = address!("7f39C581F595B53c5cb19bD0b3f8dA6c935E2Ca0");
+        let mut bal = aether_pools::balancer::BalancerPool::new(
+            pool,
+            wsteth,
+            weth,
+            500_000_000_000_000_000, // 0.5 e18 (alloy weight units)
+            500_000_000_000_000_000,
+            10,
+        );
+        bal.update_state(
+            U256::from(5_000_000_000_000_000_000u128),
+            U256::from(5_000_000_000_000_000_000u128),
+        );
+        engine
+            .pool_states
+            .insert(pool, Arc::new(PoolState::Balancer(bal)));
+
+        let entry = engine.pool_states().get(&pool).expect("present").clone();
+        match entry.as_ref() {
+            PoolState::Balancer(p) => {
+                assert_eq!(p.address, pool);
+                assert_eq!(p.token0, wsteth);
+                assert_eq!(p.weight0, p.weight1, "50/50 fixture");
+            }
+            other => panic!("expected Balancer variant, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_v3_pool_state_cache_populated_on_v3_update() {
+        use alloy::primitives::address;
+        let (tx, _rx) = broadcast::channel(100);
+        let engine = AetherEngine::new(EngineConfig::default(), tx);
+
+        let pool = address!("88e6A0c2dDD26FEEb64F039a2c41296FcB3f5640");
+        let token0 = address!("A0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48");
+        let token1 = address!("C02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2");
+        engine
+            .register_pool_with_tick_spacing(
+                pool,
+                token0,
+                token1,
+                ProtocolType::UniswapV3,
+                5,
+                Some(10),
+            )
+            .await;
+
+        // Sanity: tick_spacing landed on the registry entry.
+        let stored_ts = engine
+            .pool_registry
+            .load()
+            .get(&pool)
+            .expect("registered")
+            .tick_spacing;
+        assert_eq!(stored_ts, Some(10));
+
+        let sqrt = U256::from(79_228_162_514_264_337_593_543_950_336u128); // ≈ Q96
+        engine
+            .handle_pool_update(PoolEvent::V3Update {
+                pool,
+                sqrt_price_x96: sqrt,
+                liquidity: 12_345_678_900_000u128,
+                tick: 0,
+            })
+            .await;
+
+        let entry = engine
+            .pool_states()
+            .get(&pool)
+            .expect("V3 cache entry written")
+            .clone();
+        match entry.as_ref() {
+            PoolState::UniswapV3(p) => {
+                assert_eq!(p.address, pool);
+                assert_eq!(p.sqrt_price_x96, sqrt);
+                assert_eq!(p.liquidity, 12_345_678_900_000u128);
+                assert_eq!(p.tick, 0);
+                assert_eq!(p.tick_spacing, 10);
+            }
+            other => panic!("expected UniswapV3 variant, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_sushiswap_pool_state_cache_uses_sushiswap_variant() {
+        use alloy::primitives::address;
+        let (tx, _rx) = broadcast::channel(100);
+        let engine = AetherEngine::new(EngineConfig::default(), tx);
+
+        let pool = address!("397FF1542f962076d0BFE58eA045FfA2d347ACa0");
+        let token0 = address!("A0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48");
+        let token1 = address!("C02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2");
+        engine
+            .register_pool(pool, token0, token1, ProtocolType::SushiSwap, 30)
+            .await;
+        engine
+            .handle_pool_update(PoolEvent::ReserveUpdate {
+                pool,
+                protocol: ProtocolType::SushiSwap,
+                reserve0: U256::from(2u64),
+                reserve1: U256::from(3u64),
+            })
+            .await;
+        let entry = engine
+            .pool_states()
+            .get(&pool)
+            .expect("cache entry written")
+            .clone();
+        assert!(
+            matches!(entry.as_ref(), PoolState::SushiSwap(_)),
+            "SushiSwap protocol must route to PoolState::SushiSwap variant"
+        );
     }
 
     #[tokio::test]
@@ -1637,6 +3088,7 @@ mod tests {
             },
             protocol: ProtocolType::UniswapV2,
             fee_bps: 30,
+            tick_spacing: None,
         };
         assert!((meta.fee_factor() - 0.997).abs() < 1e-10);
 
@@ -1771,6 +3223,73 @@ mod tests {
         assert!(graph.has_dirty_edges());
     }
 
+    /// V3 graph edges must carry virtual constant-product reserves
+    /// `(x_v, y_v)` after a V3Update event. Regression guard for two bugs:
+    /// (1) `add_edge` setting the weight but leaving
+    /// `reserve_in == reserve_out == 0.0`, which made
+    /// `mempool_pipeline::try_post_state_scan`'s `reserves_zero` guard drop
+    /// every V3 swap; and (2) the legacy `(1.0, spot)` seed, whose
+    /// infinitely-shallow curve made the optimizer mis-size every V3 hop.
+    /// The ratio `reserve_out/reserve_in` must still equal the spot price so
+    /// Bellman-Ford detection is unchanged.
+    #[tokio::test]
+    async fn test_v3_update_seeds_virtual_reserves() {
+        let (tx, _rx) = broadcast::channel(100);
+        let engine = AetherEngine::new(EngineConfig::default(), tx);
+
+        let pool = Address::repeat_byte(0xCD);
+        let token0 = Address::repeat_byte(0x31);
+        let token1 = Address::repeat_byte(0x41);
+
+        engine
+            .register_pool(pool, token0, token1, ProtocolType::UniswapV3, 5)
+            .await;
+
+        // sqrt_price_x96 = 2 * 2^96 → price = 4.0. Asymmetric value catches
+        // any direction-swap bug between forward and reverse edges.
+        let sqrt_x96 = U256::from(2u128) * (U256::from(1u128) << 96);
+        let event = PoolEvent::V3Update {
+            pool,
+            sqrt_price_x96: sqrt_x96,
+            liquidity: 1_000_000,
+            tick: 0,
+        };
+        engine.handle_pool_update(event).await;
+
+        let reg = engine.pool_registry.load();
+        let meta = reg.get(&pool).expect("V3 pool registered");
+        let t0 = meta.token0_idx;
+        let t1 = meta.token1_idx;
+        let pool_id = meta.pool_id;
+
+        let graph = engine.working_graph.lock().await;
+        let fwd = graph
+            .edges_from(t0)
+            .iter()
+            .find(|e| e.to == t1 && e.pool_id == pool_id)
+            .expect("V3 forward edge present");
+        let rev = graph
+            .edges_from(t1)
+            .iter()
+            .find(|e| e.to == t0 && e.pool_id == pool_id)
+            .expect("V3 reverse edge present");
+
+        // price = (sqrt/2^96)^2 = 2^2 = 4.0. Edges now carry V3 *virtual*
+        // reserves (x_v, y_v) = (L*2^96/sqrt, L*sqrt/2^96), not the legacy
+        // (1.0, spot) seed:
+        //   x_v = 1e6 * 2^96 / (2*2^96) = 500_000  (token0)
+        //   y_v = 1e6 * (2*2^96) / 2^96 = 2_000_000 (token1)
+        // The invariant that matters for detection is the ratio (= price):
+        //   fwd reserve_out/reserve_in = 4.0,  rev = 0.25.
+        assert!((fwd.reserve_in - 500_000.0).abs() < 1e-3, "fwd reserve_in {}", fwd.reserve_in);
+        assert!((fwd.reserve_out - 2_000_000.0).abs() < 1e-3, "fwd reserve_out {}", fwd.reserve_out);
+        assert!((rev.reserve_in - 2_000_000.0).abs() < 1e-3, "rev reserve_in {}", rev.reserve_in);
+        assert!((rev.reserve_out - 500_000.0).abs() < 1e-3, "rev reserve_out {}", rev.reserve_out);
+        // Ratio (price) — the quantity that sets the edge weight — preserved.
+        assert!((fwd.reserve_out / fwd.reserve_in - 4.0).abs() < 1e-9, "fwd ratio");
+        assert!((rev.reserve_out / rev.reserve_in - 0.25).abs() < 1e-9, "rev ratio");
+    }
+
     #[tokio::test]
     async fn test_pool_created_auto_registers() {
         let (tx, _rx) = broadcast::channel(100);
@@ -1802,6 +3321,7 @@ mod tests {
             EngineConfig {
                 min_profit_threshold_wei: 0, // Accept any profit for testing.
                 gas_price_gwei: 0.0,         // Zero gas for testing.
+                gating: GatingConfig::permissive(),
                 ..EngineConfig::default()
             },
             tx,
@@ -1909,6 +3429,7 @@ mod tests {
             EngineConfig {
                 min_profit_threshold_wei: 0, // Accept any profit for testing.
                 gas_price_gwei: 0.0,         // Zero gas for testing.
+                gating: GatingConfig::permissive(),
                 ..EngineConfig::default()
             },
             tx,
@@ -1919,12 +3440,15 @@ mod tests {
         let manifest_dir = env!("CARGO_MANIFEST_DIR");
         let config_path = format!("{manifest_dir}/../../config/pools.toml");
         let loaded = engine.bootstrap_pools(&config_path).await;
-        assert_eq!(loaded, 3, "All 3 pools from config/pools.toml should be loaded");
+        assert!(
+            loaded >= 3,
+            "expected at least the 3 anchor USDC/WETH pools to load, got {loaded}"
+        );
 
-        // 2. Verify all real pools are registered with correct metadata.
+        // 2. Verify the 3 anchor USDC/WETH pools are registered with correct metadata.
         {
             let registry = engine.pool_registry.load();
-            assert_eq!(registry.len(), 3);
+            assert!(registry.len() >= 3);
 
             let meta_v2 = registry.get(&uni_v2_pool).expect("Uniswap V2 pool should be registered");
             assert_eq!(meta_v2.protocol, ProtocolType::UniswapV2);
@@ -2111,6 +3635,12 @@ fee_bps = 30
                 min_profit_threshold_wei: 0,
                 gas_price_gwei: 0.0,
                 slippage_bps,
+                // Synthetic triangle graph populates edges via
+                // `add_edge` with `reserve_in = 0.0`, which the strict
+                // production gating drops on the TVL gate. Tests assert
+                // detection-cycle behaviour, not gating behaviour, so
+                // use the permissive config here.
+                gating: GatingConfig::permissive(),
                 ..EngineConfig::default()
             },
             tx,
@@ -2193,6 +3723,57 @@ fee_bps = 30
     fn test_engine_config_slippage_default() {
         let config = EngineConfig::default();
         assert_eq!(config.slippage_bps, 100, "Default slippage should be 100 bps (1%)");
+    }
+
+    fn cap_edge(protocol: ProtocolType, liquidity: U256) -> aether_state::price_graph::PriceEdge {
+        aether_state::price_graph::PriceEdge {
+            from: 0,
+            to: 1,
+            weight: 0.0,
+            pool_id: PoolId { address: Address::ZERO, protocol },
+            pool_address: Address::ZERO,
+            protocol,
+            liquidity,
+            reserve_in: 0.0,
+            reserve_out: 0.0,
+            filtered: false,
+        }
+    }
+
+    #[test]
+    fn v3_edge_excluded_from_optimizer_wei_cap() {
+        // Regression: a UniswapV3 edge's `liquidity` is sqrt-liquidity L, not
+        // wei, so it must never feed the optimizer's wei input-size cap.
+        let v3 = cap_edge(ProtocolType::UniswapV3, U256::from(1000u64));
+        assert!(
+            !edge_caps_optimizer_input(&v3),
+            "V3 edge must be excluded from the wei input-size cap"
+        );
+        // Even with a large L the exclusion holds — units, not magnitude.
+        let v3_big = cap_edge(ProtocolType::UniswapV3, U256::from(10_000_000_000_000_000_000u128));
+        assert!(!edge_caps_optimizer_input(&v3_big));
+    }
+
+    #[test]
+    fn non_v3_edges_cap_optimizer_only_when_liquidity_known() {
+        // V2/Sushi/Curve carry real wei reserves → they DO cap (when nonzero).
+        for proto in [
+            ProtocolType::UniswapV2,
+            ProtocolType::SushiSwap,
+            ProtocolType::Curve,
+            ProtocolType::BalancerV2,
+            ProtocolType::BancorV3,
+        ] {
+            assert!(
+                edge_caps_optimizer_input(&cap_edge(proto, U256::from(1u64))),
+                "{proto:?} with nonzero liquidity must cap the optimizer"
+            );
+            // Zero-liquidity placeholder carries no signal → excluded.
+            assert!(
+                !edge_caps_optimizer_input(&cap_edge(proto, U256::ZERO)),
+                "{proto:?} placeholder (zero liquidity) must not cap"
+            );
+        }
     }
 
     #[test]
@@ -2396,6 +3977,7 @@ fee_bps = 30
                 min_profit_threshold_wei: 0,
                 gas_price_gwei: 0.0,
                 slippage_bps: 100,
+                gating: GatingConfig::permissive(),
                 ..EngineConfig::default()
             },
             tx,

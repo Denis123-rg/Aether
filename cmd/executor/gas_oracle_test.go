@@ -399,3 +399,42 @@ func TestGasOracle_UpdateLoop_ErrorThenRecover(t *testing.T) {
 		t.Errorf("BaseFee after recovery: got %s, want 25000000000", fees.BaseFee)
 	}
 }
+
+func TestMempoolFees_AppliesFloorAndTenPercentRule(t *testing.T) {
+	t.Setenv("AETHER_MEMPOOL_GAS_TIP_MIN_GWEI", "")
+
+	go_ := NewGasOracle(300.0)
+	// Base 100 gwei → 10% = 10 gwei; default priority 2 gwei loses.
+	go_.Update(big.NewInt(100e9), big.NewInt(2e9))
+	mp := go_.MempoolFees()
+	if mp.MaxPriorityFee.Cmp(big.NewInt(10e9)) != 0 {
+		t.Fatalf("expected priority bumped to 10 gwei, got %s", mp.MaxPriorityFee)
+	}
+	// MaxFeePerGas = 2*baseFee + priority = 210 gwei.
+	want := new(big.Int).SetInt64(210e9)
+	if mp.MaxFeePerGas.Cmp(want) != 0 {
+		t.Fatalf("MaxFeePerGas: got %s, want %s", mp.MaxFeePerGas, want)
+	}
+}
+
+func TestMempoolFees_EnvFloorOverridesBoth(t *testing.T) {
+	t.Setenv("AETHER_MEMPOOL_GAS_TIP_MIN_GWEI", "25")
+	go_ := NewGasOracle(300.0)
+	// Base 100 gwei → 10% = 10 gwei; floor at 25 gwei wins.
+	go_.Update(big.NewInt(100e9), big.NewInt(2e9))
+	mp := go_.MempoolFees()
+	if mp.MaxPriorityFee.Cmp(big.NewInt(25e9)) != 0 {
+		t.Fatalf("expected priority floor 25 gwei, got %s", mp.MaxPriorityFee)
+	}
+}
+
+func TestMempoolFees_SuggestedAboveFloorAndTenPercent(t *testing.T) {
+	t.Setenv("AETHER_MEMPOOL_GAS_TIP_MIN_GWEI", "2")
+	go_ := NewGasOracle(300.0)
+	// Base 50 gwei → 10% = 5 gwei; suggested 8 gwei wins.
+	go_.Update(big.NewInt(50e9), big.NewInt(8e9))
+	mp := go_.MempoolFees()
+	if mp.MaxPriorityFee.Cmp(big.NewInt(8e9)) != 0 {
+		t.Fatalf("expected priority 8 gwei, got %s", mp.MaxPriorityFee)
+	}
+}
