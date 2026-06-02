@@ -202,8 +202,21 @@ impl PriceGraph {
         // oracle-free TVL proxy. Pools where neither endpoint is WETH are NOT
         // subject to this floor (left to existing qualification gates). The
         // floor is disabled when `weth_vertex` is unknown or the floor is 0.0.
+        //
+        // UniswapV3 is excluded from this floor because V3 edges carry a
+        // synthetic `(reserve_in, reserve_out) = (1.0, spot_price)` seed
+        // rather than real reserves (V3 has no x*y curve to read). Applying
+        // the human-WETH conversion to the synthetic `1.0` (when WETH is the
+        // `from` side) or to a raw-base spot price (when WETH is the `to`
+        // side) produces a human number ≈ 0, which would wrongly filter
+        // every WETH-paired V3 pool — including deep blue-chip pools — out
+        // of detection. Real V3 liquidity is checked downstream by the revm
+        // fork simulator.
         let filtered = match self.weth_vertex {
-            Some(weth) if self.min_liquidity_weth > 0.0 => {
+            Some(weth)
+                if self.min_liquidity_weth > 0.0
+                    && pool_id.protocol != ProtocolType::UniswapV3 =>
+            {
                 let weth_human = if from == weth {
                     Some(reserve_in / 10f64.powi(self.token_decimals(from) as i32))
                 } else if to == weth {
@@ -1290,6 +1303,99 @@ mod tests {
         let pool_id = make_pool_id(1, ProtocolType::UniswapV2);
         g.add_edge(0, 1, 2.0, pool_id, Address::repeat_byte(1), ProtocolType::UniswapV2, U256::from(1u64));
         assert!(!g.all_edges()[0].filtered, "placeholder edge must start unfiltered");
+    }
+
+    #[test]
+    fn test_floor_skips_v3_when_weth_is_to_side() {
+        // Regression: WETH-paired V3 pools carry the synthetic
+        // `(reserve_in, reserve_out) = (1.0, raw_spot)` seed. When WETH
+        // is the `to` side and the pair has decimal mismatch (e.g.
+        // USDC(6) / WETH(18)), `raw_spot / 1e18` is ≈ 0, which the
+        // legacy floor wrongly interpreted as "below the minimum WETH
+        // reserve" and filtered the edge. The V3 carve-out skips that
+        // computation entirely.
+        let mut g = PriceGraph::new(2);
+        g.set_token_decimals(0, 6); // USDC = token0
+        g.set_token_decimals(1, 18); // WETH = token1
+        g.set_weth_vertex(1);
+        g.set_min_liquidity_weth(1.0);
+
+        let pool_id = PoolId {
+            address: Address::repeat_byte(2),
+            protocol: ProtocolType::UniswapV3,
+        };
+        g.add_edge(0, 1, 1.0, pool_id, Address::repeat_byte(2), ProtocolType::UniswapV3, U256::ZERO);
+
+        // Realistic V3 USDC->WETH synthetic seed: spot in raw base units
+        // = (1/3000) human * 10^(18-6) = (1/3000) * 1e12 ≈ 3.33e8.
+        let raw_spot = (1.0 / 3000.0) * 1e12;
+        g.update_edge_from_reserves(0, 1, pool_id, 1.0, raw_spot, 0.997);
+
+        assert!(
+            !g.edges_from(0)[0].filtered,
+            "deep V3 WETH-paired pool must not be filtered by the min_liquidity_weth floor"
+        );
+    }
+
+    #[test]
+    fn test_floor_skips_v3_when_weth_is_from_side() {
+        // Symmetric direction: WETH on the `from` side. The synthetic
+        // seed makes `reserve_in == 1.0`, which divided by 1e18 is
+        // dust — would wrongly trip the floor without the V3 carve-out.
+        let mut g = PriceGraph::new(2);
+        g.set_token_decimals(0, 18); // WETH = token0
+        g.set_token_decimals(1, 6); // USDC = token1
+        g.set_weth_vertex(0);
+        g.set_min_liquidity_weth(1.0);
+
+        let pool_id = PoolId {
+            address: Address::repeat_byte(3),
+            protocol: ProtocolType::UniswapV3,
+        };
+        g.add_edge(0, 1, 1.0, pool_id, Address::repeat_byte(3), ProtocolType::UniswapV3, U256::ZERO);
+
+        // WETH->USDC: synthetic reserve_in = 1.0 (the WETH side), real
+        // spot on the output side. The exact spot value is irrelevant
+        // for the floor; what matters is the V3 carve-out skipping the
+        // human conversion altogether.
+        g.update_edge_from_reserves(0, 1, pool_id, 1.0, 3000.0 * 1e12, 0.997);
+
+        assert!(
+            !g.edges_from(0)[0].filtered,
+            "deep V3 WETH-paired pool (WETH on from side) must not be filtered"
+        );
+    }
+
+    #[test]
+    fn test_floor_still_applies_to_v2_weth_pool() {
+        // Negative regression: the V3 carve-out must not weaken the floor
+        // for V2/Sushi/Curve/Balancer/Bancor — those pools carry real
+        // base-unit reserves and the floor remains the no-oracle TVL
+        // proxy that catches drained or stub WETH pools.
+        let (mut g, _v2_pool) = build_weth_paired_pool(18);
+        g.set_weth_vertex(1);
+        g.set_min_liquidity_weth(1.0);
+
+        let v2_pool_id = PoolId {
+            address: Address::repeat_byte(4),
+            protocol: ProtocolType::UniswapV2,
+        };
+        // Overwrite with our explicit V2 pool to be unambiguous about protocol.
+        g.add_edge(0, 1, 1.0, v2_pool_id, Address::repeat_byte(4), ProtocolType::UniswapV2, U256::ZERO);
+
+        // 0.5 WETH on the WETH side (raw 5e17), one token unit on the
+        // other side. Below the 1.0 WETH floor → must still be filtered.
+        let weth_raw = 500_000_000_000_000_000.0_f64;
+        g.update_edge_from_reserves(0, 1, v2_pool_id, 1.0e18, weth_raw, 0.997);
+
+        assert!(
+            g.edges_from(0)
+                .iter()
+                .find(|e| e.pool_id == v2_pool_id)
+                .expect("V2 edge")
+                .filtered,
+            "V2 dust WETH pool must still be filtered after the V3 carve-out"
+        );
     }
 
     #[test]
