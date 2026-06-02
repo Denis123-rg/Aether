@@ -2399,14 +2399,18 @@ fn decoder_protocol_label(p: Protocol) -> &'static str {
 /// new protocol families fail the build instead of silently routing to
 /// reserves of `(0.0, 0.0)`.
 ///
-/// **V3 mapping.** The predictor returns `new_sqrt_price_x96`. The marginal
-/// post-state spot price (token1 per token0) is `(sqrt / 2^96)^2`. The
-/// graph's `update_edge_from_reserves` derives the edge weight as
-/// `(reserve_out / reserve_in) * fee_factor`, so we set the synthetic pair
-/// `(reserve_in, reserve_out) = (1.0, spot_price_post)` for the
-/// `token0 → token1` direction and the inverse for the reverse direction.
-/// `fee_factor` is applied at the graph layer, matching the bootstrap
-/// path that originally seeded the V3 edge with `price * fee`.
+/// **V3 mapping.** The predictor returns `new_sqrt_price_x96` and
+/// `new_liquidity`. From those we derive virtual constant-product reserves
+/// `(x_v, y_v) = (token0, token1)` raw units (`uniswap_v3::virtual_reserves`):
+/// `x_v = L·2^96/sqrt`, `y_v = L·sqrt/2^96`. We assign `(x_v, y_v)` for the
+/// `token0 → token1` direction and `(y_v, x_v)` for the reverse. Because
+/// `y_v/x_v == spot`, the graph weight (`-ln((reserve_out/reserve_in)·fee)`)
+/// is identical to the legacy `(1.0, spot)` seed — but const-product on the
+/// virtual pair reproduces V3 single-tick math exactly, so the backrun
+/// optimizer sizes the trade with real post-victim depth instead of an
+/// infinitely-shallow curve. `fee_factor` is applied at the graph layer,
+/// matching the engine's bootstrap and live V3-edge seeding. Zero post-state
+/// liquidity yields `(0.0, 0.0)` (no tradable depth).
 ///
 /// **Balancer mapping.** For equal-weight 2-token pools the rate equals
 /// `balance_out / balance_in` — directly usable as graph reserves with the
@@ -2420,16 +2424,26 @@ fn unified_to_post_reserves(
 ) -> (f64, f64) {
     match post {
         UnifiedPostState::UniswapV3(v3) => {
-            const TWO_POW_96: f64 = 79_228_162_514_264_337_593_543_950_336.0;
-            let sqrt_f = u256_to_f64_saturating(v3.new_sqrt_price_x96);
-            let price_t1_per_t0 = (sqrt_f / TWO_POW_96).powi(2);
-            if price_t1_per_t0 <= 0.0 {
-                return (0.0, 0.0);
-            }
-            if swap_token_in == meta.token0 {
-                (1.0, price_t1_per_t0)
-            } else {
-                (1.0, 1.0 / price_t1_per_t0)
+            // Virtual constant-product reserves (x_v, y_v) = (token0, token1)
+            // raw units from the *post-swap* sqrtPrice + liquidity. These
+            // reproduce the post-victim V3 curve exactly for the backrun
+            // optimizer, matching the engine's edge-seeding convention
+            // (`uniswap_v3::virtual_reserves`). The legacy `(1.0, spot)` seed
+            // only carried the marginal rate, giving the const-product profit
+            // function an infinitely-shallow curve and wrong backrun sizing.
+            match aether_pools::uniswap_v3::virtual_reserves(
+                v3.new_sqrt_price_x96,
+                v3.new_liquidity,
+            ) {
+                Some((x_v, y_v)) => {
+                    if swap_token_in == meta.token0 {
+                        (x_v, y_v)
+                    } else {
+                        (y_v, x_v)
+                    }
+                }
+                // Zero post-state liquidity / sqrtPrice → no tradable depth.
+                None => (0.0, 0.0),
             }
         }
         UnifiedPostState::Balancer(b) => {

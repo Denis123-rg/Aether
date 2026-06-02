@@ -131,8 +131,9 @@ pub enum PredictedPostState {
         reserve_in: f64,
         reserve_out: f64,
     },
-    /// V3: analytical predictor result mapped onto the synthetic
-    /// `(1.0, spot_price_post)` pair the price graph stores. The raw
+    /// V3: analytical predictor result mapped onto the virtual
+    /// constant-product reserves `(x_v, y_v)` the price graph stores
+    /// (`uniswap_v3::virtual_reserves` from post-state L + sqrtPrice). The raw
     /// `new_sqrt_price_x96` is reserved for the scorer (PR-3) — emitting
     /// `reserve_in/out` matches the V2 case and keeps reconciler SQL simple.
     V3 {

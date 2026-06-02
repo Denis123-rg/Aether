@@ -165,9 +165,10 @@ impl PriceGraph {
     /// decimal-mismatched pair (e.g. USDC 6 / WETH 18) would carry an
     /// uncancelled `10^12` factor into the edge weight.
     ///
-    /// This single correction is correct for **both** V2 (real reserves) and the
-    /// V3 synthetic mapping `(reserve_in, reserve_out) = (1.0, raw_spot)`, since
-    /// in both cases the ratio is output-base-per-input-base. V3 is not
+    /// This single correction is correct for **both** V2 (real reserves) and
+    /// V3 (virtual constant-product reserves `(x_v, y_v)` derived from L +
+    /// sqrtPrice; see `aether_pools::uniswap_v3::virtual_reserves`), since in
+    /// both cases the ratio is output-base-per-input-base. V3 is not
     /// special-cased.
     ///
     /// This only updates an *existing* edge. If no matching edge is found the
@@ -203,15 +204,16 @@ impl PriceGraph {
         // subject to this floor (left to existing qualification gates). The
         // floor is disabled when `weth_vertex` is unknown or the floor is 0.0.
         //
-        // UniswapV3 is excluded from this floor because V3 edges carry a
-        // synthetic `(reserve_in, reserve_out) = (1.0, spot_price)` seed
-        // rather than real reserves (V3 has no x*y curve to read). Applying
-        // the human-WETH conversion to the synthetic `1.0` (when WETH is the
-        // `from` side) or to a raw-base spot price (when WETH is the `to`
-        // side) produces a human number ≈ 0, which would wrongly filter
-        // every WETH-paired V3 pool — including deep blue-chip pools — out
-        // of detection. Real V3 liquidity is checked downstream by the revm
-        // fork simulator.
+        // UniswapV3 is excluded from this floor. V3 edges now carry virtual
+        // constant-product reserves `(x_v, y_v)` derived from L + sqrtPrice
+        // (`aether_pools::uniswap_v3::virtual_reserves`), but those virtual
+        // reserves *overstate* true depth for concentrated liquidity (they
+        // extrapolate the active-tick L across the whole price range), so the
+        // WETH-side virtual reserve is not a conservative TVL proxy the way a
+        // V2 pool's real WETH balance is. Flooring on it would let shallow
+        // pools pass while risking false-filtering of legitimately deep ones;
+        // V3 depth is instead validated downstream by the revm fork simulator
+        // and the protocol-aware cycle-gating liquidity check.
         let filtered = match self.weth_vertex {
             Some(weth)
                 if self.min_liquidity_weth > 0.0

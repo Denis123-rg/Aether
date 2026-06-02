@@ -57,6 +57,59 @@ fn sqrt_price_x96_to_tick(sqrt_price_x96: U256) -> i32 {
     (price.ln() / LN_1_0001).floor() as i32
 }
 
+/// Full-range U256 → f64. f64's 53-bit mantissa keeps ~15 significant
+/// digits, which is ample for the virtual-reserve magnitudes the price-graph
+/// optimizer consumes (it already runs in f64 weight space).
+fn u256_to_f64(v: U256) -> f64 {
+    let limbs = v.as_limbs();
+    limbs[0] as f64
+        + limbs[1] as f64 * 18_446_744_073_709_551_616.0 // 2^64
+        + limbs[2] as f64 * 3.402_823_669_209_385e38 // 2^128
+        + limbs[3] as f64 * 1.157_920_892_373_162e77 // 2^192
+}
+
+/// Virtual constant-product reserves `(x_v, y_v)` in raw base units
+/// (`token0`, `token1`) that reproduce a V3 pool's single-tick swap math
+/// *exactly*:
+///
+/// ```text
+/// x_v = L * 2^96 / sqrtPx96   (token0 raw)
+/// y_v = L * sqrtPx96 / 2^96   (token1 raw)
+/// ```
+///
+/// Key identities:
+/// * `y_v / x_v == (sqrtPx96 / 2^96)^2 == spot price (token1 per token0)`, so
+///   the const-product marginal rate equals the V3 spot rate. The price-graph
+///   edge weight (`-ln(rate)`) is therefore unchanged versus the legacy
+///   `(1.0, spot)` seed — Bellman-Ford negative-cycle *detection* is
+///   bit-for-bit identical.
+/// * `dy = dx_eff * y_v / (x_v + dx_eff)` (with `dx_eff = dx * fee`) is
+///   algebraically identical to [`UniswapV3Pool::compute_swap_within_tick`]
+///   within a single tick. So the optimizer's constant-product profit
+///   function — the same one used for V2 — now models a V3 hop with *correct
+///   depth*, instead of the infinitely-shallow `(1.0, spot)` synthetic seed
+///   that made any real input saturate output at `spot`.
+///
+/// Returns `None` when `sqrt_price_x96` or `liquidity` is zero (no tradable
+/// depth at the active tick — the caller leaves the edge unpriced rather than
+/// fabricating a curve).
+pub fn virtual_reserves(sqrt_price_x96: U256, liquidity: u128) -> Option<(f64, f64)> {
+    if sqrt_price_x96.is_zero() || liquidity == 0 {
+        return None;
+    }
+    let sqrt = u256_to_f64(sqrt_price_x96);
+    if sqrt <= 0.0 || !sqrt.is_finite() {
+        return None;
+    }
+    let l = liquidity as f64;
+    let x_v = l * TWO_POW_96_F64 / sqrt; // token0 raw
+    let y_v = l * sqrt / TWO_POW_96_F64; // token1 raw
+    if !x_v.is_finite() || !y_v.is_finite() || x_v <= 0.0 || y_v <= 0.0 {
+        return None;
+    }
+    Some((x_v, y_v))
+}
+
 /// Snapshot of a UniswapV3 pool *after* a hypothetical victim swap has been
 /// applied. Returned by [`UniswapV3Pool::predict_post_state`] so the mempool
 /// post-state simulator can update its graph-edge cache without re-reading
@@ -550,5 +603,77 @@ mod tests {
                 "predict_post_state amount_out diverged from compute_swap_within_tick at amt={amt}"
             );
         }
+    }
+
+    // ----- virtual_reserves -----
+
+    #[test]
+    fn virtual_reserves_marginal_rate_equals_spot() {
+        // y_v / x_v must equal the V3 spot price (token1 per token0) so the
+        // graph edge weight is identical to the legacy (1.0, spot) seed.
+        let pool = setup_v3_pool();
+        let (x_v, y_v) =
+            virtual_reserves(pool.sqrt_price_x96, pool.liquidity).expect("virtual reserves");
+        const TWO_POW_96: f64 = 79_228_162_514_264_337_593_543_950_336.0;
+        let sqrt = u256_to_f64(pool.sqrt_price_x96);
+        let spot = (sqrt / TWO_POW_96).powi(2);
+        let ratio = y_v / x_v;
+        assert!(
+            (ratio - spot).abs() / spot < 1e-9,
+            "y_v/x_v ({ratio}) must equal spot price ({spot})"
+        );
+    }
+
+    #[test]
+    fn virtual_reserves_const_product_matches_single_tick_math() {
+        // The whole point of the fix: const-product on the virtual reserves
+        // reproduces compute_swap_within_tick exactly. Verify for both swap
+        // directions across a range of input sizes that stay within one tick.
+        let pool = setup_v3_pool();
+        let fee_factor = (10_000.0 - pool.fee_bps as f64) / 10_000.0;
+        let (x_v, y_v) =
+            virtual_reserves(pool.sqrt_price_x96, pool.liquidity).expect("virtual reserves");
+
+        // The exact V3 path (`compute_swap_within_tick`) does integer U256
+        // division at each step, so its output is truncated by up to a couple
+        // of base units versus the pure-f64 virtual-reserve formula. Allow a
+        // relative 0.1% plus a small absolute slack to absorb that truncation;
+        // a *wrong* mapping (e.g. the legacy `(1.0, spot)` seed) would be off
+        // by many orders of magnitude and still fail loudly.
+        let close = |a: f64, b: f64| (a - b).abs() <= b.max(1.0) * 1e-3 + 2.0;
+
+        // token0 -> token1: reserves are (x_v, y_v).
+        for amt in [1_000_000u64, 1_000_000_000u64, 1_000_000_000_000u64] {
+            let dx = amt as f64;
+            let dy_vr = (dx * fee_factor * y_v) / (x_v + dx * fee_factor);
+            let dy_exact = u256_to_f64(
+                pool.get_amount_out(pool.token0, U256::from(amt))
+                    .expect("v3 amount_out"),
+            );
+            assert!(
+                close(dy_vr, dy_exact),
+                "token0->token1 virtual-reserve dy ({dy_vr}) != single-tick dy ({dy_exact}) at amt={amt}"
+            );
+        }
+
+        // token1 -> token0: reserves flip to (y_v, x_v).
+        for amt in [1_000_000_000_000u64, 1_000_000_000_000_000u64] {
+            let dy = amt as f64;
+            let dx_vr = (dy * fee_factor * x_v) / (y_v + dy * fee_factor);
+            let dx_exact = u256_to_f64(
+                pool.get_amount_out(pool.token1, U256::from(amt))
+                    .expect("v3 amount_out"),
+            );
+            assert!(
+                close(dx_vr, dx_exact),
+                "token1->token0 virtual-reserve dx ({dx_vr}) != single-tick dx ({dx_exact}) at amt={amt}"
+            );
+        }
+    }
+
+    #[test]
+    fn virtual_reserves_none_for_zero_inputs() {
+        assert!(virtual_reserves(U256::ZERO, 1_000_000).is_none());
+        assert!(virtual_reserves(U256::from(Q96), 0).is_none());
     }
 }
