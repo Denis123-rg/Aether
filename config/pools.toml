@@ -321,7 +321,10 @@ tick_spacing = 60
 
 [[pools]]
 protocol = "uniswap_v3"
-address = "0x109830a6Ce2cFc78Bb38AAEa8252e4Da5BA0d70F"
+# FIX: prior address 0x109830a6...0d70F had no contract code on-chain (a
+# lookalike) → dead edge. 0x109830a1...7dAa is the real wstETH/WETH 0.01%
+# pool (verified on-chain: token0=wstETH, token1=WETH, fee=100, has code).
+address = "0x109830a1AAaD605BbF02a9dFA7B0B92EC2FB7dAa"
 token0 = "0x7f39C581F595B53c5cb19bD0b3f8dA6c935E2Ca0"  # wstETH
 token1 = "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2"  # WETH
 fee_bps = 1
@@ -1014,3 +1017,162 @@ token1 = "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2"
 fee_bps = 100
 tier = "warm"  # longer-tail MOG/WETH
 
+
+# ===== ARB-FREQUENCY ADDITIONS (research deliverable, all addresses verified on-chain) =====
+# weETH (ether.fi Wrapped eETH) / WETH  —  TOP cycle-unlock.
+# weETH is the largest LRT; price vs WETH drifts with the eETH exchange rate
+# and is arbed continuously across UniV3 tiers + Curve. 3 SUPPORTED venues,
+# all deep. token0 = WETH (0xC02a... < 0xCd5f...) on every UniV3 pool.
+# Token: weETH = 0xCd5fE23C85820f7b72d0926Fc9b05b43E359b7ee
+# ---------------------------------------------------------------------------
+
+[[pools]]
+protocol = "uniswap_v3"
+# Uniswap V3 weETH/WETH 0.05% — Etherscan "Uniswap V3: weETH" + GeckoTerminal; ~$11.5M TVL
+address = "0x7A415B19932c0105c82FDB6b720bb01B0CC2CAe3"
+token0 = "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2"  # WETH
+token1 = "0xCd5fE23C85820f7b72d0926Fc9b05b43E359b7ee"  # weETH
+fee_bps = 5
+tier = "hot"
+tick_spacing = 10
+
+[[pools]]
+protocol = "uniswap_v3"
+# Uniswap V3 weETH/WETH 0.01% — Etherscan "Uniswap V3: weETH 2" + GeckoTerminal; ~$6.3M TVL
+address = "0x202A6012894Ae5c288eA824cbc8A9bfb26A49b93"
+token0 = "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2"  # WETH
+token1 = "0xCd5fE23C85820f7b72d0926Fc9b05b43E359b7ee"  # weETH
+fee_bps = 1
+tier = "hot"
+tick_spacing = 1
+
+[[pools]]
+protocol = "curve"
+# Curve weETH/WETH-ng — Etherscan "Curve's weeth-ng pool" + GeckoTerminal; ~$8.4M TVL
+address = "0xDB74dfDD3BB46bE8Ce6C33dC9D82777BCFc3dEd5"
+token0 = "0xCd5fE23C85820f7b72d0926Fc9b05b43E359b7ee"  # weETH
+token1 = "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2"  # WETH
+fee_bps = 4
+tier = "hot"
+
+
+# ---------------------------------------------------------------------------
+# USDC / USDT  —  completes the stablecoin triangle.
+# Registry has USDC/USDT ONLY on UniV3 0.01% (1 venue). Curve 3pool +
+# Balancer staBAL3 are indexed as DAI/USDC anchors, so they do NOT create a
+# USDC<->USDT graph edge. Adding the UniV3 0.05% tier gives a real 2nd venue
+# for the most-arbed stable pair. token0 = USDC.
+# ---------------------------------------------------------------------------
+
+[[pools]]
+protocol = "uniswap_v3"
+# Uniswap V3 USDC/USDT 0.05% — Etherscan "Uniswap V3: USDC-USDT" + GeckoTerminal "USDC/USDT 0.05%"; ~$0.67M TVL
+address = "0x7858E59e0C01EA06Df3aF3D20aC7B0003275D4Bf"
+token0 = "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"  # USDC
+token1 = "0xdAC17F958D2ee523a2206206994597C13D831ec7"  # USDT
+fee_bps = 5
+tier = "hot"
+tick_spacing = 10
+
+
+# ---------------------------------------------------------------------------
+# cbBTC (Coinbase Wrapped BTC) — bridges WBTC <-> USDC <-> WETH.
+# cbBTC is the fastest-growing BTC wrapper; its peg vs WBTC and price vs USDC
+# diverge frequently. These two UniV3 pools let the detector form triangular
+# cross-DEX cycles using the existing deep WBTC/USDC and WBTC/WETH registry
+# venues. NOTE: cbBTC has 8 decimals (like WBTC) — relies on the RPC
+# decimals() fetch at registration (cbBTC is not in known_token_decimals).
+# Token: cbBTC = 0xcbB7C0000aB88B473b1f5aFd9ef808440eed33Bf
+# ---------------------------------------------------------------------------
+
+[[pools]]
+protocol = "uniswap_v3"
+# Uniswap V3 WBTC/cbBTC 0.01% — Etherscan "Uniswap V3: WBTC-cbBTC" + GeckoTerminal; ~$26M TVL
+address = "0xe8F7c89C5eFa061e340f2D2F206eC78FD8f7e124"
+token0 = "0x2260FAC5E5542a773Aa44fBCfeDf7C193bc2C599"  # WBTC
+token1 = "0xcbB7C0000aB88B473b1f5aFd9ef808440eed33Bf"  # cbBTC
+fee_bps = 1
+tier = "hot"
+tick_spacing = 1
+
+[[pools]]
+protocol = "uniswap_v3"
+# Uniswap V3 USDC/cbBTC 0.30% — Etherscan "Uniswap V3: USDC-cbBTC" + GeckoTerminal; ~$3.8M TVL
+address = "0x4548280AC92507c9092a511C7396Cbea78fA9e49"
+token0 = "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"  # USDC
+token1 = "0xcbB7C0000aB88B473b1f5aFd9ef808440eed33Bf"  # cbBTC
+fee_bps = 30
+tier = "warm"
+tick_spacing = 60
+
+
+# ---------------------------------------------------------------------------
+# USDe (Ethena) / USDC — Ethena is a top-volume stable; the bulk of USDe
+# liquidity is on Uniswap V4 + Fluid (UNSUPPORTED, excluded). These are the
+# two deepest SUPPORTED venues, giving a UniV3 <-> Curve cross-DEX edge.
+# Moderate confidence on depth (Curve pool TVL fluctuates ~$0.7M-$6.5M across
+# snapshots; UniV3 ~$2.35M). Both clear the floors. token0 = USDe on UniV3.
+# Token: USDe = 0x4c9EDD5852cd905f086C759E8383e09bff1E68B3
+# ---------------------------------------------------------------------------
+
+[[pools]]
+protocol = "uniswap_v3"
+# Uniswap V3 USDe/USDC 0.01% — Etherscan "Uniswap V3: USDe-USDC" + GeckoTerminal; ~$2.35M TVL
+address = "0xE6D7EBB9f1a9519dc06D557e03C522d53520e76A"
+token0 = "0x4c9EDD5852cd905f086C759E8383e09bff1E68B3"  # USDe
+token1 = "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"  # USDC
+fee_bps = 1
+tier = "warm"
+tick_spacing = 1
+
+[[pools]]
+protocol = "curve"
+# Curve USDe/USDC (factory-stable-ng-12) — Ethena docs key-addresses + GeckoTerminal; ~$0.7M-$6.5M TVL
+address = "0x02950460E2b9529D0E00284A5fA2d7bDF3fA4d72"
+token0 = "0x4c9EDD5852cd905f086C759E8383e09bff1E68B3"  # USDe
+token1 = "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"  # USDC
+fee_bps = 1
+tier = "warm"
+
+
+# ---------------------------------------------------------------------------
+# crvUSD (Curve USD) — stablecoin hub. crvUSD/USDC and crvUSD/USDT are both
+# deep Curve pools (~$20M and ~$16M). Together with the existing UniV3
+# USDC/USDT they unlock the cross-DEX cycle
+#   crvUSD -> USDC (Curve) -> USDT (UniV3) -> crvUSD (Curve)
+# crvUSD prices wobble with Curve lending/liquidation flow, so these diverge
+# from the 3pool stables often. token0 = crvUSD (hub) per anchor convention.
+# Token: crvUSD = 0xf939E0A03FB07F59A73314E73794Be0E57ac1b4E
+# ---------------------------------------------------------------------------
+
+[[pools]]
+protocol = "curve"
+# Curve crvUSD/USDC (crvUSDUSDC-f) — Etherscan token tracker + GeckoTerminal; ~$20M TVL
+address = "0x4DEcE678ceceb27446b35C672dC7d61F30bAD69E"
+token0 = "0xf939E0A03FB07F59A73314E73794Be0E57ac1b4E"  # crvUSD
+token1 = "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"  # USDC
+fee_bps = 1
+tier = "warm"
+
+[[pools]]
+protocol = "curve"
+# Curve crvUSD/USDT (crvUSDUSDT-f) — Etherscan token tracker + GeckoTerminal; ~$16M TVL
+address = "0x390f3595bCa2Df7d23783dFd126427CCeb997BF4"
+token0 = "0xf939E0A03FB07F59A73314E73794Be0E57ac1b4E"  # crvUSD
+token1 = "0xdAC17F958D2ee523a2206206994597C13D831ec7"  # USDT
+fee_bps = 1
+tier = "warm"
+
+
+# ---------------------------------------------------------------------------
+# PYUSD (PayPal USD) / USDC — Curve only ~$42M (deep). The 2nd supported
+# venue (UniV3 PYUSD/USDC) is only ~$55k = dust, so PYUSD has NO viable
+# cross-DEX pair on supported protocols today. Listed here COMMENTED OUT for
+# visibility; do NOT enable until a 2nd deep supported venue exists.
+# [[pools]]
+# protocol = "curve"
+# address = "0x383E6b4437b59fff47B619CBA855CA29342A8559"  # Curve PYUSD/USDC ~$42M
+# token0 = "0x6c3ea9036406852006290770BEdFcAbA0e23A0e8"  # PYUSD
+# token1 = "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"  # USDC
+# fee_bps = 1
+# tier = "cold"
