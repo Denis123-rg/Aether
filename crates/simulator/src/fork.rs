@@ -89,18 +89,57 @@ impl PrewarmedState {
     /// Bytecode is inserted by code hash only — balance and nonce are left for
     /// lazy RPC fetch so on-chain ETH holdings are never clobbered with zero.
     pub fn inject_into(&self, state: &mut RpcForkedState) {
-        for (code_hash, bytecode) in &self.code_cache {
-            state
-                .db
-                .cache
-                .contracts
-                .insert(*code_hash, bytecode.clone());
-        }
+        self.inject_into_db(&mut state.db);
+    }
+
+    /// Generic core of [`Self::inject_into`], factored out so it can run
+    /// against any `CacheDB` backing (incl. `EmptyDB` in unit tests).
+    fn inject_into_db<DB>(&self, db: &mut CacheDB<DB>)
+    where
+        DB: revm::database_interface::DatabaseRef,
+        CacheDB<DB>: revm::database_interface::Database,
+    {
+        self.inject_code_into_db(db);
         for &(addr, slot, value) in &self.storage {
-            if let Err(e) = state.db.insert_account_storage(addr, slot, value) {
-                warn!(%addr, %slot, error = %e, "pre-warm: failed to insert storage slot");
+            if let Err(e) = db.insert_account_storage(addr, slot, value) {
+                warn!(%addr, %slot, error = ?e, "pre-warm: failed to insert storage slot");
             }
         }
+    }
+
+    /// Inject ONLY the pre-fetched bytecode, never the storage slots.
+    ///
+    /// Use this for any sim that forks at `BlockId::latest()` and must
+    /// observe *current* mutable state (e.g. the mempool-backrun victim
+    /// replay). Bytecode for a deployed contract is immutable, so warming
+    /// it by code hash is always safe and removes the dominant cold-fetch
+    /// cost. Mutable slots — chiefly the V2 packed-reserve word at slot 8 —
+    /// are deliberately left for lazy RPC fetch: injecting a pinned
+    /// snapshot here would *shadow* the fresh `latest` read in the CacheDB
+    /// overlay. Because the prewarm snapshot is refreshed only every few
+    /// blocks, the victim's replay would then run against reserves up to
+    /// several blocks stale and trip its own `amountOutMin` slippage guard,
+    /// reverting a tx that is perfectly valid against current state.
+    pub fn inject_code_only(&self, state: &mut RpcForkedState) {
+        self.inject_code_into_db(&mut state.db);
+    }
+
+    /// Generic core of [`Self::inject_code_only`].
+    fn inject_code_into_db<DB>(&self, db: &mut CacheDB<DB>) {
+        for (code_hash, bytecode) in &self.code_cache {
+            db.cache.contracts.insert(*code_hash, bytecode.clone());
+        }
+    }
+
+    /// Test-only constructor: build a `PrewarmedState` from explicit
+    /// bytecode and storage parts (the production path goes through
+    /// [`prewarm_state`], which needs a live provider).
+    #[cfg(test)]
+    fn from_parts(
+        code_cache: Vec<(B256, Bytecode)>,
+        storage: Vec<(Address, U256, U256)>,
+    ) -> Self {
+        Self { code_cache, storage }
     }
 }
 
@@ -962,6 +1001,67 @@ mod tests {
         assert!(
             state.storage.is_empty(),
             "stale cache entries must not surface in pre-warm output"
+        );
+    }
+
+    /// The packed V2 reserve slot (slot 8) of a tracked pool.
+    const V2_RESERVES_SLOT: u64 = 8;
+
+    fn prewarm_fixture() -> (PrewarmedState, Address, Bytecode) {
+        let pool = address!("b4e16d0168e52d35cacd2c6185b44281ec28c9dc"); // UNIV2 WETH/USDC
+        // PUSH1 0x00 PUSH1 0x00 RETURN — any non-empty program; we only
+        // assert the bytecode lands in the contracts cache.
+        let code = Bytecode::new_raw(Bytes::from(vec![0x60, 0x00, 0x60, 0x00, 0xf3]));
+        let stale_reserves = U256::from(1_234_567u64);
+        let warm = PrewarmedState::from_parts(
+            vec![(code.hash_slow(), code.clone())],
+            vec![(pool, U256::from(V2_RESERVES_SLOT), stale_reserves)],
+        );
+        (warm, pool, code)
+    }
+
+    #[test]
+    fn inject_code_only_warms_bytecode_but_never_storage() {
+        // Regression guard for the mempool-backrun victim-revert fix: the
+        // validator forks at `latest` and must NOT have stale reserve slots
+        // shadow the fresh chain read, or the victim's `amountOutMin`
+        // slippage guard reverts a valid tx. `inject_code_only` warms the
+        // bytecode cache yet leaves slot 8 untouched (lazy fresh fetch).
+        let (warm, pool, code) = prewarm_fixture();
+        let mut db: CacheDB<EmptyDB> = CacheDB::new(EmptyDB::default());
+        warm.inject_code_into_db(&mut db);
+
+        assert!(
+            db.cache.contracts.contains_key(&code.hash_slow()),
+            "bytecode must be warmed by code hash"
+        );
+        assert!(
+            db.cache
+                .accounts
+                .get(&pool)
+                .is_none_or(|a| a.storage.is_empty()),
+            "inject_code_only must NOT pre-populate the stale V2 reserve slot"
+        );
+    }
+
+    #[test]
+    fn inject_into_warms_both_bytecode_and_storage() {
+        // The full inject is still available (tests / non-latest forks):
+        // it populates both the bytecode cache and the storage overlay.
+        let (warm, pool, code) = prewarm_fixture();
+        let mut db: CacheDB<EmptyDB> = CacheDB::new(EmptyDB::default());
+        warm.inject_into_db(&mut db);
+
+        assert!(db.cache.contracts.contains_key(&code.hash_slow()));
+        let slot = db
+            .cache
+            .accounts
+            .get(&pool)
+            .and_then(|a| a.storage.get(&U256::from(V2_RESERVES_SLOT)).copied());
+        assert_eq!(
+            slot,
+            Some(U256::from(1_234_567u64)),
+            "inject_into must write the prewarmed reserve slot"
         );
     }
 }

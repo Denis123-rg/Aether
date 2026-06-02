@@ -28,7 +28,7 @@ To stop:
 docker compose -f deploy/docker/docker-compose.yml up -d prometheus
 
 # Start Rust core
-cargo run --release --bin aether-grpc-server
+cargo run --release --bin aether-rust
 
 # Start Go executor (separate terminal)
 go run ./cmd/executor
@@ -77,7 +77,7 @@ After=network.target
 
 [Service]
 Type=simple
-ExecStart=/opt/aether/bin/aether-grpc-server
+ExecStart=/opt/aether/bin/aether-rust
 WorkingDirectory=/opt/aether
 Nice=-20
 CPUAffinity=0 1 2 3

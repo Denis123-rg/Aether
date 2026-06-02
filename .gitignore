@@ -23,7 +23,7 @@ contracts/cache/
 cache/
 out/
 
-/build/bin
+/build/
 
 /contracts/broadcast
 

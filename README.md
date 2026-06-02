@@ -63,7 +63,7 @@ graph TB
         REC["Reconciler"] -.->|predicted vs realized| MN
     end
 
-    BUILDERS["Flashbots · Titan · Beaver · rsync"]
+    BUILDERS["Flashbots · Titan · Eden · rsync"]
 
     subgraph CHAIN["On-Chain"]
         AE["AetherExecutor.sol"] --> AAVE["Aave V3 Flash Loan"]
@@ -108,9 +108,22 @@ sequenceDiagram
     and
         Go->>B: eth_sendBundle (Titan)
     and
-        Go->>B: eth_sendBundle (Beaver)
+        Go->>B: eth_sendBundle (Eden)
     end
 ```
+
+---
+
+## Mempool Backrun Mode
+
+Alongside block-driven cyclic arbitrage, Aether runs a **pending-transaction backrun** strategy:
+
+1. **Decode pending swaps** — an Alchemy `pendingTransactions` subscription feeds a calldata decoder that understands UniswapV2/V3 routers, SushiSwap, the Uniswap **Universal Router**, **1inch v6** AggregationRouter, Balancer V2 Vault, Bancor V3, and Curve (pool-direct) flows.
+2. **Predict victim post-state** — the affected pools are advanced past the victim swap either analytically (Curve, Bancor) or by replaying the swap in `revm` (Balancer, UniV3), producing the reserves the block will actually settle with.
+3. **Validate the backrun** — the detector/simulator search for a profitable backrun against that predicted state, with the `AetherExecutor` bytecode injected into the `revm` `CacheDB` so the flash-loan path is exercised.
+4. **Bundle atomically** — the bundle is `[victim_raw_tx, arb_tx]`, where `victim_raw_tx` is the victim's **raw signed transaction** captured from the mempool (builders reject bare tx hashes), so the backrun only lands if the victim lands.
+
+The path is **shadow-gated** by default (`AETHER_SHADOW`): it logs and dumps forensics instead of submitting until explicitly promoted. See [`docs/runbook/mempool-backrun-rollout.md`](docs/runbook/mempool-backrun-rollout.md) and [`docs/runbook/mempool-observability.md`](docs/runbook/mempool-observability.md). Local harnesses: `scripts/mempool_backrun_shadow.sh`, `scripts/mempool_capture.sh`, `scripts/mempool_smoke.sh`, and the end-to-end `demo.sh`.
 
 ---
 
@@ -153,6 +166,8 @@ aether/
 │   ├── nodes.yaml                   # Ethereum node provider endpoints
 │   ├── builders.yaml                # Block builder API endpoints
 │   └── executor.yaml                # Bundle build + tip parameters
+│
+├── migrations/                   # Postgres schema migrations (ledger + mempool)
 │
 ├── deploy/
 │   ├── systemd/                     # aether-rust.service, aether-go.service
@@ -306,7 +321,7 @@ Starts: `aether-rust`, `aether-go`, Prometheus, Grafana, Loki.
 docker compose -f deploy/docker/docker-compose.yml up -d prometheus grafana loki
 
 # 2. Start Rust core (gRPC server)
-cargo run --release --bin aether-grpc-server
+cargo run --release --bin aether-rust
 
 # 3. Start Go executor
 go run ./cmd/executor
@@ -383,7 +398,7 @@ The system enforces automatic circuit breakers:
 | Condition | Action |
 |---|---|
 | Gas price >300 gwei | **HALT** |
-| 3 consecutive reverts in 10min | **PAUSE** |
+| 10 consecutive reverts in 10min | **PAUSE** |
 | Daily loss >0.5 ETH | **HALT** |
 | ETH balance <0.1 ETH | **HALT** |
 | Node latency >500ms | **DEGRADE** |
@@ -396,7 +411,7 @@ System state machine:
 stateDiagram-v2
     [*] --> Running
     Running --> Degraded: node latency >500ms
-    Running --> Paused: 3 reverts in 10min
+    Running --> Paused: 10 reverts in 10min
     Running --> Halted: gas >300gwei<br/>daily loss >0.5 ETH<br/>balance <0.1 ETH
     Degraded --> Running: latency recovers
     Degraded --> Halted: breaker trips

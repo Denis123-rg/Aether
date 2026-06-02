@@ -418,6 +418,97 @@ impl AetherEngine {
         // on the same hostname + path differing only in scheme, so a literal
         // scheme rewrite produces the correct HTTP endpoint without forcing
         // operators to maintain a second env var.
+        // Build the fork provider with TWO transport-layer protections:
+        //
+        // 1. A bounded per-request transport timeout
+        //    (`AETHER_RPC_REQUEST_TIMEOUT_MS`, default 10000ms; 0 disables)
+        //    so a single cold state fetch (`eth_getStorageAt` /
+        //    `eth_getBalance`) cannot stall the synchronous revm fork for
+        //    tens of seconds and starve the mempool-backrun sim semaphore.
+        //    A timed-out fetch surfaces as a transport error, which the
+        //    validator classifies as `rpc_transport` and retries.
+        //
+        // 2. An alloy `RetryBackoffLayer` that self-throttles against the
+        //    provider's compute-units budget and retries HTTP 429 with
+        //    exponential backoff (`AETHER_RPC_MAX_RETRIES` default 10,
+        //    `AETHER_RPC_BACKOFF_MS` default 200, `AETHER_RPC_CUPS` default
+        //    300). This is THE fix for the 429 storms — without it, an
+        //    Alchemy rate-limit reply propagates through the AlloyDB into
+        //    revm as a transient DB error, classified by the validator as
+        //    `rpc_transport` and bombing the funnel.
+        //
+        // This one provider feeds the block-driven sim, the mempool backrun
+        // validator (main.rs passes `engine.rpc_provider()`), and the prewarm
+        // refresher — so fixing it here fixes all three.
+        fn build_fork_http_provider(url: url::Url) -> DynProvider<Ethereum> {
+            use alloy::rpc::client::ClientBuilder;
+            use alloy::transports::http::reqwest;
+            use alloy::transports::layers::RetryBackoffLayer;
+            // Default 10s: a generous socket-level ceiling that catches the
+            // pathological ~16s cold-fetch hang without prematurely failing
+            // legitimately slow reads — e.g. an Anvil fork proxying a cold
+            // slot to a rate-limited upstream, or the one-shot boot reserve
+            // hydration. The sim hot-path latency is bounded separately by
+            // AETHER_MEMPOOL_SIM_TIMEOUT_MS + the sim concurrency semaphore,
+            // not by this timeout.
+            let timeout_ms = std::env::var("AETHER_RPC_REQUEST_TIMEOUT_MS")
+                .ok()
+                .and_then(|v| v.parse::<u64>().ok())
+                .unwrap_or(10000);
+            // 429-retry knobs. `max_retries=10` gives the rate-limit policy
+            // ~10 chances at exponential backoff before giving up; `200ms`
+            // initial backoff keeps the first retry inside a sub-second
+            // budget for the common single-burst case; `300 CU/s` is a
+            // sane default for an Alchemy free/growth tier — operators on
+            // higher tiers should raise `AETHER_RPC_CUPS` to match.
+            let max_retries = std::env::var("AETHER_RPC_MAX_RETRIES")
+                .ok()
+                .and_then(|v| v.parse::<u32>().ok())
+                .unwrap_or(10);
+            let backoff_ms = std::env::var("AETHER_RPC_BACKOFF_MS")
+                .ok()
+                .and_then(|v| v.parse::<u64>().ok())
+                .unwrap_or(200);
+            let cups = std::env::var("AETHER_RPC_CUPS")
+                .ok()
+                .and_then(|v| v.parse::<u64>().ok())
+                .unwrap_or(300);
+            let retry_layer = RetryBackoffLayer::new(max_retries, backoff_ms, cups);
+
+            // Build the underlying reqwest client. If the timeout knob is
+            // disabled (0) or the build fails, fall through to the default
+            // `reqwest::Client`, which has no per-request timeout but still
+            // gets the retry layer.
+            let http_client: reqwest::Client = if timeout_ms == 0 {
+                reqwest::Client::new()
+            } else {
+                match reqwest::Client::builder()
+                    .timeout(std::time::Duration::from_millis(timeout_ms))
+                    .build()
+                {
+                    Ok(c) => c,
+                    Err(e) => {
+                        tracing::warn!(
+                            error = %e,
+                            "reqwest client build failed; using default HTTP client (no per-request timeout)"
+                        );
+                        reqwest::Client::new()
+                    }
+                }
+            };
+
+            // Stack: ClientBuilder → layer(retry) → http_with_client(reqwest, url).
+            // `http_with_client` wraps the reqwest client in alloy's HTTP
+            // transport, then the retry layer wraps the transport's tower
+            // Service so 429s are retried before they surface as errors.
+            let rpc_client = ClientBuilder::default()
+                .layer(retry_layer)
+                .http_with_client(http_client, url);
+            alloy::providers::ProviderBuilder::new()
+                .connect_client(rpc_client)
+                .erased()
+        }
+
         let rpc_provider = config.rpc_url.as_ref().and_then(|url_str| {
             let http_url = normalize_to_http_scheme(url_str);
             let parsed: url::Url = match http_url.parse() {
@@ -427,13 +518,13 @@ impl AetherEngine {
                     return None;
                 }
             };
-            let provider = alloy::providers::ProviderBuilder::new().connect_http(parsed);
+            let provider = build_fork_http_provider(parsed);
             info!(
                 original = %url_str,
                 fork_url = %http_url,
-                "RPC provider created for fork simulation"
+                "RPC provider created for fork simulation (timeout + 429 retry layer applied)"
             );
-            Some(provider.erased())
+            Some(provider)
         });
 
         // Open the persistent bytecode cache when configured. Failure to open
@@ -613,25 +704,40 @@ impl AetherEngine {
                 graph.set_weth_vertex(t1_idx);
                 graph.set_min_liquidity_weth(self.config.min_liquidity_weth);
             }
-            // Placeholder edges with rate 1.0 (neutral weight = 0).
-            graph.add_edge(
-                t0_idx,
-                t1_idx,
-                1.0,
-                pool_id,
-                pool_addr,
+            // Placeholder edges with rate 1.0 (neutral weight = 0). Only added
+            // for protocols whose graph integration is complete — V2/V3/Sushi.
+            // Balancer V2, Curve, and Bancor V3 are registered (so mempool path
+            // can find them via pool_registry + pool_states) but get NO graph
+            // edge until update_edge_from_reserves can be called against real
+            // post-state. Without this gate a placeholder rate=1.0 produces
+            // phantom Bellman-Ford cycles whenever a V3 leg supplies the real
+            // exchange rate — e.g. USDC --(Balancer placeholder)--> WETH
+            // --(real V3 WETH/USDT)--> USDT --(real V3 USDT/USDC)--> USDC
+            // synthesises a 2000x profit factor from a single dead edge.
+            let graph_integrated = matches!(
                 protocol,
-                U256::ZERO,
+                ProtocolType::UniswapV2 | ProtocolType::UniswapV3 | ProtocolType::SushiSwap
             );
-            graph.add_edge(
-                t1_idx,
-                t0_idx,
-                1.0,
-                pool_id,
-                pool_addr,
-                protocol,
-                U256::ZERO,
-            );
+            if graph_integrated {
+                graph.add_edge(
+                    t0_idx,
+                    t1_idx,
+                    1.0,
+                    pool_id,
+                    pool_addr,
+                    protocol,
+                    U256::ZERO,
+                );
+                graph.add_edge(
+                    t1_idx,
+                    t0_idx,
+                    1.0,
+                    pool_id,
+                    pool_addr,
+                    protocol,
+                    U256::ZERO,
+                );
+            }
             // Snapshot is published by callers (fetch_initial_reserves, handle_pool_update)
             // after batch operations, not per-registration, to avoid O(N) clones on startup.
         }
@@ -788,6 +894,7 @@ impl AetherEngine {
         &self,
         provider: &DynProvider<Ethereum>,
         pools: &[(Address, PoolMetadata)],
+        sem: Arc<Semaphore>,
     ) {
         alloy::sol! {
             function decimals() external view returns (uint8);
@@ -803,7 +910,9 @@ impl AetherEngine {
         let mut join_set = tokio::task::JoinSet::new();
         for (token, vertex) in unique {
             let provider = provider.clone();
+            let sem = Arc::clone(&sem);
             join_set.spawn(async move {
+                let _permit = sem.acquire().await.ok()?;
                 let calldata = decimalsCall {}.abi_encode();
                 let tx = alloy::rpc::types::TransactionRequest::default()
                     .to(token)
@@ -869,6 +978,7 @@ impl AetherEngine {
         &self,
         provider: &DynProvider<Ethereum>,
         pools: &[(Address, PoolMetadata)],
+        sem: Arc<Semaphore>,
     ) -> HashSet<Address> {
         alloy::sol! {
             function token0() external view returns (address);
@@ -885,7 +995,11 @@ impl AetherEngine {
                 continue;
             }
             let provider = provider.clone();
+            let sem = Arc::clone(&sem);
             join_set.spawn(async move {
+                // Hold the permit across both token accessor calls so the
+                // per-pool fetch counts as one in-flight slot, not two.
+                let _permit = sem.acquire().await.ok()?;
                 let chain_t0 = match Self::call_token_accessor(
                     &provider,
                     pool_addr,
@@ -991,20 +1105,40 @@ impl AetherEngine {
             return;
         }
 
-        info!(count = pools.len(), "Fetching initial reserves via RPC (concurrent)");
+        // Cap in-flight provider.call concurrency at AETHER_BOOT_FETCH_CONCURRENCY
+        // (default 20). The unbounded `join_all` / `join_set` fan-out that used
+        // to fire all ~300 boot RPCs at once cascaded a free-tier upstream into
+        // 429s, which in turn wedged the local Anvil fork's connection pool to
+        // its backend and froze the engine at boot. A shared semaphore caps
+        // peak parallelism so the burst trickles into the upstream's rate
+        // budget rather than spiking past it.
+        let boot_concurrency = std::env::var("AETHER_BOOT_FETCH_CONCURRENCY")
+            .ok()
+            .and_then(|v| v.parse::<usize>().ok())
+            .filter(|n| *n > 0)
+            .unwrap_or(20);
+        let sem = Arc::new(Semaphore::new(boot_concurrency));
+        info!(
+            count = pools.len(),
+            concurrency = boot_concurrency,
+            "Fetching initial reserves via RPC (concurrent, capped)"
+        );
 
         // Resolve per-token ERC20 decimals once per UNIQUE token address and
         // apply them to the graph BEFORE any update_edge_from_reserves call, so
         // the decimal correction uses on-chain truth. RPC failures degrade to
         // the static/default decimals already seeded at registration — startup
         // is never blocked.
-        self.fetch_and_apply_token_decimals(&provider, &pools).await;
+        self.fetch_and_apply_token_decimals(&provider, &pools, Arc::clone(&sem))
+            .await;
 
         // Validate that each pair pool's config token0/token1 agree with the
         // on-chain contract. Mismatched pools are quarantined: they are skipped
         // during reserve seeding below so a config-drift error cannot inject a
         // phantom rate into detection. Degrades open on RPC failure.
-        let quarantined = self.fetch_token_identity_quarantine(&provider, &pools).await;
+        let quarantined = self
+            .fetch_token_identity_quarantine(&provider, &pools, Arc::clone(&sem))
+            .await;
         if !quarantined.is_empty() {
             warn!(
                 count = quarantined.len(),
@@ -1030,7 +1164,13 @@ impl AetherEngine {
             V3 { pool_addr: Address, meta: PoolMetadata, sqrt_price_x96: U256, tick: i32 },
             Curve { pool_addr: Address, meta: PoolMetadata, a: U256, b0: U256, b1: U256 },
             Balancer { pool_addr: Address, meta: PoolMetadata, b0: U256, b1: U256, w0: U256, w1: U256 },
-            Skipped,
+            // Carry the meta so the consumer can mark the placeholder graph
+            // edges filtered. Without this Bellman-Ford can traverse the dead
+            // edge at the boot-seeded rate=1.0 and synthesise phantom cycles
+            // (e.g. WETH --(real V3)--> COMP --(dead Sushi)--> WETH at ~108x).
+            // `meta` is `None` for branches that fail before metadata is
+            // bound (none today — keep the variant tolerant for future safety).
+            Skipped { meta: Option<PoolMetadata> },
         }
 
         // Fire off all RPC calls concurrently.
@@ -1038,7 +1178,15 @@ impl AetherEngine {
 
         for (pool_addr, meta) in pools.iter().cloned() {
             let provider = provider.clone();
+            let sem = Arc::clone(&sem);
             join_set.spawn(async move {
+                // Acquire one permit per pool. Multi-call protocols (Curve,
+                // Balancer) hold the permit across their sequential calls so
+                // each pool counts as one in-flight slot, not three+.
+                let permit_guard = sem.acquire().await;
+                if permit_guard.is_err() {
+                    return ReserveResult::Skipped { meta: Some(meta.clone()) };
+                }
                 match meta.protocol {
                     ProtocolType::UniswapV2 | ProtocolType::SushiSwap => {
                         let calldata = getReservesCall {}.abi_encode();
@@ -1054,11 +1202,11 @@ impl AetherEngine {
                             }
                             Ok(output) => {
                                 warn!(%pool_addr, len = output.len(), "getReserves output too short");
-                                ReserveResult::Skipped
+                                ReserveResult::Skipped { meta: Some(meta.clone()) }
                             }
                             Err(e) => {
                                 warn!(%pool_addr, error = %e, "getReserves RPC call failed");
-                                ReserveResult::Skipped
+                                ReserveResult::Skipped { meta: Some(meta.clone()) }
                             }
                         }
                     }
@@ -1088,11 +1236,11 @@ impl AetherEngine {
                             }
                             Ok(output) => {
                                 warn!(%pool_addr, len = output.len(), "slot0 output too short");
-                                ReserveResult::Skipped
+                                ReserveResult::Skipped { meta: Some(meta.clone()) }
                             }
                             Err(e) => {
                                 warn!(%pool_addr, error = %e, "slot0 RPC call failed");
-                                ReserveResult::Skipped
+                                ReserveResult::Skipped { meta: Some(meta.clone()) }
                             }
                         }
                     }
@@ -1110,11 +1258,11 @@ impl AetherEngine {
                             Ok(out) if out.len() >= 32 => U256::from_be_slice(&out[0..32]),
                             Ok(out) => {
                                 warn!(%pool_addr, len = out.len(), "Curve A() output too short");
-                                return ReserveResult::Skipped;
+                                return ReserveResult::Skipped { meta: Some(meta.clone()) };
                             }
                             Err(e) => {
                                 warn!(%pool_addr, error = %e, "Curve A() RPC call failed");
-                                return ReserveResult::Skipped;
+                                return ReserveResult::Skipped { meta: Some(meta.clone()) };
                             }
                         };
                         let mut bal = [U256::ZERO; 2];
@@ -1129,11 +1277,11 @@ impl AetherEngine {
                                 }
                                 Ok(out) => {
                                     warn!(%pool_addr, idx, len = out.len(), "Curve balances() output too short");
-                                    return ReserveResult::Skipped;
+                                    return ReserveResult::Skipped { meta: Some(meta.clone()) };
                                 }
                                 Err(e) => {
                                     warn!(%pool_addr, idx, error = %e, "Curve balances() RPC call failed");
-                                    return ReserveResult::Skipped;
+                                    return ReserveResult::Skipped { meta: Some(meta.clone()) };
                                 }
                             }
                         }
@@ -1159,11 +1307,11 @@ impl AetherEngine {
                             }
                             Ok(out) => {
                                 warn!(%pool_addr, len = out.len(), "Balancer getPoolId output too short");
-                                return ReserveResult::Skipped;
+                                return ReserveResult::Skipped { meta: Some(meta.clone()) };
                             }
                             Err(e) => {
                                 warn!(%pool_addr, error = %e, "Balancer getPoolId RPC call failed");
-                                return ReserveResult::Skipped;
+                                return ReserveResult::Skipped { meta: Some(meta.clone()) };
                             }
                         };
                         let tokens_tx = alloy::rpc::types::TransactionRequest::default()
@@ -1177,7 +1325,7 @@ impl AetherEngine {
                             Ok(out) => out,
                             Err(e) => {
                                 warn!(%pool_addr, error = %e, "Balancer getPoolTokens RPC call failed");
-                                return ReserveResult::Skipped;
+                                return ReserveResult::Skipped { meta: Some(meta.clone()) };
                             }
                         };
                         let (b0, b1) = match getPoolTokensCall::abi_decode_returns(&tokens_out) {
@@ -1188,7 +1336,7 @@ impl AetherEngine {
                             Ok(ret) if ret._1.len() >= 2 => (ret._1[0], ret._1[1]),
                             _ => {
                                 warn!(%pool_addr, "Balancer getPoolTokens did not return 2-coin balances");
-                                return ReserveResult::Skipped;
+                                return ReserveResult::Skipped { meta: Some(meta.clone()) };
                             }
                         };
                         let weights_tx = alloy::rpc::types::TransactionRequest::default()
@@ -1198,7 +1346,7 @@ impl AetherEngine {
                             Ok(out) => out,
                             Err(e) => {
                                 warn!(%pool_addr, error = %e, "Balancer getNormalizedWeights RPC call failed");
-                                return ReserveResult::Skipped;
+                                return ReserveResult::Skipped { meta: Some(meta.clone()) };
                             }
                         };
                         let (w0, w1) = match getNormalizedWeightsCall::abi_decode_returns(&weights_out) {
@@ -1207,14 +1355,14 @@ impl AetherEngine {
                             Ok(ret) if ret.len() >= 2 => (ret[0], ret[1]),
                             _ => {
                                 warn!(%pool_addr, "Balancer getNormalizedWeights did not return 2 weights");
-                                return ReserveResult::Skipped;
+                                return ReserveResult::Skipped { meta: Some(meta.clone()) };
                             }
                         };
                         ReserveResult::Balancer { pool_addr, meta, b0, b1, w0, w1 }
                     }
                     _ => {
                         debug!(%pool_addr, protocol = ?meta.protocol, "Reserve fetch not yet implemented for this protocol");
-                        ReserveResult::Skipped
+                        ReserveResult::Skipped { meta: Some(meta.clone()) }
                     }
                 }
             });
@@ -1387,7 +1535,29 @@ impl AetherEngine {
                         fetched += 1;
                         debug!(%pool_addr, %b0, %b1, %w0, %w1, "Balancer state fetched");
                     }
-                    ReserveResult::Skipped => {}
+                    ReserveResult::Skipped { meta } => {
+                        // Mark the placeholder graph edges (seeded at
+                        // register_pool with rate=1.0) as filtered so
+                        // Bellman-Ford skips them. Without this the dead
+                        // edge participates in cycle detection as a synthetic
+                        // "1 token0 base unit = 1 token1 base unit" rate and
+                        // combines with any real edge between the same two
+                        // vertices to fabricate a profit factor.
+                        if let Some(meta) = meta {
+                            graph.set_edge_filtered(
+                                meta.token0_idx,
+                                meta.token1_idx,
+                                meta.pool_id,
+                                true,
+                            );
+                            graph.set_edge_filtered(
+                                meta.token1_idx,
+                                meta.token0_idx,
+                                meta.pool_id,
+                                true,
+                            );
+                        }
+                    }
                 }
             }
 

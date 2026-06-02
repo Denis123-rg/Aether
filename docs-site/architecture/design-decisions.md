@@ -118,7 +118,7 @@ sequenceDiagram
 
 ## Multi-Builder Bundle Submission
 
-**Decision:** Submit bundles to all configured block builders simultaneously (Flashbots, Titan, Beaver, rsync).
+**Decision:** Submit bundles to all configured block builders simultaneously (Flashbots, Titan, Eden, rsync).
 
 **Why:** No single builder produces every block. By submitting to all builders, the probability of bundle inclusion increases from ~15-20% (single builder) to ~50-70% (all major builders).
 

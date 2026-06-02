@@ -38,9 +38,18 @@
 //! a label drawn from a fixed set so dashboards can pre-render every panel
 //! without churn.
 
+use std::sync::atomic::{AtomicUsize, Ordering};
+
+use aether_common::types::ProtocolType;
 use aether_detector::opportunity::DetectedCycle;
 use aether_state::price_graph::PriceGraph;
 use tracing::{info, warn};
+
+/// Per-process cap on the number of `profit_factor_impossible` cycle paths
+/// logged. The metric counter still increments unbounded; this just keeps
+/// the log readable when the gate is firing thousands of times per minute.
+static IMPOSSIBLE_LOG_BUDGET: AtomicUsize = AtomicUsize::new(0);
+const IMPOSSIBLE_LOG_CAP: usize = 20;
 
 use crate::EngineMetrics;
 
@@ -193,6 +202,32 @@ pub fn build_fingerprint_index(
     counts
 }
 
+/// Per-edge predicate for [`gate_pre_sim`] Gate 1.
+///
+/// Returns `true` when the edge has a usable liquidity / liveness signal
+/// for its protocol. The rule is intentionally protocol-aware because
+/// `PriceEdge::reserve_in` is not homogeneous across DEXes:
+///
+/// * UniswapV3 edges are seeded with a synthetic
+///   `(reserve_in, reserve_out) = (1.0, spot_price)` pair (the V3 pool
+///   has no constant-product reserves to read). `1.0` is a dimensionless
+///   liveness marker, far below the raw-reserve `min_reserve_f64` floor,
+///   so the floor cannot distinguish a deep V3 pool (`1.0`) from a
+///   corrupt placeholder (`0.0`). Gate on `reserve_in > 0.0` instead
+///   and defer the real liquidity check to the downstream revm sim.
+/// * Constant-product / curve-style protocols (V2, Sushi, Curve,
+///   Balancer, Bancor) carry real on-chain base-unit reserves, so the
+///   `min_reserve_f64` floor is meaningful and applied unchanged.
+///
+/// Corrupt-placeholder rejection (`reserve_in == 0.0`) holds for every
+/// protocol — the synthetic V3 seed itself starts at `1.0`, never `0.0`.
+fn edge_passes_reserve_gate(edge: &aether_state::price_graph::PriceEdge, config: &GatingConfig) -> bool {
+    match edge.protocol {
+        ProtocolType::UniswapV3 => edge.reserve_in > 0.0,
+        _ => edge.reserve_in >= config.min_reserve_f64,
+    }
+}
+
 /// Run the pre-simulation gates on a single cycle.
 ///
 /// `fingerprint_index` must be the output of [`build_fingerprint_index`]
@@ -213,27 +248,78 @@ pub fn gate_pre_sim(
     // f64-overflow signature directly without needing graph traversal.
     if !pf.is_finite() || pf > config.profit_factor_impossible {
         metrics.inc_cycle_gate_dropped(GateDropReason::ProfitFactorImpossible.as_label());
+        // Per-cycle diagnostic: log the path and each edge's reserves +
+        // weight so an operator can identify the corrupt edge driving the
+        // f64-overflow signature. Capped at IMPOSSIBLE_LOG_CAP samples per
+        // process lifetime to avoid log flooding when BF keeps re-finding
+        // the same corrupt cycle.
+        if IMPOSSIBLE_LOG_BUDGET.fetch_add(1, Ordering::Relaxed) >= IMPOSSIBLE_LOG_CAP {
+            return PreSimGateVerdict::Drop(GateDropReason::ProfitFactorImpossible);
+        }
+        let edges_dbg: Vec<String> = (0..cycle.path.len().saturating_sub(1))
+            .map(|i| {
+                let from = cycle.path[i];
+                let to = cycle.path[i + 1];
+                let best = graph
+                    .edges_from(from)
+                    .iter()
+                    .filter(|e| e.to == to)
+                    .min_by(|a, b| {
+                        a.weight
+                            .partial_cmp(&b.weight)
+                            .unwrap_or(std::cmp::Ordering::Equal)
+                    })
+                    .map(|e| {
+                        format!(
+                            "{}->{} w={:.3e} r_in={:.3e} r_out={:.3e} pool={:#x}",
+                            from, to, e.weight, e.reserve_in, e.reserve_out, e.pool_id.address
+                        )
+                    })
+                    .unwrap_or_else(|| format!("{}->{} <no-edge>", from, to));
+                best
+            })
+            .collect();
+        warn!(
+            profit_factor = pf,
+            hops = cycle.num_hops(),
+            edges = ?edges_dbg,
+            "DROP profit_factor_impossible"
+        );
         return PreSimGateVerdict::Drop(GateDropReason::ProfitFactorImpossible);
     }
 
-    // ── Gate 1: TVL on every edge ────────────────────────────────────
-    // Walk the cycle path and confirm each edge has at least
-    // `min_reserve_f64` of input-side reserves. Corrupt edges typically
-    // have `reserve_in = 0.0` (placeholder seed never refreshed by chain
+    // ── Gate 1: TVL / liveness on every edge ─────────────────────────
+    // Walk the cycle path and confirm each edge has either real
+    // input-side reserves (constant-product AMMs) or a valid liveness
+    // signal (V3 synthetic seed). Corrupt edges typically have
+    // `reserve_in = 0.0` (placeholder seed never refreshed by chain
     // events); without this check Bellman-Ford treats them as infinite-
     // rate arbitrage sources.
+    //
+    // Protocol-aware predicate:
+    //   * UniswapV3: edges carry a synthetic `(reserve_in, reserve_out)
+    //     = (1.0, spot_price)` seed (see `engine.rs` V3 bootstrap and
+    //     `V3Update` handlers). `1.0` is dimensionless and far below the
+    //     raw-reserve `min_reserve_f64` floor — a deep V3 pool would be
+    //     wrongly dropped by that floor. Treat the edge as passing when
+    //     it is *live* (`reserve_in > 0.0`); a `0.0` placeholder still
+    //     drops, preserving corrupt-edge rejection. Real V3 liquidity is
+    //     checked downstream by the revm fork simulator.
+    //   * All other protocols (V2 / Sushi / Curve / Balancer / Bancor):
+    //     keep the raw-reserve floor — for those `reserve_in` is in
+    //     on-chain base units and the floor is meaningful.
+    //
+    // Parallel edges: there may be multiple pools backing the same
+    // `(from, to)` pair, so we accept the cycle if at least one of them
+    // passes — BF will route through the best one downstream anyway.
     for i in 0..cycle.path.len().saturating_sub(1) {
         let from = cycle.path[i];
         let to = cycle.path[i + 1];
-        // Find the edge that BF picked for this hop. There may be
-        // multiple parallel pools backing the same `(from, to)` pair, so
-        // we accept the cycle if at least one of them passes the TVL
-        // check — BF will route through the best one downstream anyway.
         let any_edge_passes = graph
             .edges_from(from)
             .iter()
             .filter(|e| e.to == to)
-            .any(|e| e.reserve_in >= config.min_reserve_f64);
+            .any(|e| edge_passes_reserve_gate(e, config));
         if !any_edge_passes {
             metrics.inc_cycle_gate_dropped(GateDropReason::ReservesTooLow.as_label());
             return PreSimGateVerdict::Drop(GateDropReason::ReservesTooLow);
@@ -358,25 +444,38 @@ mod tests {
         reserve_in: f64,
         reserve_out: f64,
     ) {
-        // Use the f64 ratio as the exchange rate; the test only cares
-        // that the edge exists with the supplied reserves so the gate
-        // logic can read them back.
+        add_test_edge_proto(g, from, to, reserve_in, reserve_out, ProtocolType::UniswapV2, 0)
+    }
+
+    /// Same as [`add_test_edge`] but parametrised by protocol so V3-specific
+    /// gate behaviour can be exercised. `pool_byte` lets a test add multiple
+    /// parallel edges between the same `(from, to)` pair with distinct
+    /// `PoolId`s; the default helper above uses byte 0.
+    fn add_test_edge_proto(
+        g: &mut PriceGraph,
+        from: usize,
+        to: usize,
+        reserve_in: f64,
+        reserve_out: f64,
+        protocol: ProtocolType,
+        pool_byte: u8,
+    ) {
         let rate = if reserve_in > 0.0 {
             reserve_out / reserve_in
         } else {
             1.0
         };
         let pool_id = PoolId {
-            address: Address::ZERO,
-            protocol: ProtocolType::UniswapV2,
+            address: Address::repeat_byte(pool_byte),
+            protocol,
         };
         g.add_edge(
             from,
             to,
             rate.max(1e-30),
             pool_id,
-            Address::ZERO,
-            ProtocolType::UniswapV2,
+            Address::repeat_byte(pool_byte),
+            protocol,
             U256::ZERO,
         );
         g.update_edge_from_reserves(from, to, pool_id, reserve_in, reserve_out, 0.997);
@@ -456,11 +555,13 @@ mod tests {
 
     #[test]
     fn gate_pre_sim_drops_low_reserve_edge() {
+        // V2 dust case: a constant-product edge whose `reserve_in` (in raw
+        // base units) sits below `min_reserve_f64`. The raw-reserve floor
+        // still applies to V2/Sushi/Curve/Balancer/Bancor, so this must
+        // continue to drop as `reserves_too_low`.
         let metrics = EngineMetrics::new();
         let config = GatingConfig::default();
         let mut graph = empty_graph();
-        // Cycle 0 -> 1 -> 0 with the edge 0->1 holding less than
-        // min_reserve_f64 worth of input.
         add_test_edge(&mut graph, 0, 1, 1.0, 100.0);
         add_test_edge(&mut graph, 1, 0, 1.0e9, 1.0e9);
         let index = std::collections::HashMap::new();
@@ -471,6 +572,137 @@ mod tests {
         let verdict = gate_pre_sim(&cycle, &graph, &index, &config, &metrics);
         assert_eq!(verdict, PreSimGateVerdict::Drop(GateDropReason::ReservesTooLow));
         assert_eq!(metrics.cycle_gate_dropped_count("reserves_too_low"), 1);
+    }
+
+    #[test]
+    fn gate_pre_sim_passes_v3_only_deep_cycle() {
+        // Regression: V3 edges are seeded with the synthetic
+        // `(reserve_in, reserve_out) = (1.0, spot_price)` convention (see
+        // `engine.rs` V3 bootstrap). `1.0` is far below `min_reserve_f64`
+        // = 1e6, so the legacy raw-reserve floor wrongly dropped every
+        // V3-only cycle as `reserves_too_low`. Protocol-aware gating must
+        // pass them through, leaving the real liquidity check to revm.
+        let metrics = EngineMetrics::new();
+        let config = GatingConfig::default();
+        let mut graph = empty_graph();
+        // Two-hop cycle 0 -> 1 -> 0 backed entirely by V3 edges with
+        // synthetic seeds (reserve_in = 1.0 on every hop).
+        add_test_edge_proto(&mut graph, 0, 1, 1.0, 2.0, ProtocolType::UniswapV3, 1);
+        add_test_edge_proto(&mut graph, 1, 0, 1.0, 0.6, ProtocolType::UniswapV3, 2);
+        let index = std::collections::HashMap::new();
+        let cycle = DetectedCycle {
+            path: vec![0, 1, 0],
+            total_weight: -0.05, // realistic 5% profit (irrelevant for Gate 1)
+        };
+        let verdict = gate_pre_sim(&cycle, &graph, &index, &config, &metrics);
+        assert_eq!(verdict, PreSimGateVerdict::Pass);
+        assert_eq!(metrics.cycle_gate_dropped_count("reserves_too_low"), 0);
+    }
+
+    #[test]
+    fn gate_pre_sim_drops_corrupt_v3_placeholder() {
+        // A 0.0 placeholder must still drop EVERY protocol, including
+        // UniswapV3 — the V3 synthetic seed itself is `1.0`, never `0.0`,
+        // so `reserve_in == 0.0` unambiguously signals a corrupt edge
+        // (e.g. registered via `add_edge` but never refreshed via
+        // `update_edge_from_reserves`).
+        let metrics = EngineMetrics::new();
+        let config = GatingConfig::default();
+        let mut graph = empty_graph();
+        // Edge 0 -> 1 is a corrupt V3 placeholder (reserve_in == 0.0).
+        // We can't go through `update_edge_from_reserves` (it short-circuits
+        // on zero reserves), so use `add_edge` directly which leaves
+        // reserve_in / reserve_out at their default 0.0.
+        let bad_pool = PoolId {
+            address: Address::repeat_byte(1),
+            protocol: ProtocolType::UniswapV3,
+        };
+        graph.add_edge(
+            0,
+            1,
+            1.0,
+            bad_pool,
+            Address::repeat_byte(1),
+            ProtocolType::UniswapV3,
+            U256::ZERO,
+        );
+        // Reverse leg fine (V3 synthetic).
+        add_test_edge_proto(&mut graph, 1, 0, 1.0, 0.6, ProtocolType::UniswapV3, 2);
+        let index = std::collections::HashMap::new();
+        let cycle = DetectedCycle {
+            path: vec![0, 1, 0],
+            total_weight: -0.05,
+        };
+        let verdict = gate_pre_sim(&cycle, &graph, &index, &config, &metrics);
+        assert_eq!(verdict, PreSimGateVerdict::Drop(GateDropReason::ReservesTooLow));
+        assert_eq!(metrics.cycle_gate_dropped_count("reserves_too_low"), 1);
+    }
+
+    #[test]
+    fn gate_pre_sim_drops_corrupt_v2_placeholder() {
+        // Symmetric check for V2: `reserve_in == 0.0` must still drop on
+        // a constant-product protocol so the corrupt-edge defence is not
+        // weakened by the V3 carve-out.
+        let metrics = EngineMetrics::new();
+        let config = GatingConfig::default();
+        let mut graph = empty_graph();
+        let bad_pool = PoolId {
+            address: Address::repeat_byte(3),
+            protocol: ProtocolType::UniswapV2,
+        };
+        graph.add_edge(
+            0,
+            1,
+            1.0,
+            bad_pool,
+            Address::repeat_byte(3),
+            ProtocolType::UniswapV2,
+            U256::ZERO,
+        );
+        add_test_edge(&mut graph, 1, 0, 1.0e9, 1.0e9);
+        let index = std::collections::HashMap::new();
+        let cycle = DetectedCycle {
+            path: vec![0, 1, 0],
+            total_weight: -0.05,
+        };
+        let verdict = gate_pre_sim(&cycle, &graph, &index, &config, &metrics);
+        assert_eq!(verdict, PreSimGateVerdict::Drop(GateDropReason::ReservesTooLow));
+    }
+
+    #[test]
+    fn gate_pre_sim_parallel_v3_rescues_corrupt_v3_pool() {
+        // When two V3 pools back the same `(from, to)` pair and one is a
+        // corrupt placeholder (`reserve_in == 0.0`) while the other has
+        // a valid synthetic seed (`reserve_in == 1.0`), the gate must
+        // pass — BF will route through the live pool downstream. This
+        // mirrors the parallel-edge rescue behaviour of the legacy V2
+        // floor and confirms the protocol-aware predicate preserves it.
+        let metrics = EngineMetrics::new();
+        let config = GatingConfig::default();
+        let mut graph = empty_graph();
+        let bad_pool = PoolId {
+            address: Address::repeat_byte(7),
+            protocol: ProtocolType::UniswapV3,
+        };
+        graph.add_edge(
+            0,
+            1,
+            1.0,
+            bad_pool,
+            Address::repeat_byte(7),
+            ProtocolType::UniswapV3,
+            U256::ZERO,
+        );
+        // Live parallel V3 edge.
+        add_test_edge_proto(&mut graph, 0, 1, 1.0, 2.0, ProtocolType::UniswapV3, 8);
+        add_test_edge_proto(&mut graph, 1, 0, 1.0, 0.6, ProtocolType::UniswapV3, 9);
+        let index = std::collections::HashMap::new();
+        let cycle = DetectedCycle {
+            path: vec![0, 1, 0],
+            total_weight: -0.05,
+        };
+        let verdict = gate_pre_sim(&cycle, &graph, &index, &config, &metrics);
+        assert_eq!(verdict, PreSimGateVerdict::Pass);
     }
 
     #[test]

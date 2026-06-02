@@ -347,19 +347,19 @@ pub fn default_router_addresses() -> Vec<Address> {
         address!("BA12222222228d8Ba445958a75a0704d566BF2C8"), // Balancer V2 Vault
         address!("eEF417e1D5CC832e619ae18D2F140De2999dD4fB"), // Bancor V3 BancorNetwork
         address!("111111125421cA6dc452d289314280a0f8842A65"), // 1inch v6 AggregationRouter
-        // Uniswap Universal Router (V2, deployed Apr 2024). Entry point
-        // is `execute(bytes commands, bytes[] inputs, uint256 deadline)`
-        // — a command-byte VM rather than a multicall. Each command byte
-        // resolves to an opcode (V3_SWAP_EXACT_IN, V2_SWAP_EXACT_IN,
-        // PERMIT2_*, WRAP_ETH, etc.) that consumes one entry from the
-        // `inputs[]` array. The router_decoder Universal Router branch
-        // parses the command stream and emits one DecodedSwap per swap
-        // opcode. Without this entry in the toAddress filter Alchemy
-        // never forwards Universal Router traffic and the decoder branch
-        // stays unreachable for the bulk of post-2024 UniV3 / UniV4
-        // volume routed through the aggregator front-end.
-        address!("66a9893cC07D91D95644AEDD05D03f95e1dBA8Af"), // Uniswap Universal Router (V2)
-        address!("3fC91A3afd70395Cd496C647d5a6CC9D4B2b7FAD"), // Uniswap Universal Router (V1.2, deprecated but still seen)
+        // Uniswap Universal Router. Entry point is
+        // `execute(bytes commands, bytes[] inputs, uint256 deadline)` — a
+        // command-byte VM rather than a multicall. Each command byte resolves
+        // to an opcode (V3_SWAP_EXACT_IN, V2_SWAP_EXACT_IN, PERMIT2_*,
+        // WRAP_ETH, etc.) that consumes one entry from the `inputs[]` array.
+        // The router_decoder Universal Router branch parses the command stream
+        // and emits one DecodedSwap per swap opcode. Without these entries in
+        // the toAddress filter Alchemy never forwards Universal Router traffic
+        // and the decoder branch stays unreachable for the bulk of present-day
+        // UniV3 / UniV4 volume routed through the aggregator front-end. Keep in
+        // sync with `router_decoder::{UNIVERSAL_ROUTER_V2, UNIVERSAL_ROUTER_V12}`.
+        address!("66a9893cC07D91D95644AEDD05D03f95e1dBA8Af"), // Uniswap Universal Router (V2 / current)
+        address!("3fC91A3afd70395Cd496C647d5a6CC9D4B2b7FAD"), // Uniswap Universal Router (V1.2 / Permit2 era)
         // ── Curve pools (pool-direct `exchange()` traffic) ──
         // Curve calls hit pool addresses directly when the user / aggregator
         // skips the Curve Router. Without these in the `toAddress` filter
