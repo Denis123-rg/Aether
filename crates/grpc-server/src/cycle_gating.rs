@@ -208,19 +208,22 @@ pub fn build_fingerprint_index(
 /// for its protocol. The rule is intentionally protocol-aware because
 /// `PriceEdge::reserve_in` is not homogeneous across DEXes:
 ///
-/// * UniswapV3 edges are seeded with a synthetic
-///   `(reserve_in, reserve_out) = (1.0, spot_price)` pair (the V3 pool
-///   has no constant-product reserves to read). `1.0` is a dimensionless
-///   liveness marker, far below the raw-reserve `min_reserve_f64` floor,
-///   so the floor cannot distinguish a deep V3 pool (`1.0`) from a
-///   corrupt placeholder (`0.0`). Gate on `reserve_in > 0.0` instead
-///   and defer the real liquidity check to the downstream revm sim.
+/// * UniswapV3 edges are seeded with *virtual* constant-product reserves
+///   `(x_v, y_v)` derived from L + sqrtPrice
+///   (`aether_pools::uniswap_v3::virtual_reserves`). Those virtual reserves
+///   reproduce the swap *curve* exactly but **overstate** true depth for
+///   concentrated liquidity (they extrapolate the active-tick L across the
+///   whole price range), so `x_v` is not a conservative TVL proxy the way a
+///   V2 base-unit reserve is — applying `min_reserve_f64` to it could pass a
+///   shallow pool. Gate on `reserve_in > 0.0` (liveness) instead and defer
+///   the real liquidity check to the downstream revm sim. An unpriced edge
+///   (L unavailable) keeps `reserve_in == 0.0` and is correctly rejected.
 /// * Constant-product / curve-style protocols (V2, Sushi, Curve,
 ///   Balancer, Bancor) carry real on-chain base-unit reserves, so the
 ///   `min_reserve_f64` floor is meaningful and applied unchanged.
 ///
-/// Corrupt-placeholder rejection (`reserve_in == 0.0`) holds for every
-/// protocol — the synthetic V3 seed itself starts at `1.0`, never `0.0`.
+/// Corrupt/unpriced-placeholder rejection (`reserve_in == 0.0`) holds for
+/// every protocol — a successfully seeded V3 edge has `x_v > 0.0`.
 fn edge_passes_reserve_gate(edge: &aether_state::price_graph::PriceEdge, config: &GatingConfig) -> bool {
     match edge.protocol {
         ProtocolType::UniswapV3 => edge.reserve_in > 0.0,
@@ -291,20 +294,21 @@ pub fn gate_pre_sim(
     // ── Gate 1: TVL / liveness on every edge ─────────────────────────
     // Walk the cycle path and confirm each edge has either real
     // input-side reserves (constant-product AMMs) or a valid liveness
-    // signal (V3 synthetic seed). Corrupt edges typically have
+    // signal (V3 virtual reserves). Corrupt edges typically have
     // `reserve_in = 0.0` (placeholder seed never refreshed by chain
     // events); without this check Bellman-Ford treats them as infinite-
     // rate arbitrage sources.
     //
     // Protocol-aware predicate:
-    //   * UniswapV3: edges carry a synthetic `(reserve_in, reserve_out)
-    //     = (1.0, spot_price)` seed (see `engine.rs` V3 bootstrap and
-    //     `V3Update` handlers). `1.0` is dimensionless and far below the
-    //     raw-reserve `min_reserve_f64` floor — a deep V3 pool would be
-    //     wrongly dropped by that floor. Treat the edge as passing when
-    //     it is *live* (`reserve_in > 0.0`); a `0.0` placeholder still
-    //     drops, preserving corrupt-edge rejection. Real V3 liquidity is
-    //     checked downstream by the revm fork simulator.
+    //   * UniswapV3: edges carry *virtual* constant-product reserves
+    //     `(x_v, y_v)` derived from L + sqrtPrice (see `engine.rs` V3
+    //     bootstrap and `V3Update` handlers). They overstate concentrated
+    //     depth, so `x_v` is not a conservative TVL proxy and the raw
+    //     `min_reserve_f64` floor could pass a shallow pool. Treat the edge
+    //     as passing when it is *live* (`reserve_in > 0.0`); a `0.0`
+    //     unpriced placeholder still drops, preserving corrupt-edge
+    //     rejection. Real V3 liquidity is checked downstream by the revm
+    //     fork simulator.
     //   * All other protocols (V2 / Sushi / Curve / Balancer / Bancor):
     //     keep the raw-reserve floor — for those `reserve_in` is in
     //     on-chain base units and the floor is meaningful.

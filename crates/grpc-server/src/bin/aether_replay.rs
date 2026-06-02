@@ -34,8 +34,8 @@ use aether_grpc_server::cycle_gating::{
 use aether_grpc_server::EngineMetrics;
 use aether_detector::optimizer::ternary_search_optimal_input;
 use aether_grpc_server::historical::{
-    fetch_pool_state_at, getReservesCall, load_executor_init_bytecode, load_pools, slot0Call,
-    u256_to_f64, uniswap_v2_get_amount_out, LoadedPool, PoolState, Q96,
+    fetch_pool_state_at, getReservesCall, liquidityCall, load_executor_init_bytecode, load_pools, slot0Call,
+    u256_to_f64, uniswap_v2_get_amount_out, LoadedPool, PoolState,
 };
 use aether_simulator::calldata::{
     build_execute_arb_calldata, build_univ2_swap_calldata, build_univ3_swap_calldata,
@@ -284,20 +284,25 @@ fn build_graph(
                 graph.update_edge_from_reserves(t0, t1, pool_id, r0f, r1f, fee);
                 graph.update_edge_from_reserves(t1, t0, pool_id, r1f, r0f, fee);
             }
-            PoolState::V3 { sqrt_price_x96 } => {
-                let s = u256_to_f64(sqrt_price_x96);
-                if s == 0.0 {
+            PoolState::V3 { sqrt_price_x96, liquidity } => {
+                // Virtual constant-product reserves (x_v, y_v) = (token0,
+                // token1) raw units from sqrtPrice + L (`virtual_reserves`).
+                // `y_v/x_v == spot`, so the detection edge weight matches the
+                // legacy `(1.0, raw_spot)` seed; the virtual pair keeps the
+                // stored reserves consistent with the engine. (Replay measures
+                // V3 profit via the on-chain executeArb revm sim, not the f64
+                // graph optimizer.) A zero/unavailable L leaves the pool
+                // unpriced (skip).
+                let Some((x_v, y_v)) =
+                    aether_pools::uniswap_v3::virtual_reserves(sqrt_price_x96, liquidity)
+                else {
                     continue;
-                }
-                let root = s / Q96;
-                let raw_spot = root * root;
-                if !raw_spot.is_finite() || raw_spot <= 0.0 {
-                    continue;
-                }
-                graph.add_edge(t0, t1, 1.0, pool_id, p.address, p.protocol, U256::ZERO);
-                graph.add_edge(t1, t0, 1.0, pool_id, p.address, p.protocol, U256::ZERO);
-                graph.update_edge_from_reserves(t0, t1, pool_id, 1.0, raw_spot, fee);
-                graph.update_edge_from_reserves(t1, t0, pool_id, 1.0, 1.0 / raw_spot, fee);
+                };
+                let liq = U256::from(liquidity);
+                graph.add_edge(t0, t1, 1.0, pool_id, p.address, p.protocol, liq);
+                graph.add_edge(t1, t0, 1.0, pool_id, p.address, p.protocol, liq);
+                graph.update_edge_from_reserves(t0, t1, pool_id, x_v, y_v, fee);
+                graph.update_edge_from_reserves(t1, t0, pool_id, y_v, x_v, fee);
             }
         }
     }
@@ -602,8 +607,22 @@ async fn fetch_one_state_latest(
                 .input(calldata.into());
             let output = provider.call(tx).block(block_id).await.ok()?;
             if output.len() >= 32 {
+                // Second call at the same block: active-tick liquidity for
+                // virtual-reserve seeding. Short/failed read → L=0 (edge left
+                // unpriced downstream).
+                let liq_calldata = liquidityCall {}.abi_encode();
+                let liq_tx = TransactionRequest::default()
+                    .to(pool.address)
+                    .input(liq_calldata.into());
+                let liquidity: u128 = match provider.call(liq_tx).block(block_id).await {
+                    Ok(lout) if lout.len() >= 32 => {
+                        U256::from_be_slice(&lout[0..32]).try_into().unwrap_or(0u128)
+                    }
+                    _ => 0u128,
+                };
                 Some(PoolState::V3 {
                     sqrt_price_x96: U256::from_be_slice(&output[0..32]),
+                    liquidity,
                 })
             } else {
                 None

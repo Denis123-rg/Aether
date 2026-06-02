@@ -20,18 +20,20 @@ use aether_common::types::ProtocolType;
 sol! {
     function getReserves() external view returns (uint112 reserve0, uint112 reserve1, uint32 blockTimestampLast);
     function slot0() external view returns (uint160 sqrtPriceX96, int24 tick, uint16 observationIndex, uint16 observationCardinality, uint16 observationCardinalityNext, uint8 feeProtocol, bool unlocked);
+    function liquidity() external view returns (uint128);
 }
 
 /// 2^96 as f64, used to convert UniswapV3 `sqrtPriceX96` into a floating-point
 /// price.
 pub const Q96: f64 = 79_228_162_514_264_337_593_543_950_336.0;
 
-/// Per-pool state fetched from the chain. V3 carries `sqrtPriceX96`; V2/Sushi
-/// carry `(reserve0, reserve1)`.
+/// Per-pool state fetched from the chain. V3 carries `sqrtPriceX96` and the
+/// active-tick `liquidity` (needed to seed virtual constant-product reserves);
+/// V2/Sushi carry `(reserve0, reserve1)`.
 #[derive(Clone, Copy, Debug)]
 pub enum PoolState {
     V2 { r0: U256, r1: U256 },
-    V3 { sqrt_price_x96: U256 },
+    V3 { sqrt_price_x96: U256, liquidity: u128 },
 }
 
 #[derive(Clone, Debug)]
@@ -138,8 +140,23 @@ pub async fn fetch_pool_state_at(
                 .input(calldata.into());
             let out = provider.call(tx).block(block_id).await?;
             if out.len() >= 32 {
+                // Second call at the same block: active-tick liquidity, so the
+                // graph edge can be seeded with virtual constant-product
+                // reserves (see `uniswap_v3::virtual_reserves`). A failed/short
+                // read yields L=0, which leaves the V3 edge unpriced downstream.
+                let liq_calldata = liquidityCall {}.abi_encode();
+                let liq_tx = TransactionRequest::default()
+                    .to(pool.address)
+                    .input(liq_calldata.into());
+                let liquidity: u128 = match provider.call(liq_tx).block(block_id).await {
+                    Ok(lout) if lout.len() >= 32 => {
+                        U256::from_be_slice(&lout[0..32]).try_into().unwrap_or(0u128)
+                    }
+                    _ => 0u128,
+                };
                 Some(PoolState::V3 {
                     sqrt_price_x96: U256::from_be_slice(&out[0..32]),
+                    liquidity,
                 })
             } else {
                 None

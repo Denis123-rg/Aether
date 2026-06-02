@@ -309,11 +309,12 @@ where
         .map_err(|_| ReplayError::DecodeFailed("liquidity"))?;
 
     // `amount_out` is intentionally left as `U256::ZERO` — the graph-edge
-    // update in `unified_to_post_reserves` derives reserves from
-    // `new_sqrt_price_x96` alone and never reads this field for V3. Setting
-    // `single_tick = true` because the post-state was read directly from
-    // post-execution storage and the multi-tick precision concern that
-    // motivates the flag does not apply to revm-derived values.
+    // update in `unified_to_post_reserves` derives virtual constant-product
+    // reserves from `new_sqrt_price_x96` AND `new_liquidity` (both read here)
+    // and never reads `amount_out` for V3. Setting `single_tick = true`
+    // because the post-state was read directly from post-execution storage
+    // and the multi-tick precision concern that motivates the flag does not
+    // apply to revm-derived values.
     Ok(V3PostState {
         new_sqrt_price_x96: U256::from(decoded_slot0.sqrtPriceX96),
         new_liquidity: decoded_liq,

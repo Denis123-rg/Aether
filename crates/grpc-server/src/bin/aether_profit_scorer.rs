@@ -73,7 +73,7 @@ use aether_detector::opportunity::DetectedCycle;
 use aether_detector::optimizer::ternary_search_optimal_input;
 use aether_grpc_server::historical::{
     fetch_pool_state_at, load_executor_init_bytecode, load_pools, u256_to_f64,
-    uniswap_v2_get_amount_out, LoadedPool, PoolState, Q96,
+    uniswap_v2_get_amount_out, LoadedPool, PoolState,
 };
 use aether_grpc_server::profitability_writer::{
     profit_writer_from_env, NewProfitabilityScore, PgProfitabilityWriter, ProfitabilitySink,
@@ -568,19 +568,22 @@ fn no_path_outcome(gas: Option<u128>) -> ScoreOutcome {
 }
 
 /// Convert `PoolState` to graph-edge reserves matching how the engine
-/// seeds them: V2 keeps `(r0, r1)`; V3 uses a synthetic `(1.0,
-/// spot_price)` pair so Bellman-Ford treats the two families
-/// identically (the engine's mempool pipeline does the same mapping).
+/// seeds them: V2 keeps `(r0, r1)`; V3 uses virtual constant-product
+/// reserves `(x_v, y_v) = (token0, token1)` derived from sqrtPrice + L
+/// (`uniswap_v3::virtual_reserves`). `y_v/x_v == spot`, so the edge weight
+/// fed to Bellman-Ford detection is identical to the legacy `(1.0, spot)`
+/// seed; the virtual pair just keeps the stored reserves consistent with the
+/// engine. NOTE: this scorer routes any V3-touching cycle to the revm sim
+/// for exact tick-traversal sizing (see `is_v3_touching_cycle`); its f64
+/// optimizer (`find_optimal`) returns `(0.0, 0.0)` for V3 hops and does not
+/// size them from these reserves. The engine's own optimizer DOES size V3
+/// from the virtual reserves.
 fn state_to_graph_reserves(state: &PoolState) -> (f64, f64) {
     match state {
         PoolState::V2 { r0, r1 } => (u256_to_f64(*r0), u256_to_f64(*r1)),
-        PoolState::V3 { sqrt_price_x96 } => {
-            let sqrt_f = u256_to_f64(*sqrt_price_x96);
-            if sqrt_f == 0.0 {
-                return (0.0, 0.0);
-            }
-            let root = sqrt_f / Q96;
-            (1.0, root * root)
+        PoolState::V3 { sqrt_price_x96, liquidity } => {
+            aether_pools::uniswap_v3::virtual_reserves(*sqrt_price_x96, *liquidity)
+                .unwrap_or((0.0, 0.0))
         }
     }
 }
@@ -1387,22 +1390,25 @@ async fn bootstrap_state(
                 graph.update_edge_from_reserves(t0, t1, pool_id, r0f, r1f, fee);
                 graph.update_edge_from_reserves(t1, t0, pool_id, r1f, r0f, fee);
             }
-            PoolState::V3 { sqrt_price_x96 } => {
-                let s = u256_to_f64(sqrt_price_x96);
-                if s == 0.0 {
+            PoolState::V3 { sqrt_price_x96, liquidity } => {
+                // Virtual constant-product reserves (x_v, y_v) = (token0,
+                // token1) raw units from sqrtPrice + L, matching the engine's
+                // edge-seeding convention (`uniswap_v3::virtual_reserves`).
+                // `y_v/x_v == spot`, so the detection edge weight is identical
+                // to the legacy `(1.0, raw_spot)` seed; the virtual pair keeps
+                // the stored reserves consistent with the engine. (This bin
+                // sizes V3-touching cycles via revm, not the f64 optimizer.) A
+                // zero/unavailable L leaves the pool unpriced (skip).
+                let Some((x_v, y_v)) =
+                    aether_pools::uniswap_v3::virtual_reserves(sqrt_price_x96, liquidity)
+                else {
                     continue;
-                }
-                let root = s / Q96;
-                let raw_spot = root * root;
-                if !raw_spot.is_finite() || raw_spot <= 0.0 {
-                    continue;
-                }
-                // Synthetic mapping `(reserve_in, reserve_out) = (1.0, raw_spot)`,
-                // identical to engine.rs and `state_to_graph_reserves`.
-                graph.add_edge(t0, t1, 1.0, pool_id, pool.address, pool.protocol, U256::ZERO);
-                graph.add_edge(t1, t0, 1.0, pool_id, pool.address, pool.protocol, U256::ZERO);
-                graph.update_edge_from_reserves(t0, t1, pool_id, 1.0, raw_spot, fee);
-                graph.update_edge_from_reserves(t1, t0, pool_id, 1.0, 1.0 / raw_spot, fee);
+                };
+                let liq = U256::from(liquidity);
+                graph.add_edge(t0, t1, 1.0, pool_id, pool.address, pool.protocol, liq);
+                graph.add_edge(t1, t0, 1.0, pool_id, pool.address, pool.protocol, liq);
+                graph.update_edge_from_reserves(t0, t1, pool_id, x_v, y_v, fee);
+                graph.update_edge_from_reserves(t1, t0, pool_id, y_v, x_v, fee);
             }
         }
     }
@@ -1513,18 +1519,22 @@ mod tests {
     }
 
     #[test]
-    fn state_to_graph_reserves_v3_uses_synthetic_pair() {
-        // sqrtPriceX96 = 2^96 → rate_0to1 = 1.0; synthetic (1.0, 1.0).
+    fn state_to_graph_reserves_v3_uses_virtual_reserves() {
+        // sqrtPriceX96 = 2^96 → price = 1.0, so virtual reserves x_v == y_v == L.
+        let liquidity = 1_000_000u128;
         let s = PoolState::V3 {
             sqrt_price_x96: U256::from_be_slice(&{
                 let mut buf = [0u8; 32];
-                buf[31 - 12] = 1;
+                buf[31 - 12] = 1; // 2^96
                 buf
             }),
+            liquidity,
         };
         let (r0, r1) = state_to_graph_reserves(&s);
-        assert_eq!(r0, 1.0);
-        assert!(r1 > 0.0 && r1 < 2.0);
+        assert!((r0 - liquidity as f64).abs() < 1e-3, "x_v {r0}");
+        assert!((r1 - liquidity as f64).abs() < 1e-3, "y_v {r1}");
+        // Ratio (spot price) preserved at 1.0 — edge weight unchanged.
+        assert!((r1 / r0 - 1.0).abs() < 1e-9, "ratio {}", r1 / r0);
     }
 
     #[test]
@@ -1642,7 +1652,7 @@ mod tests {
         );
 
         let mut states = HashMap::new();
-        states.insert(0, PoolState::V3 { sqrt_price_x96: U256::from(1u64) });
+        states.insert(0, PoolState::V3 { sqrt_price_x96: U256::from(1u64), liquidity: 1 });
 
         let cycle = DetectedCycle {
             path: vec![ta, tb],
@@ -1870,7 +1880,7 @@ mod tests {
         );
         let mut states = HashMap::new();
         states.insert(0, PoolState::V2 { r0: U256::from(1u64), r1: U256::from(1u64) });
-        states.insert(1, PoolState::V3 { sqrt_price_x96: U256::from(1u64) });
+        states.insert(1, PoolState::V3 { sqrt_price_x96: U256::from(1u64), liquidity: 1 });
         let cycle = DetectedCycle { path: vec![ta, tb, ta], total_weight: 0.0 };
         assert!(is_v3_touching_cycle(&cycle, &graph, &token_index, &pools, &states));
     }
@@ -1887,7 +1897,7 @@ mod tests {
         graph.add_edge(ta, tb, 0.0, pid, pools[0].address, pools[0].protocol, U256::ZERO);
         graph.add_edge(tb, ta, 0.0, pid, pools[0].address, pools[0].protocol, U256::ZERO);
         let mut states = HashMap::new();
-        states.insert(0, PoolState::V3 { sqrt_price_x96: U256::from(1u64) });
+        states.insert(0, PoolState::V3 { sqrt_price_x96: U256::from(1u64), liquidity: 1 });
         let cycle = DetectedCycle { path: vec![ta, tb, ta], total_weight: 0.0 };
         assert!(is_v3_touching_cycle(&cycle, &graph, &token_index, &pools, &states));
     }

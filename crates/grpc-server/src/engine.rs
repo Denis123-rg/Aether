@@ -357,6 +357,22 @@ fn u256_to_f64(val: U256) -> f64 {
         + limbs[3] as f64 * 1.157_920_892_373_162e77       // 2^192
 }
 
+/// Whether an edge's `liquidity` field may be used as the optimizer's wei
+/// input-size cap (`min_liquidity` across a cycle's hops).
+///
+/// UniswapV3 edges are excluded: their `liquidity` is the active-tick L
+/// (units of `sqrt(x·y)·2^96`), NOT a wei token amount, so it cannot serve as
+/// a wei trade-size bound — using it would clamp `max_input` to a meaningless
+/// value (e.g. under-size the trade, or fall below `min_input` and collapse
+/// the search). V3 hop sizing is instead bounded by the virtual-reserve
+/// constant-product profit function (which self-limits as output saturates
+/// past the pool's depth) and validated by the downstream revm tick-traversal
+/// sim. Zero-liquidity placeholder edges carry no usable signal either.
+#[inline]
+fn edge_caps_optimizer_input(edge: &aether_state::price_graph::PriceEdge) -> bool {
+    edge.protocol != ProtocolType::UniswapV3 && !edge.liquidity.is_zero()
+}
+
 /// Intermediate data extracted from a detected cycle under the graph read lock.
 /// Used to defer simulation and publishing until after the lock is released.
 struct CycleCandidate {
@@ -1151,6 +1167,7 @@ impl AetherEngine {
         alloy::sol! {
             function getReserves() external view returns (uint112 reserve0, uint112 reserve1, uint32 blockTimestampLast);
             function slot0() external view returns (uint160 sqrtPriceX96, int24 tick, uint16 observationIndex, uint16 observationCardinality, uint16 observationCardinalityNext, uint8 feeProtocol, bool unlocked);
+            function liquidity() external view returns (uint128);
             function A() external view returns (uint256);
             function balances(uint256 i) external view returns (uint256);
             function getPoolId() external view returns (bytes32);
@@ -1161,7 +1178,7 @@ impl AetherEngine {
         // Result type for each concurrent RPC fetch.
         enum ReserveResult {
             V2 { pool_addr: Address, meta: PoolMetadata, r0: U256, r1: U256 },
-            V3 { pool_addr: Address, meta: PoolMetadata, sqrt_price_x96: U256, tick: i32 },
+            V3 { pool_addr: Address, meta: PoolMetadata, sqrt_price_x96: U256, tick: i32, liquidity: u128 },
             Curve { pool_addr: Address, meta: PoolMetadata, a: U256, b0: U256, b1: U256 },
             Balancer { pool_addr: Address, meta: PoolMetadata, b0: U256, b1: U256, w0: U256, w1: U256 },
             // Carry the meta so the consumer can mark the placeholder graph
@@ -1232,7 +1249,36 @@ impl AetherEngine {
                                     // Top bytes set → negative; sign-extend.
                                     tick_low24 -= 1 << 24;
                                 }
-                                ReserveResult::V3 { pool_addr, meta, sqrt_price_x96, tick: tick_low24 }
+                                // Second call (same permit): liquidity() so the
+                                // graph edge can be seeded with virtual reserves
+                                // (x_v, y_v) derived from L + sqrtPrice. Without
+                                // L the edge can only carry the marginal rate,
+                                // not pool depth, and the optimizer's
+                                // constant-product profit function mis-sizes
+                                // every V3 hop. A failed/zero liquidity read
+                                // leaves the edge unpriced (placeholder) — the
+                                // first live V3 swap event re-seeds it.
+                                let liq_calldata = liquidityCall {}.abi_encode();
+                                let liq_tx = alloy::rpc::types::TransactionRequest::default()
+                                    .to(pool_addr)
+                                    .input(liq_calldata.into());
+                                let liquidity: u128 = match provider.call(liq_tx).await {
+                                    Ok(out) if out.len() >= 32 => {
+                                        // uint128 right-aligned in a 32-byte word.
+                                        U256::from_be_slice(&out[0..32])
+                                            .try_into()
+                                            .unwrap_or(0u128)
+                                    }
+                                    Ok(out) => {
+                                        warn!(%pool_addr, len = out.len(), "V3 liquidity() output too short");
+                                        0u128
+                                    }
+                                    Err(e) => {
+                                        warn!(%pool_addr, error = %e, "V3 liquidity() RPC call failed");
+                                        0u128
+                                    }
+                                };
+                                ReserveResult::V3 { pool_addr, meta, sqrt_price_x96, tick: tick_low24, liquidity }
                             }
                             Ok(output) => {
                                 warn!(%pool_addr, len = output.len(), "slot0 output too short");
@@ -1414,7 +1460,7 @@ impl AetherEngine {
                             debug!(%pool_addr, reserve0 = %r0, reserve1 = %r1, "V2 reserves fetched");
                         }
                     }
-                    ReserveResult::V3 { pool_addr, meta, sqrt_price_x96, tick } => {
+                    ReserveResult::V3 { pool_addr, meta, sqrt_price_x96, tick, liquidity } => {
                         if quarantined.contains(&pool_addr) {
                             // Token identity disagrees with chain — skip both
                             // the graph-edge seeding and the pool-state cache
@@ -1425,9 +1471,19 @@ impl AetherEngine {
                         const TWO_POW_96: f64 = 79_228_162_514_264_337_593_543_950_336.0;
                         let sqrt_f64 = u256_to_f64(sqrt_price_x96);
                         let price = (sqrt_f64 / TWO_POW_96).powi(2);
+                        // Virtual reserves (x_v, y_v) = (token0, token1) raw
+                        // units derived from L + sqrtPrice. They make the
+                        // optimizer's constant-product profit function model V3
+                        // depth exactly (see `uniswap_v3::virtual_reserves`).
+                        let vr = aether_pools::uniswap_v3::virtual_reserves(
+                            sqrt_price_x96,
+                            liquidity,
+                        );
                         if price > 0.0 {
                             let fee = meta.fee_factor();
-                            let liq = U256::ZERO;
+                            // Carry L as the edge's `liquidity` so the optimizer
+                            // input-range cap reflects real pool depth.
+                            let liq = U256::from(liquidity);
                             graph.add_edge(
                                 meta.token0_idx, meta.token1_idx,
                                 price * fee, meta.pool_id, pool_addr,
@@ -1438,36 +1494,37 @@ impl AetherEngine {
                                 (1.0 / price) * fee, meta.pool_id, pool_addr,
                                 meta.protocol, liq,
                             );
-                            // Seed the synthetic `(1.0, spot_price)` reserve
-                            // pair on the edge. `add_edge` only sets weight;
-                            // without this follow-up the edge stays at
-                            // `reserve_in = reserve_out = 0.0` and the
-                            // `reserves_zero` guard in
-                            // `mempool_pipeline::try_post_state_scan` drops
-                            // every V3 swap before it reaches the post-state
-                            // predictor. The convention `(1.0, spot_price)`
-                            // matches the scorer's `state_to_graph_reserves`
-                            // V3 branch so the two sides stay in lockstep.
-                            graph.update_edge_from_reserves(
-                                meta.token0_idx, meta.token1_idx,
-                                meta.pool_id, 1.0, price, fee,
-                            );
-                            graph.update_edge_from_reserves(
-                                meta.token1_idx, meta.token0_idx,
-                                meta.pool_id, 1.0, 1.0 / price, fee,
-                            );
-                            // Seed the V3 pool-state cache. Liquidity is set
-                            // to zero here because slot0 does not expose it —
-                            // a separate `liquidity()` RPC would be required
-                            // for an exact bootstrap value, and that adds a
-                            // second concurrent fan-out that we defer for
-                            // now. Real liquidity arrives via the first
-                            // `PoolEvent::V3Update` (which carries sqrt +
-                            // liquidity + tick together) once block-level
-                            // event ingestion comes online; until then the
-                            // mempool sim's `predict_post_state` returns
-                            // None for these entries, which is the correct
-                            // behaviour for a zero-liquidity edge.
+                            // Seed the edge with virtual reserves when L is
+                            // known. `update_edge_from_reserves` derives the
+                            // weight as `(reserve_out/reserve_in)*fee*decimals`,
+                            // and `y_v/x_v == spot`, so the weight (hence
+                            // Bellman-Ford detection) is identical to the legacy
+                            // `(1.0, spot)` seed — only the curve depth changes.
+                            // When L is unknown/zero the edge is left as an
+                            // unpriced placeholder (reserves stay 0.0); the
+                            // cycle-gating V3 reserve guard then skips it until
+                            // the first live V3 swap event re-seeds real depth.
+                            if let Some((x_v, y_v)) = vr {
+                                graph.update_edge_from_reserves(
+                                    meta.token0_idx, meta.token1_idx,
+                                    meta.pool_id, x_v, y_v, fee,
+                                );
+                                graph.update_edge_from_reserves(
+                                    meta.token1_idx, meta.token0_idx,
+                                    meta.pool_id, y_v, x_v, fee,
+                                );
+                            } else {
+                                warn!(
+                                    %pool_addr, liquidity,
+                                    "V3 pool has zero/unavailable liquidity at active tick; \
+                                     edge left unpriced until first swap event"
+                                );
+                            }
+                            // Seed the V3 pool-state cache with the fetched
+                            // liquidity so the mempool post-state predictor has
+                            // real depth from bootstrap (previously seeded with
+                            // L=0, which forced `predict_post_state` to return
+                            // None until the first `PoolEvent::V3Update`).
                             let mut v3 = aether_pools::uniswap_v3::UniswapV3Pool::new(
                                 pool_addr,
                                 meta.token0,
@@ -1475,11 +1532,11 @@ impl AetherEngine {
                                 meta.fee_bps,
                                 meta.tick_spacing.unwrap_or(0),
                             );
-                            v3.update_sqrt_price(sqrt_price_x96, 0u128, tick);
+                            v3.update_sqrt_price(sqrt_price_x96, liquidity, tick);
                             self.pool_states
                                 .insert(pool_addr, Arc::new(PoolState::UniswapV3(v3)));
                             fetched += 1;
-                            debug!(%pool_addr, %sqrt_price_x96, tick, "V3 slot0 fetched");
+                            debug!(%pool_addr, %sqrt_price_x96, tick, liquidity, "V3 slot0 + liquidity fetched");
                         }
                     }
                     ReserveResult::Curve { pool_addr, meta, a, b0, b1 } => {
@@ -1738,28 +1795,38 @@ impl AetherEngine {
                             meta.protocol,
                             liq,
                         );
-                        // Refresh the synthetic `(1.0, spot_price)` reserve
-                        // pair on the edge so live V3 sqrtPrice updates flow
-                        // through to `mempool_pipeline::try_post_state_scan`'s
-                        // `reserves_zero` guard. Same convention used by the
+                        // Refresh the edge with virtual reserves (x_v, y_v)
+                        // derived from the event's L + sqrtPrice. This gives
+                        // the optimizer correct V3 depth and feeds
+                        // `mempool_pipeline::try_post_state_scan`'s
+                        // `reserves_zero` guard. `y_v/x_v == spot`, so the edge
+                        // weight (Bellman-Ford detection) is unchanged versus
+                        // the legacy `(1.0, spot)` seed. Same convention as the
                         // bootstrap branch and the scorer's
-                        // `state_to_graph_reserves`.
-                        graph.update_edge_from_reserves(
-                            meta.token0_idx,
-                            meta.token1_idx,
-                            meta.pool_id,
-                            1.0,
-                            price,
-                            fee,
-                        );
-                        graph.update_edge_from_reserves(
-                            meta.token1_idx,
-                            meta.token0_idx,
-                            meta.pool_id,
-                            1.0,
-                            1.0 / price,
-                            fee,
-                        );
+                        // `unified_to_post_reserves`. When L is zero the edge is
+                        // left unpriced (the cycle-gating V3 reserve guard then
+                        // skips it).
+                        if let Some((x_v, y_v)) = aether_pools::uniswap_v3::virtual_reserves(
+                            sqrt_price_x96,
+                            liquidity,
+                        ) {
+                            graph.update_edge_from_reserves(
+                                meta.token0_idx,
+                                meta.token1_idx,
+                                meta.pool_id,
+                                x_v,
+                                y_v,
+                                fee,
+                            );
+                            graph.update_edge_from_reserves(
+                                meta.token1_idx,
+                                meta.token0_idx,
+                                meta.pool_id,
+                                y_v,
+                                x_v,
+                                fee,
+                            );
+                        }
                         // Snapshot is published once per detection cycle, not per event.
                         // Refresh the V3 pool-state cache entry. The event
                         // carries everything `predict_post_state` needs
@@ -1956,9 +2023,12 @@ impl AetherEngine {
                         .unwrap_or(30);
                     fee_factors.push((10000.0 - fee_bps as f64) / 10000.0);
 
-                    // Track minimum liquidity across hops to cap optimizer range.
-                    // Skip zero-liquidity edges (placeholders from register_pool).
-                    if !best_edge.liquidity.is_zero()
+                    // Track minimum liquidity across hops to cap optimizer
+                    // range. Only edges whose `liquidity` is a wei token amount
+                    // contribute (see `edge_caps_optimizer_input`): zero-liq
+                    // placeholders and UniswapV3 (sqrt-liquidity L, not wei) are
+                    // excluded.
+                    if edge_caps_optimizer_input(best_edge)
                         && best_edge.liquidity < min_liquidity
                     {
                         min_liquidity = best_edge.liquidity;
@@ -3153,13 +3223,17 @@ mod tests {
         assert!(graph.has_dirty_edges());
     }
 
-    /// V3 graph edges must carry the synthetic `(1.0, spot_price)` reserve
-    /// pair after a V3Update event. Regression guard for the bug where
-    /// `add_edge` set the weight but left `reserve_in == reserve_out == 0.0`,
-    /// causing `mempool_pipeline::try_post_state_scan`'s `reserves_zero`
-    /// guard to drop every V3 swap before reaching the post-state predictor.
+    /// V3 graph edges must carry virtual constant-product reserves
+    /// `(x_v, y_v)` after a V3Update event. Regression guard for two bugs:
+    /// (1) `add_edge` setting the weight but leaving
+    /// `reserve_in == reserve_out == 0.0`, which made
+    /// `mempool_pipeline::try_post_state_scan`'s `reserves_zero` guard drop
+    /// every V3 swap; and (2) the legacy `(1.0, spot)` seed, whose
+    /// infinitely-shallow curve made the optimizer mis-size every V3 hop.
+    /// The ratio `reserve_out/reserve_in` must still equal the spot price so
+    /// Bellman-Ford detection is unchanged.
     #[tokio::test]
-    async fn test_v3_update_seeds_synthetic_reserves() {
+    async fn test_v3_update_seeds_virtual_reserves() {
         let (tx, _rx) = broadcast::channel(100);
         let engine = AetherEngine::new(EngineConfig::default(), tx);
 
@@ -3200,11 +3274,20 @@ mod tests {
             .find(|e| e.to == t0 && e.pool_id == pool_id)
             .expect("V3 reverse edge present");
 
-        // price = (sqrt/2^96)^2 = 2^2 = 4.0
-        assert!((fwd.reserve_in - 1.0).abs() < 1e-9, "fwd reserve_in {}", fwd.reserve_in);
-        assert!((fwd.reserve_out - 4.0).abs() < 1e-6, "fwd reserve_out {}", fwd.reserve_out);
-        assert!((rev.reserve_in - 1.0).abs() < 1e-9, "rev reserve_in {}", rev.reserve_in);
-        assert!((rev.reserve_out - 0.25).abs() < 1e-9, "rev reserve_out {}", rev.reserve_out);
+        // price = (sqrt/2^96)^2 = 2^2 = 4.0. Edges now carry V3 *virtual*
+        // reserves (x_v, y_v) = (L*2^96/sqrt, L*sqrt/2^96), not the legacy
+        // (1.0, spot) seed:
+        //   x_v = 1e6 * 2^96 / (2*2^96) = 500_000  (token0)
+        //   y_v = 1e6 * (2*2^96) / 2^96 = 2_000_000 (token1)
+        // The invariant that matters for detection is the ratio (= price):
+        //   fwd reserve_out/reserve_in = 4.0,  rev = 0.25.
+        assert!((fwd.reserve_in - 500_000.0).abs() < 1e-3, "fwd reserve_in {}", fwd.reserve_in);
+        assert!((fwd.reserve_out - 2_000_000.0).abs() < 1e-3, "fwd reserve_out {}", fwd.reserve_out);
+        assert!((rev.reserve_in - 2_000_000.0).abs() < 1e-3, "rev reserve_in {}", rev.reserve_in);
+        assert!((rev.reserve_out - 500_000.0).abs() < 1e-3, "rev reserve_out {}", rev.reserve_out);
+        // Ratio (price) — the quantity that sets the edge weight — preserved.
+        assert!((fwd.reserve_out / fwd.reserve_in - 4.0).abs() < 1e-9, "fwd ratio");
+        assert!((rev.reserve_out / rev.reserve_in - 0.25).abs() < 1e-9, "rev ratio");
     }
 
     #[tokio::test]
@@ -3640,6 +3723,57 @@ fee_bps = 30
     fn test_engine_config_slippage_default() {
         let config = EngineConfig::default();
         assert_eq!(config.slippage_bps, 100, "Default slippage should be 100 bps (1%)");
+    }
+
+    fn cap_edge(protocol: ProtocolType, liquidity: U256) -> aether_state::price_graph::PriceEdge {
+        aether_state::price_graph::PriceEdge {
+            from: 0,
+            to: 1,
+            weight: 0.0,
+            pool_id: PoolId { address: Address::ZERO, protocol },
+            pool_address: Address::ZERO,
+            protocol,
+            liquidity,
+            reserve_in: 0.0,
+            reserve_out: 0.0,
+            filtered: false,
+        }
+    }
+
+    #[test]
+    fn v3_edge_excluded_from_optimizer_wei_cap() {
+        // Regression: a UniswapV3 edge's `liquidity` is sqrt-liquidity L, not
+        // wei, so it must never feed the optimizer's wei input-size cap.
+        let v3 = cap_edge(ProtocolType::UniswapV3, U256::from(1000u64));
+        assert!(
+            !edge_caps_optimizer_input(&v3),
+            "V3 edge must be excluded from the wei input-size cap"
+        );
+        // Even with a large L the exclusion holds — units, not magnitude.
+        let v3_big = cap_edge(ProtocolType::UniswapV3, U256::from(10_000_000_000_000_000_000u128));
+        assert!(!edge_caps_optimizer_input(&v3_big));
+    }
+
+    #[test]
+    fn non_v3_edges_cap_optimizer_only_when_liquidity_known() {
+        // V2/Sushi/Curve carry real wei reserves → they DO cap (when nonzero).
+        for proto in [
+            ProtocolType::UniswapV2,
+            ProtocolType::SushiSwap,
+            ProtocolType::Curve,
+            ProtocolType::BalancerV2,
+            ProtocolType::BancorV3,
+        ] {
+            assert!(
+                edge_caps_optimizer_input(&cap_edge(proto, U256::from(1u64))),
+                "{proto:?} with nonzero liquidity must cap the optimizer"
+            );
+            // Zero-liquidity placeholder carries no signal → excluded.
+            assert!(
+                !edge_caps_optimizer_input(&cap_edge(proto, U256::ZERO)),
+                "{proto:?} placeholder (zero liquidity) must not cap"
+            );
+        }
     }
 
     #[test]
