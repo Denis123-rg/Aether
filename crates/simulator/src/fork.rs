@@ -139,7 +139,11 @@ impl PrewarmedState {
         code_cache: Vec<(B256, Bytecode)>,
         storage: Vec<(Address, U256, U256)>,
     ) -> Self {
-        Self { code_cache, storage }
+        Self {
+            code_cache,
+            storage,
+            stats: PrewarmStats::default(),
+        }
     }
 }
 
