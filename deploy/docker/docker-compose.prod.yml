@@ -63,7 +63,13 @@ services:
       # Forge artifact (mounted above) injected into the CacheDB each sim, so
       # the executor need not be deployed on-chain. Produced by `forge build`.
       - AETHER_EXECUTOR_BYTECODE_PATH=${AETHER_EXECUTOR_BYTECODE_PATH:-/app/contracts/out/AetherExecutor.sol/AetherExecutor.json}
-      - AETHER_SEARCHER_CALLER=${AETHER_SEARCHER_CALLER:-}
+      # In-sim caller of executeArb. MUST be a code-free EOA and MUST NOT
+      # equal AETHER_EXECUTOR_ADDRESS: the sim injects executor bytecode at
+      # the executor address, so a caller-with-code trips revm EIP-3607
+      # (RejectCallerWithCode) and every arb leg is rejected as sim_error.
+      # The disable_eip3607 sim flag now guards this too, but a clean EOA is
+      # defense in depth. 0x..dEaD is a well-known burn address (no code).
+      - AETHER_SEARCHER_CALLER=${AETHER_SEARCHER_CALLER:-0x000000000000000000000000000000000000dEaD}
       - AETHER_PROFIT_TOKEN=${AETHER_PROFIT_TOKEN:-}
       # revm post-state replay for V3/Balancer tick-crossing victims.
       - MEMPOOL_POST_STATE_REPLAY=${MEMPOOL_POST_STATE_REPLAY:-1}
@@ -72,9 +78,30 @@ services:
       # whose locally-mined blocks do not resolve for state queries.
       - AETHER_BACKRUN_FORK_LATEST=${AETHER_BACKRUN_FORK_LATEST:-}
       # Min net profit (wei) a sized cycle must clear to reach the revm sim.
-      # Code default 0.001 ETH. Set to 0 in shadow to let marginal candidates
-      # through so the sim path is actually exercised/observed.
-      - AETHER_MEMPOOL_MIN_PROFIT_WEI=${AETHER_MEMPOOL_MIN_PROFIT_WEI:-}
+      # Code default 0.001 ETH. 1e14 = 0.0001 ETH filters dust yet still lets
+      # the hardened sim path be exercised in shadow; set 0 to admit all.
+      - AETHER_MEMPOOL_MIN_PROFIT_WEI=${AETHER_MEMPOOL_MIN_PROFIT_WEI:-100000000000000}
+      # ── 429 / RPC transport hardening (the fork provider) ──────────────
+      # The fork provider now wraps an alloy RetryBackoffLayer: it
+      # self-throttles to AETHER_RPC_CUPS compute-units/sec and retries HTTP
+      # 429 with exponential backoff, so Alchemy rate-limits no longer
+      # propagate into revm as DB errors and bomb the sim funnel. Raise CUPS
+      # to match your Alchemy tier (free/growth ≈ 300; scale tiers higher).
+      - AETHER_RPC_CUPS=${AETHER_RPC_CUPS:-300}
+      - AETHER_RPC_MAX_RETRIES=${AETHER_RPC_MAX_RETRIES:-10}
+      - AETHER_RPC_BACKOFF_MS=${AETHER_RPC_BACKOFF_MS:-200}
+      # Per-request socket timeout (ms, 0=off): a cold fetch can no longer
+      # stall the synchronous revm fork ~16s and starve the sim semaphore.
+      - AETHER_RPC_REQUEST_TIMEOUT_MS=${AETHER_RPC_REQUEST_TIMEOUT_MS:-10000}
+      # Per-sim retry on a transient transport error (rebuilds the fork) +
+      # the elapsed-budget above which a slow failure is relabeled sim_timeout.
+      - AETHER_MEMPOOL_SIM_RETRIES=${AETHER_MEMPOOL_SIM_RETRIES:-1}
+      - AETHER_MEMPOOL_SIM_TIMEOUT_MS=${AETHER_MEMPOOL_SIM_TIMEOUT_MS:-30000}
+      # Conservative fan-out for a low-tier key: boot reserve hydration and
+      # per-block prewarm otherwise burst past the rps budget into a 429 storm.
+      - AETHER_BOOT_FETCH_CONCURRENCY=${AETHER_BOOT_FETCH_CONCURRENCY:-3}
+      - AETHER_PREWARM_CONCURRENCY=${AETHER_PREWARM_CONCURRENCY:-4}
+      - AETHER_MEMPOOL_SIM_CONCURRENCY=${AETHER_MEMPOOL_SIM_CONCURRENCY:-4}
 
   aether-go:
     logging: *default-logging

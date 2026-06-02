@@ -1809,68 +1809,6 @@ fn run_backrun_validation(
         U256::from(9000u64), // 90% tip share — conservative starting point
     );
 
-    // Build the forked state PINNED to the detected block. The cycle was
-    // detected and sized against the snapshot graph at `block_number` plus
-    // the analytical victim post-state, so the sim must fork that same block
-    // — then replay the victim on top — to execute against the exact state
-    // the candidate was sized for. Forking `latest` (chain head) let blocks
-    // mined between detection and this (spawn_blocking) sim drift the
-    // reserves out from under the analytically-derived `min_amount_out`
-    // guards, which is the dominant "passes detection then reverts" cause.
-    // The block-driven path pins identically (engine.rs `RpcForkedState::new`).
-    //
-    // `AETHER_BACKRUN_FORK_LATEST=1` restores the `latest` behaviour for
-    // Anvil forks whose locally-mined block numbers past the fork base may
-    // not resolve cleanly for state queries.
-    //
-    // Base fee unknown at the snapshot — pass 1 gwei and rely on
-    // `disable_base_fee = true` inside the simulator's cfg (the only effect
-    // of base_fee here is the EIP-1559 gas-price check, which the validator
-    // disables).
-    let fork_latest = std::env::var("AETHER_BACKRUN_FORK_LATEST")
-        .ok()
-        .as_deref()
-        == Some("1");
-    let fork_result = if fork_latest {
-        aether_simulator::fork::RpcForkedState::new_at_latest(
-            provider.clone(),
-            block_number,
-            now_secs,
-            1_000_000_000,
-        )
-    } else {
-        aether_simulator::fork::RpcForkedState::new(
-            provider.clone(),
-            block_number,
-            now_secs,
-            1_000_000_000,
-        )
-    };
-    let mut state = match fork_result {
-        Some(s) => s,
-        None => {
-            metrics.inc_mempool_backrun_rejected("fork_construction_failed");
-            return None;
-        }
-    };
-
-    // Inject ONLY the pre-warmed bytecode from the refresher task. Warming
-    // bytecode (by code hash) eliminates the dominant cold-fetch cost —
-    // ~10-20 RPC round-trips of contract code per V2 swap — without
-    // touching mutable state. The V2 packed-reserve slot is intentionally
-    // NOT injected: shadowing the fresh reserve read with the (up to several
-    // blocks stale) prewarm snapshot is what made the victim replay trip its
-    // own `amountOutMin` slippage guard and revert. Reserves lazy-fetch fresh
-    // from the forked block, so the victim replays against the pre-victim
-    // state the candidate was detected and sized against.
-    let warm_guard = cfg.mempool_prewarm.load();
-    if let Some(warm) = warm_guard.as_ref() {
-        warm.inject_code_only(&mut state);
-        metrics.inc_mempool_prewarm_hit();
-    } else {
-        metrics.inc_mempool_prewarm_miss();
-    }
-
     let victim = VictimTx {
         from: event.from,
         to: event.to?,
@@ -1900,15 +1838,108 @@ fn run_backrun_validation(
         skip_victim_with_overrides: victim_storage_overrides,
     };
 
-    let result = validate_backrun_rpc(state, &victim, &arb, &params);
+    // Build the forked state and validate, with bounded retry on transient RPC
+    // transport errors. `validate_backrun_rpc` consumes the fork state, so each
+    // attempt builds a fresh one. The fork is PINNED to the detected block by
+    // default (the cycle was detected and sized against the snapshot graph at
+    // `block_number` plus the analytical victim post-state, so the sim must
+    // fork that same block — then replay the victim on top — to execute
+    // against the exact state the candidate was sized for); the block-driven
+    // path pins identically (engine.rs `RpcForkedState::new`). Forking
+    // `latest` (chain head) lets blocks mined between detection and this
+    // (spawn_blocking) sim drift the reserves out from under the
+    // analytically-derived `min_amount_out` guards, which is the dominant
+    // "passes detection then reverts" cause. `AETHER_BACKRUN_FORK_LATEST=1`
+    // restores the `latest` behaviour for Anvil forks whose locally-mined
+    // block numbers past the fork base may not resolve cleanly for state
+    // queries.
+    //
+    // A cold-fetch stall — now bounded by the provider's per-request timeout
+    // — surfaces as `RpcTransport`; retrying re-drives the fetches, which
+    // usually succeed on a second attempt. Economic and revert rejections
+    // return immediately.
+    let warm_guard = cfg.mempool_prewarm.load();
+    let max_retries = std::env::var("AETHER_MEMPOOL_SIM_RETRIES")
+        .ok()
+        .and_then(|v| v.parse::<u32>().ok())
+        .unwrap_or(1);
+    let fork_latest = std::env::var("AETHER_BACKRUN_FORK_LATEST")
+        .ok()
+        .as_deref()
+        == Some("1");
+    let mut attempt = 0u32;
+    let result = loop {
+        // Base fee unknown at the snapshot — pass 1 gwei and rely on
+        // `disable_base_fee = true` inside the simulator's cfg.
+        let fork_result = if fork_latest {
+            aether_simulator::fork::RpcForkedState::new_at_latest(
+                provider.clone(),
+                block_number,
+                now_secs,
+                1_000_000_000,
+            )
+        } else {
+            aether_simulator::fork::RpcForkedState::new(
+                provider.clone(),
+                block_number,
+                now_secs,
+                1_000_000_000,
+            )
+        };
+        let mut state = match fork_result {
+            Some(s) => s,
+            None => {
+                metrics.inc_mempool_backrun_rejected("fork_construction_failed");
+                return None;
+            }
+        };
+        // Inject ONLY the pre-warmed bytecode (see
+        // `PrewarmedState::inject_code_only`): warming bytecode by code hash
+        // eliminates the dominant cold-fetch cost without shadowing the fresh
+        // reserve read the victim replay depends on.
+        if let Some(warm) = warm_guard.as_ref() {
+            warm.inject_code_only(&mut state);
+            metrics.inc_mempool_prewarm_hit();
+        } else {
+            metrics.inc_mempool_prewarm_miss();
+        }
+
+        let r = validate_backrun_rpc(state, &victim, &arb, &params);
+        if r.accepted
+            || r.reject != Some(RejectReason::RpcTransport)
+            || attempt >= max_retries
+        {
+            break r;
+        }
+        attempt += 1;
+        debug!(
+            target: "aether::mempool",
+            tx_hash = %event.tx_hash,
+            attempt,
+            "mempool-backrun: retrying after RPC transport error"
+        );
+    };
     let elapsed_ms = started.elapsed().as_secs_f64() * 1_000.0;
 
     if !result.accepted {
-        let reason = result
+        let mut reason = result
             .reject
             .as_ref()
             .map(|r| r.as_str())
             .unwrap_or(RejectReason::SimError.as_str());
+        // Relabel a slow transport/sim failure as `sim_timeout` when the
+        // attempt blew the wall-clock budget, so RPC stalls show up distinctly
+        // from fast deterministic sim errors on the funnel dashboard.
+        let sim_timeout_ms = std::env::var("AETHER_MEMPOOL_SIM_TIMEOUT_MS")
+            .ok()
+            .and_then(|v| v.parse::<f64>().ok())
+            .unwrap_or(5000.0);
+        if (reason == RejectReason::RpcTransport.as_str()
+            || reason == RejectReason::SimError.as_str())
+            && elapsed_ms > sim_timeout_ms
+        {
+            reason = RejectReason::SimTimeout.as_str();
+        }
         metrics.inc_mempool_backrun_rejected(reason);
         metrics.observe_mempool_backrun_validation_latency_ms("reject", elapsed_ms);
         debug!(
@@ -2073,9 +2104,22 @@ struct OptimizedSizing {
 /// victim's hop, and ternary-search the input amount that maximizes
 /// realized net profit (gross output − input − gas − Aave premium).
 ///
-/// Returns [`SizingOutcome::Fallback`] for any cycle that is not entirely
-/// UniswapV2 / SushiSwap or whose hop state is missing — the caller keeps
-/// the existing fixed-size behaviour in that case. AMM math uses the pools'
+/// Exact AMM quote for any pool protocol via its own `Pool::get_amount_out`,
+/// so [`optimize_cycle_input`] can size mixed-protocol cycles exactly instead
+/// of falling back to a blind fixed size.
+fn poolstate_quote(ps: &PoolState, token_in: Address, amount_in: U256) -> Option<U256> {
+    match ps {
+        PoolState::UniswapV2(p) | PoolState::SushiSwap(p) => p.get_amount_out(token_in, amount_in),
+        PoolState::UniswapV3(p) => p.get_amount_out(token_in, amount_in),
+        PoolState::Curve(p) => p.get_amount_out(token_in, amount_in),
+        PoolState::Balancer(p) => p.get_amount_out(token_in, amount_in),
+        PoolState::Bancor(p) => p.get_amount_out(token_in, amount_in),
+    }
+}
+
+/// Returns [`SizingOutcome::Fallback`] only when a hop's pool state is missing
+/// from the cache; every protocol is quoted via its own exact
+/// `Pool::get_amount_out`. AMM math uses the pools'
 /// own exact-U256 `get_amount_out` (never the decimal-normalized
 /// `PriceGraph` f64 reserves, which are unreliable for sizing).
 ///
@@ -2099,28 +2143,33 @@ fn optimize_cycle_input(
         return SizingOutcome::Fallback;
     }
 
-    // Resolve every hop to a concrete UniswapV2Pool with exact reserves.
-    // Any non-V2/Sushi hop or missing pool state aborts to the fixed path.
-    let mut hop_pools: Vec<UniswapV2Pool> = Vec::with_capacity(steps.len());
+    // Resolve every hop to its concrete pool state. Each hop is quoted with
+    // its own exact `Pool::get_amount_out` (UniV3 tick math, Curve invariant,
+    // Balancer weighted, Bancor curve), so mixed-protocol cycles are sized
+    // exactly. Missing pool state is the only remaining reason to fall back —
+    // without it we cannot run exact math, so the blind fixed-size path is the
+    // safest behaviour.
+    let mut hop_states: Vec<PoolState> = Vec::with_capacity(steps.len());
     for step in steps {
         let Some(entry) = pool_states.get(&step.pool_address) else {
             return SizingOutcome::Fallback;
         };
-        let mut pool = match entry.value().as_ref() {
-            PoolState::UniswapV2(p) | PoolState::SushiSwap(p) => p.clone(),
-            _ => return SizingOutcome::Fallback,
-        };
+        let mut ps = entry.value().as_ref().clone();
         // Overlay the post-victim reserves on the victim's pool so sizing
-        // reflects the state the arb will actually trade against.
+        // reflects the state the arb will actually trade against. Only the
+        // V2/Sushi post-state is a simple (r0, r1) overlay; for other victim
+        // protocols the revm sim applies the true post-state, so the optimizer
+        // sizes against the pre-victim state (the sim still bounds the result).
         if step.pool_address == victim_pool {
-            let Some((r0, r1)) =
-                victim_post_reserves(&pool, victim_token_in, victim_post_in, victim_post_out)
-            else {
-                return SizingOutcome::Fallback;
-            };
-            pool.update_state(r0, r1);
+            if let PoolState::UniswapV2(p) | PoolState::SushiSwap(p) = &mut ps {
+                if let Some((r0, r1)) =
+                    victim_post_reserves(p, victim_token_in, victim_post_in, victim_post_out)
+                {
+                    p.update_state(r0, r1);
+                }
+            }
         }
-        hop_pools.push(pool);
+        hop_states.push(ps);
     }
 
     // Gas cost mirrors the block path: per-protocol base gas + fixed
@@ -2138,8 +2187,8 @@ fn optimize_cycle_input(
     let run_chain = |input: U256| -> Option<U256> {
         let mut current = input;
         let mut current_token = token_in0;
-        for (i, pool) in hop_pools.iter().enumerate() {
-            current = pool.get_amount_out(current_token, current)?;
+        for (i, ps) in hop_states.iter().enumerate() {
+            current = poolstate_quote(ps, current_token, current)?;
             if current.is_zero() {
                 return None;
             }
@@ -2173,11 +2222,18 @@ fn optimize_cycle_input(
     // constant-product `profit_fn`, which sees marginal output collapse past
     // their liquidity. Allow at most half the input reserve, then clamp to
     // the hard ceiling.
-    let first_pool = &hop_pools[0];
-    let first_reserve_in = if token_in0 == first_pool.token0 {
-        first_pool.reserve0
-    } else {
-        first_pool.reserve1
+    // Exact for V2/Sushi (reserve denominated in the input token); for other
+    // protocols rely on the hard ceiling, since `profit_fn` already collapses
+    // past their depth via the exact `get_amount_out`.
+    let first_reserve_in = match &hop_states[0] {
+        PoolState::UniswapV2(p) | PoolState::SushiSwap(p) => {
+            if token_in0 == p.token0 {
+                p.reserve0
+            } else {
+                p.reserve1
+            }
+        }
+        _ => U256::from(OPTIMIZE_MAX_INPUT_WEI),
     };
     let depth_cap = (first_reserve_in / U256::from(2u64)).min(U256::from(OPTIMIZE_MAX_INPUT_WEI));
 
@@ -2199,11 +2255,11 @@ fn optimize_cycle_input(
     }
 
     // Recompute the exact per-hop outputs at the chosen input.
-    let mut per_hop_expected_out = Vec::with_capacity(hop_pools.len());
+    let mut per_hop_expected_out = Vec::with_capacity(hop_states.len());
     let mut current = optimal_input;
     let mut current_token = token_in0;
-    for (i, pool) in hop_pools.iter().enumerate() {
-        let Some(out) = pool.get_amount_out(current_token, current) else {
+    for (i, ps) in hop_states.iter().enumerate() {
+        let Some(out) = poolstate_quote(ps, current_token, current) else {
             // The optimum quoted moments ago; a None here means a
             // degenerate edge — fall back rather than publish junk.
             return SizingOutcome::Fallback;
@@ -3507,10 +3563,13 @@ mod tests {
         assert!(sizing.per_hop_expected_out[1] > sizing.input_amount);
     }
 
-    /// A cycle with a non-V2/Sushi hop falls back to the fixed-size path
-    /// rather than mis-sizing with the V2 constant-product model.
+    /// A non-V2/Sushi hop is now exact-sized via its own `get_amount_out`
+    /// instead of a blind fixed-size fallback. A degenerate single-hop
+    /// weth->usdc "cycle" is correctly found unprofitable (gross in 6-dec USDC
+    /// is numerically far below the 18-dec WETH input), so the optimizer drops
+    /// it as below-min-profit rather than mis-sizing or falling back.
     #[test]
-    fn optimizer_falls_back_for_non_v2_cycle() {
+    fn optimizer_sizes_non_v2_cycle_and_drops_unprofitable() {
         use aether_pools::new_pool_state_cache;
         let pool = address!("88e6A0c2dDD26FEEb64F039a2c41296FcB3f5640");
         let pool_states = new_pool_state_cache();
@@ -3536,6 +3595,6 @@ mod tests {
             1.0,
             U256::ZERO,
         );
-        assert!(matches!(outcome, SizingOutcome::Fallback));
+        assert!(matches!(outcome, SizingOutcome::BelowMinProfit));
     }
 }

@@ -109,9 +109,13 @@ pub struct EngineMetrics {
     ///   - `arb_reverted` — our arb tx reverts after the victim
     ///   - `arb_halted` — our arb tx hit revm `Halt`
     ///   - `negative_after_gas` — sim succeeded but `profit_wei <= gas_cost`
+    ///   - `rpc_transport` — RPC-backed fork state fetch failed (cold-slot
+    ///     stall, dropped connection, or per-request timeout); transient,
+    ///     retried up to `AETHER_MEMPOOL_SIM_RETRIES` before this counts
     ///   - `sim_timeout` — sim wall-clock exceeded `AETHER_MEMPOOL_SIM_TIMEOUT_MS`
+    ///     (a slow transport/sim failure relabelled by the pipeline)
     ///   - `victim_stale` — `seen_at` older than freshness threshold
-    ///   - `sim_error` — non-revert / non-halt revm error
+    ///   - `sim_error` — non-revert / non-halt revm error (non-transport)
     mempool_backrun_rejected_total: IntCounterVec,
     /// In-flight mempool-backrun validation sims. Bounded by the
     /// `AETHER_MEMPOOL_SIM_CONCURRENCY` semaphore; exposed so dashboards can

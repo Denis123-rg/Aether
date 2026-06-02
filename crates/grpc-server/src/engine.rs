@@ -406,6 +406,97 @@ impl AetherEngine {
         // on the same hostname + path differing only in scheme, so a literal
         // scheme rewrite produces the correct HTTP endpoint without forcing
         // operators to maintain a second env var.
+        // Build the fork provider with TWO transport-layer protections:
+        //
+        // 1. A bounded per-request transport timeout
+        //    (`AETHER_RPC_REQUEST_TIMEOUT_MS`, default 10000ms; 0 disables)
+        //    so a single cold state fetch (`eth_getStorageAt` /
+        //    `eth_getBalance`) cannot stall the synchronous revm fork for
+        //    tens of seconds and starve the mempool-backrun sim semaphore.
+        //    A timed-out fetch surfaces as a transport error, which the
+        //    validator classifies as `rpc_transport` and retries.
+        //
+        // 2. An alloy `RetryBackoffLayer` that self-throttles against the
+        //    provider's compute-units budget and retries HTTP 429 with
+        //    exponential backoff (`AETHER_RPC_MAX_RETRIES` default 10,
+        //    `AETHER_RPC_BACKOFF_MS` default 200, `AETHER_RPC_CUPS` default
+        //    300). This is THE fix for the 429 storms — without it, an
+        //    Alchemy rate-limit reply propagates through the AlloyDB into
+        //    revm as a transient DB error, classified by the validator as
+        //    `rpc_transport` and bombing the funnel.
+        //
+        // This one provider feeds the block-driven sim, the mempool backrun
+        // validator (main.rs passes `engine.rpc_provider()`), and the prewarm
+        // refresher — so fixing it here fixes all three.
+        fn build_fork_http_provider(url: url::Url) -> DynProvider<Ethereum> {
+            use alloy::rpc::client::ClientBuilder;
+            use alloy::transports::http::reqwest;
+            use alloy::transports::layers::RetryBackoffLayer;
+            // Default 10s: a generous socket-level ceiling that catches the
+            // pathological ~16s cold-fetch hang without prematurely failing
+            // legitimately slow reads — e.g. an Anvil fork proxying a cold
+            // slot to a rate-limited upstream, or the one-shot boot reserve
+            // hydration. The sim hot-path latency is bounded separately by
+            // AETHER_MEMPOOL_SIM_TIMEOUT_MS + the sim concurrency semaphore,
+            // not by this timeout.
+            let timeout_ms = std::env::var("AETHER_RPC_REQUEST_TIMEOUT_MS")
+                .ok()
+                .and_then(|v| v.parse::<u64>().ok())
+                .unwrap_or(10000);
+            // 429-retry knobs. `max_retries=10` gives the rate-limit policy
+            // ~10 chances at exponential backoff before giving up; `200ms`
+            // initial backoff keeps the first retry inside a sub-second
+            // budget for the common single-burst case; `300 CU/s` is a
+            // sane default for an Alchemy free/growth tier — operators on
+            // higher tiers should raise `AETHER_RPC_CUPS` to match.
+            let max_retries = std::env::var("AETHER_RPC_MAX_RETRIES")
+                .ok()
+                .and_then(|v| v.parse::<u32>().ok())
+                .unwrap_or(10);
+            let backoff_ms = std::env::var("AETHER_RPC_BACKOFF_MS")
+                .ok()
+                .and_then(|v| v.parse::<u64>().ok())
+                .unwrap_or(200);
+            let cups = std::env::var("AETHER_RPC_CUPS")
+                .ok()
+                .and_then(|v| v.parse::<u64>().ok())
+                .unwrap_or(300);
+            let retry_layer = RetryBackoffLayer::new(max_retries, backoff_ms, cups);
+
+            // Build the underlying reqwest client. If the timeout knob is
+            // disabled (0) or the build fails, fall through to the default
+            // `reqwest::Client`, which has no per-request timeout but still
+            // gets the retry layer.
+            let http_client: reqwest::Client = if timeout_ms == 0 {
+                reqwest::Client::new()
+            } else {
+                match reqwest::Client::builder()
+                    .timeout(std::time::Duration::from_millis(timeout_ms))
+                    .build()
+                {
+                    Ok(c) => c,
+                    Err(e) => {
+                        tracing::warn!(
+                            error = %e,
+                            "reqwest client build failed; using default HTTP client (no per-request timeout)"
+                        );
+                        reqwest::Client::new()
+                    }
+                }
+            };
+
+            // Stack: ClientBuilder → layer(retry) → http_with_client(reqwest, url).
+            // `http_with_client` wraps the reqwest client in alloy's HTTP
+            // transport, then the retry layer wraps the transport's tower
+            // Service so 429s are retried before they surface as errors.
+            let rpc_client = ClientBuilder::default()
+                .layer(retry_layer)
+                .http_with_client(http_client, url);
+            alloy::providers::ProviderBuilder::new()
+                .connect_client(rpc_client)
+                .erased()
+        }
+
         let rpc_provider = config.rpc_url.as_ref().and_then(|url_str| {
             let http_url = normalize_to_http_scheme(url_str);
             let parsed: url::Url = match http_url.parse() {
@@ -415,13 +506,13 @@ impl AetherEngine {
                     return None;
                 }
             };
-            let provider = alloy::providers::ProviderBuilder::new().connect_http(parsed);
+            let provider = build_fork_http_provider(parsed);
             info!(
                 original = %url_str,
                 fork_url = %http_url,
-                "RPC provider created for fork simulation"
+                "RPC provider created for fork simulation (timeout + 429 retry layer applied)"
             );
-            Some(provider.erased())
+            Some(provider)
         });
 
         // Start with a reasonable initial graph size (can grow dynamically).

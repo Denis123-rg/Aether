@@ -7,13 +7,15 @@
 //! mutates the cache; the second runs our `executeArb` calldata and reads
 //! the post-state ERC20 balance delta. Both txs must succeed for an accept.
 //!
-//! Caller is responsible for the AETHER_MEMPOOL_SIM_TIMEOUT_MS / concurrency
-//! semaphore — those live in the gRPC server side because they require
-//! tokio integration. This module is a synchronous pure function so it can
+//! Transport errors from the RPC-backed fork are classified here
+//! (`classify_transact_err` → `RejectReason::RpcTransport`); the
+//! `AETHER_MEMPOOL_SIM_TIMEOUT_MS` wall-clock relabel and the concurrency
+//! semaphore live on the gRPC server side because they require tokio
+//! integration. This module is a synchronous pure function so it can
 //! run on `spawn_blocking` workers without leaking async dependencies.
 
 use alloy::primitives::{Address, Bytes, U256};
-use revm::context::result::ExecutionResult;
+use revm::context::result::{EVMError, ExecutionResult};
 use revm::context::{BlockEnv, TxEnv};
 use revm::database::{CacheDB, EmptyDB};
 use revm::database_interface::{Database, DatabaseRef};
@@ -21,7 +23,7 @@ use revm::handler::{ExecuteCommitEvm, ExecuteEvm, MainBuilder};
 use revm::primitives::hardfork::SpecId;
 use revm::state::{AccountInfo, Bytecode, EvmState};
 use revm::Context;
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 
 use crate::fork::{ForkedState, RpcForkedState};
 
@@ -64,6 +66,14 @@ pub enum RejectReason {
     ArbHalted,
     NegativeAfterGas,
     SimError,
+    /// The RPC-backed fork failed a lazy state fetch (cold-slot stall,
+    /// dropped connection, or per-request timeout). Transient and retryable —
+    /// distinct from `SimError` so dashboards separate RPC flakiness from
+    /// genuine sim defects.
+    RpcTransport,
+    /// The sim exceeded the `AETHER_MEMPOOL_SIM_TIMEOUT_MS` wall-clock budget.
+    /// Emitted by the pipeline, which relabels a slow transport/sim error.
+    SimTimeout,
 }
 
 impl RejectReason {
@@ -75,6 +85,8 @@ impl RejectReason {
             Self::ArbHalted => "arb_halted",
             Self::NegativeAfterGas => "negative_after_gas",
             Self::SimError => "sim_error",
+            Self::RpcTransport => "rpc_transport",
+            Self::SimTimeout => "sim_timeout",
         }
     }
 }
@@ -297,6 +309,13 @@ where
         cfg.disable_nonce_check = true;
         cfg.disable_balance_check = true;
         cfg.disable_base_fee = true;
+        // EIP-3607 rejects txs from accounts that carry bytecode. The synthetic
+        // searcher `caller` can collide with an address that has code on the
+        // forked chain, which aborts the arb leg before any gas is spent
+        // (`Transaction(RejectCallerWithCode)` → bogus `sim_error`, arb_gas=0).
+        // The caller is sim-only (we already disable nonce/balance), so the
+        // 3607 check is meaningless here — disable it.
+        cfg.disable_eip3607 = true;
     });
 
     let mut evm = ctx.build_mainnet();
@@ -349,8 +368,13 @@ where
             return BackrunSimResult::rejected(RejectReason::VictimHalted, gas_used, 0);
         }
         Err(e) => {
-            debug!(error = ?e, "mempool-backrun: victim sim error");
-            return BackrunSimResult::rejected(RejectReason::SimError, 0, 0);
+            let reason = classify_transact_err(&e);
+            if reason == RejectReason::RpcTransport {
+                warn!(error = ?e, "mempool-backrun: victim sim RPC transport error");
+            } else {
+                debug!(error = ?e, "mempool-backrun: victim sim error");
+            }
+            return BackrunSimResult::rejected(reason, 0, 0);
         }
         }
     };
@@ -431,9 +455,25 @@ where
             }
         },
         Err(e) => {
-            debug!(error = ?e, "mempool-backrun: arb sim error");
-            BackrunSimResult::rejected(RejectReason::SimError, victim_gas_used, 0)
+            let reason = classify_transact_err(&e);
+            if reason == RejectReason::RpcTransport {
+                warn!(error = ?e, "mempool-backrun: arb sim RPC transport error");
+            } else {
+                debug!(error = ?e, "mempool-backrun: arb sim error");
+            }
+            BackrunSimResult::rejected(reason, victim_gas_used, 0)
         }
+    }
+}
+
+/// Classify a revm execution error. `EVMError::Database(_)` originates from
+/// the RPC-backed fork's lazy state fetch (cold-slot stall, dropped
+/// connection, or per-request timeout) and is transient — the caller may
+/// retry. Anything else (transaction/header/custom) is a genuine sim error.
+fn classify_transact_err<DErr, TErr>(err: &EVMError<DErr, TErr>) -> RejectReason {
+    match err {
+        EVMError::Database(_) => RejectReason::RpcTransport,
+        _ => RejectReason::SimError,
     }
 }
 
@@ -640,6 +680,19 @@ mod tests {
         assert_eq!(RejectReason::ArbHalted.as_str(), "arb_halted");
         assert_eq!(RejectReason::NegativeAfterGas.as_str(), "negative_after_gas");
         assert_eq!(RejectReason::SimError.as_str(), "sim_error");
+        assert_eq!(RejectReason::RpcTransport.as_str(), "rpc_transport");
+        assert_eq!(RejectReason::SimTimeout.as_str(), "sim_timeout");
+    }
+
+    #[test]
+    fn classify_transact_err_maps_database_to_rpc_transport() {
+        // An RPC-backed fork surfaces a cold-fetch stall / dropped connection
+        // / request timeout as a DB error → retryable `RpcTransport`.
+        let db_err: EVMError<String> = EVMError::Database("transport closed".to_string());
+        assert_eq!(classify_transact_err(&db_err), RejectReason::RpcTransport);
+        // Anything else (custom/precompile/etc.) stays a generic sim error.
+        let custom: EVMError<String> = EVMError::Custom("precompile".to_string());
+        assert_eq!(classify_transact_err(&custom), RejectReason::SimError);
     }
 
     #[test]
@@ -914,7 +967,11 @@ mod tests {
         );
 
         let executor = ARB_TO;
-        let caller = ARB_CALLER;
+        // Caller == executor on purpose: the live engine defaults
+        // `searcher_caller` to `executor_address`, which carries the injected
+        // executor bytecode in-sim. This reproduces the EIP-3607
+        // `RejectCallerWithCode` abort and guards the `disable_eip3607` fix.
+        let caller = ARB_TO;
         let flashloan_weth = U256::from(1_000_000_000_000_000_000u128); // 1 WETH
         let deadline = U256::from(u64::MAX); // never expires under disable_base_fee sim
 
