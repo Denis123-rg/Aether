@@ -48,6 +48,12 @@ services:
       # ETH_RPC_URL's ws when unset; keep explicit for the mempool feed.
       - MEMPOOL_WS_URL=${MEMPOOL_WS_URL:-}
       - AETHER_CHAIN_ID=${AETHER_CHAIN_ID:-1}
+      # ABSOLUTE path to the pool registry. The engine otherwise defaults to
+      # the RELATIVE "config/pools.toml", which the container (workdir /)
+      # cannot find against the /app/config mount -> 0 pools loaded -> every
+      # mempool swap is not_in_registry -> 0 candidates. The base compose sets
+      # AETHER_NODES_CONFIG but forgot this one.
+      - AETHER_POOLS_CONFIG=/app/config/pools.toml
       # Executor address must hold code on the forked chain so the Go
       # executor's startup eth_getCode passes. The revm sim injects the real
       # AetherExecutor bytecode at this address regardless, so a placeholder
@@ -65,6 +71,10 @@ services:
       # block (the fix). Set to 1 only when the fork provider is an Anvil node
       # whose locally-mined blocks do not resolve for state queries.
       - AETHER_BACKRUN_FORK_LATEST=${AETHER_BACKRUN_FORK_LATEST:-}
+      # Min net profit (wei) a sized cycle must clear to reach the revm sim.
+      # Code default 0.001 ETH. Set to 0 in shadow to let marginal candidates
+      # through so the sim path is actually exercised/observed.
+      - AETHER_MEMPOOL_MIN_PROFIT_WEI=${AETHER_MEMPOOL_MIN_PROFIT_WEI:-}
 
   aether-go:
     logging: *default-logging
@@ -92,6 +102,7 @@ services:
       # env_file, not deploy/docker/.env (the file compose interpolates from).
       - AETHER_EXECUTOR_ADDRESS=${AETHER_EXECUTOR_ADDRESS:-0x68b3465833fb72A70ecDF485E0e4C7bD8665Fc45}
       - ETH_RPC_URL=${ETH_RPC_URL:-}
+      - AETHER_MEMPOOL_MIN_PROFIT_WEI=${AETHER_MEMPOOL_MIN_PROFIT_WEI:-}
       # Searcher hot-wallet key. Optional in shadow (unsigned, never submitted).
       # NEVER commit this — it comes from the .env file (chmod 600).
       - SEARCHER_KEY=${SEARCHER_KEY:-}
