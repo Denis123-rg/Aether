@@ -82,6 +82,10 @@ services:
       # forensics JSON. Set AETHER_SHADOW=0 ONLY to go live (real funds).
       - AETHER_SHADOW=${AETHER_SHADOW:-1}
       - AETHER_SHADOW_DUMP_DIR=/app/reports
+      # Go reads config/executor.yaml (+ risk/builders/nodes) from here. The
+      # base compose mounts config/ into aether-rust only, so wire it for go
+      # too — without it executor.yaml is missing and the service crash-loops.
+      - AETHER_CONFIG_DIR=/app/config
       # executor.yaml expands ${AETHER_EXECUTOR_ADDRESS}; the Go executor runs
       # eth_getCode on it at startup and aborts if empty. ETH_RPC_URL must be
       # passed here too — the base file only feeds it via the repo-root
@@ -94,6 +98,7 @@ services:
     volumes:
       # Persist shadow forensics dumps across restarts.
       - aether-reports:/app/reports
+      - ../../config:/app/config:ro
 
   prometheus:
     restart: unless-stopped
@@ -102,6 +107,10 @@ services:
   grafana:
     restart: unless-stopped
     logging: *default-logging
+    # Host port 3000 is taken by another project on this shared box; remap.
+    # !override replaces the base "3000:3000" instead of appending to it.
+    ports: !override
+      - "3001:3000"
 
   alertmanager:
     logging: *default-logging
