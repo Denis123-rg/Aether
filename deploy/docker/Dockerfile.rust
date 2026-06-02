@@ -7,7 +7,9 @@ RUN apt-get update && apt-get install -y protobuf-compiler && rm -rf /var/lib/ap
 RUN cargo build --release -p aether-grpc-server
 
 FROM debian:bookworm-slim
-RUN apt-get update && apt-get install -y ca-certificates && rm -rf /var/lib/apt/lists/*
+# wget is used by the compose healthcheck to probe the /metrics endpoint;
+# ca-certificates for outbound TLS (RPC/builder endpoints).
+RUN apt-get update && apt-get install -y ca-certificates wget && rm -rf /var/lib/apt/lists/*
 COPY --from=builder /app/target/release/aether-rust /usr/local/bin/
 COPY config/ /app/config/
 ENTRYPOINT ["aether-rust"]
