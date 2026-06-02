@@ -295,7 +295,7 @@
       "id": 8,
       "type": "timeseries",
       "title": "Backrun rejections by reason (5m rate)",
-      "description": "Why validated backruns are rejected. sim_error = revm/RPC error during the two-tx sim; victim_reverted = victim leg reverted against fork state; below_min_profit_optimized = net < min after sizing.",
+      "description": "Why validated backruns are rejected. sim_error = deterministic revm error during the two-tx sim; rpc_transport = RPC-backed fork state fetch failed (cold slot / 429) and exhausted retries; sim_timeout = the attempt blew AETHER_MEMPOOL_SIM_TIMEOUT_MS (default 5s), typically a slow cold-fetch chain; victim_reverted = victim leg reverted against fork state; below_min_profit_optimized = net < min after sizing; revm_contradicts = revm disagreed with the analytical profit estimate.",
       "gridPos": {
         "h": 8,
         "w": 12,
@@ -505,7 +505,7 @@
       "id": 13,
       "type": "timeseries",
       "title": "Backrun validation latency p50/p95/p99 (ms)",
-      "description": "Target is <5ms. Multi-hundred-ms / multi-second values indicate the revm fork is blocking on cold RPC fetches (AlloyDB cache misses) \u2014 the root cause of most sim_error rejects.",
+      "description": "Target is <5ms. Multi-hundred-ms / multi-second values indicate the revm fork is blocking on cold RPC fetches (AlloyDB cache misses) \u2014 the root cause of most sim_error / rpc_transport / sim_timeout rejects. When p99 approaches AETHER_MEMPOOL_SIM_TIMEOUT_MS, expect the rejection panel to shift toward sim_timeout.",
       "gridPos": {
         "h": 8,
         "w": 12,

@@ -138,7 +138,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 ws_url,
                 router_filter: aether_ingestion::mempool::default_router_addresses(),
             };
-            let source = Arc::new(aether_ingestion::mempool::AlchemyMempool::new(cfg));
+            // Register the ingestion metrics on the engine's shared registry
+            // and hand the source a handle so the EIP-2718 re-encode gate
+            // increments `aether_mempool_raw_reencode_mismatch_total` instead
+            // of dropping silently with only a `warn!`. Without this the
+            // backrun-funnel "Raw re-encode mismatches" panel is permanently
+            // empty and a corrupted victim raw-tx capture is invisible.
+            let ingest_metrics =
+                aether_ingestion::metrics::MempoolIngestMetrics::register(metrics.registry());
+            let source = Arc::new(aether_ingestion::mempool::AlchemyMempool::with_metrics(
+                cfg,
+                ingest_metrics,
+            ));
             let channels = Arc::clone(engine.event_channels());
             let source_shutdown = shutdown_rx.clone();
             let source_handle = tokio::spawn(async move {
