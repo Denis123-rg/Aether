@@ -44,7 +44,7 @@ graph TB
         MN["Monitor"] -.->|metrics| RM
     end
 
-    BUILDERS["Flashbots · Titan · Beaver · rsync"]
+    BUILDERS["Flashbots · Titan · Eden · rsync"]
 
     subgraph CHAIN["On-Chain"]
         AE["AetherExecutor.sol"] --> AAVE["Aave V3 Flash Loan"]
@@ -82,9 +82,22 @@ sequenceDiagram
     and
         Go->>B: eth_sendBundle (Titan)
     and
-        Go->>B: eth_sendBundle (Beaver)
+        Go->>B: eth_sendBundle (Eden)
     end
 ```
+
+---
+
+## Mempool Backrun Mode
+
+Alongside block-driven cyclic arbitrage, Aether runs a **pending-transaction backrun** strategy:
+
+1. **Decode pending swaps** — an Alchemy `pendingTransactions` subscription feeds a calldata decoder that understands UniswapV2/V3 routers, SushiSwap, the Uniswap **Universal Router**, **1inch v6** AggregationRouter, Balancer V2 Vault, Bancor V3, and Curve (pool-direct) flows.
+2. **Predict victim post-state** — the affected pools are advanced past the victim swap either analytically (Curve, Bancor) or by replaying the swap in `revm` (Balancer, UniV3), producing the reserves the block will actually settle with.
+3. **Validate the backrun** — the detector/simulator search for a profitable backrun against that predicted state, with the `AetherExecutor` bytecode injected into the `revm` `CacheDB` so the flash-loan path is exercised.
+4. **Bundle atomically** — the bundle is `[victim_raw_tx, arb_tx]`, where `victim_raw_tx` is the victim's **raw signed transaction** captured from the mempool (builders reject bare tx hashes), so the backrun only lands if the victim lands.
+
+The path is **shadow-gated** by default (`AETHER_SHADOW`): it logs and dumps forensics instead of submitting until explicitly promoted. See [`docs/runbook/mempool-backrun-rollout.md`](docs/runbook/mempool-backrun-rollout.md) and [`docs/runbook/mempool-observability.md`](docs/runbook/mempool-observability.md). Local harnesses: `scripts/mempool_backrun_shadow.sh`, `scripts/mempool_capture.sh`, `scripts/mempool_smoke.sh`, and the end-to-end `demo.sh`.
 
 ---
 
@@ -102,14 +115,26 @@ aether/
 │   ├── pools/                    # DEX pool implementations (6 protocols)
 │   ├── state/                    # State management & price graph
 │   ├── detector/                 # Arbitrage detection engine (Bellman-Ford)
-│   ├── simulator/                # EVM simulation (revm)
-│   ├── grpc-server/              # tonic gRPC server (Rust binary entry point)
-│   └── common/                   # Shared types, utils, errors
+│   ├── simulator/                # EVM simulation (revm) + mempool backrun
+│   ├── grpc-server/              # tonic gRPC server (aether-rust binary entry point)
+│   ├── common/                   # Shared types, utils, errors
+│   └── integration-tests/        # Cross-crate integration test suite
 │
 ├── cmd/                          # ── Go Services ──
 │   ├── executor/                 # Bundle construction & multi-builder submission
 │   ├── risk/                     # Risk management & circuit breakers
-│   └── monitor/                  # Prometheus metrics, dashboard, alerting
+│   ├── monitor/                  # Prometheus metrics, dashboard, alerting
+│   ├── pooldiscovery/            # Factory-event pool discovery & qualification
+│   └── reconciler/               # Mempool prediction-vs-actual reconciliation
+│
+├── internal/                     # ── Go Shared Packages ──
+│   ├── config/                   # Config loading (YAML/TOML) & validation
+│   ├── db/                       # Postgres trade/mempool ledger
+│   ├── grpc/                     # gRPC client to the Rust core
+│   ├── pb/                       # Generated protobuf bindings
+│   ├── risk/                     # Risk state machine & circuit breakers
+│   ├── testutil/                 # Test fixtures & helpers
+│   └── tracing/                  # OpenTelemetry / structured logging setup
 │
 ├── contracts/                    # ── Solidity ──
 │   ├── src/AetherExecutor.sol    # Flashloan receiver + multi-DEX swap router
@@ -118,9 +143,14 @@ aether/
 │
 ├── config/                       # Runtime configuration
 │   ├── pools.toml                # Pool registry (hot-reloadable)
+│   ├── pools_staging.toml        # Pool registry for the staging environment
+│   ├── pools_historical_replay.toml # Pool registry for historical replay/backtest
 │   ├── risk.yaml                 # Risk parameters & circuit breaker thresholds
 │   ├── nodes.yaml                # Ethereum node provider endpoints
+│   ├── executor.yaml             # Go executor tuning (timeouts, fan-out)
 │   └── builders.yaml             # Block builder API endpoints
+│
+├── migrations/                   # Postgres schema migrations (ledger + mempool)
 │
 ├── deploy/
 │   ├── systemd/                  # aether-rust.service, aether-go.service
@@ -130,12 +160,27 @@ aether/
 ├── scripts/
 │   ├── backtest.py               # Historical opportunity analysis
 │   ├── gas_profiler.py           # Gas usage profiling
-│   └── deploy.sh                 # Build, test, deploy automation
+│   ├── deploy.sh                 # Build, test, deploy automation
+│   ├── db_migrate.sh             # Apply Postgres migrations
+│   ├── canary.py                 # Canary validation
+│   ├── check_toolchain_versions.sh # Verify Rust/Go toolchain versions
+│   ├── historical_replay_e2e.sh  # End-to-end historical replay harness
+│   ├── mempool_capture.sh        # Capture pending-tx fixtures
+│   ├── mempool_smoke.sh          # Mempool pipeline smoke test
+│   ├── mempool_backrun_shadow.sh # Shadow-mode mempool backrun runner
+│   ├── staging_test.sh           # Staging environment validation
+│   ├── test_integration.sh       # Integration test runner
+│   └── watchdog.sh               # Process watchdog / auto-restart
+│
+├── demo.sh                       # End-to-end shadow-mode demo runner
+├── start.sh                      # Local service startup helper
 │
 └── docs/
     ├── architecture.md           # Detailed architecture documentation
     ├── runbook.md                # Operational procedures
-    └── incident-response.md      # Incident response playbook
+    ├── incident-response.md      # Incident response playbook
+    ├── runbook/                  # Mempool backrun rollout & observability runbooks
+    └── research/                 # Strategy, builder, and tx-ordering research
 ```
 
 ---
@@ -209,8 +254,11 @@ All configuration lives in the `config/` directory:
 | File | Purpose | Hot-Reload |
 |---|---|---|
 | `config/pools.toml` | Pool registry — monitored DEX pools | Yes (via `ControlService.ReloadConfig()`) |
+| `config/pools_staging.toml` | Pool registry for the staging environment | Yes |
+| `config/pools_historical_replay.toml` | Pool registry for historical replay / backtest | No |
 | `config/risk.yaml` | Risk parameters & circuit breaker thresholds | No (requires Go restart) |
 | `config/nodes.yaml` | Ethereum node provider endpoints (WS/IPC) | No |
+| `config/executor.yaml` | Go executor tuning (timeouts, fan-out, retries) | No |
 | `config/builders.yaml` | Block builder API endpoints & auth | No |
 
 ---
@@ -234,7 +282,7 @@ This starts: `aether-rust`, `aether-go`, Prometheus.
 docker compose -f deploy/docker/docker-compose.yml up -d prometheus
 
 # 2. Start Rust core (gRPC server)
-cargo run --release --bin aether-grpc-server
+cargo run --release --bin aether-rust
 
 # 3. Start Go executor
 go run ./cmd/executor
@@ -285,7 +333,7 @@ The system enforces automatic circuit breakers:
 | Condition | Action |
 |---|---|
 | Gas price >300 gwei | **HALT** |
-| 3 consecutive reverts in 10min | **PAUSE** |
+| 10 consecutive reverts in 10min | **PAUSE** |
 | Daily loss >0.5 ETH | **HALT** |
 | ETH balance <0.1 ETH | **HALT** |
 | Node latency >500ms | **DEGRADE** |
@@ -297,7 +345,7 @@ System state machine:
 stateDiagram-v2
     [*] --> Running
     Running --> Degraded: node latency >500ms
-    Running --> Paused: 3 reverts in 10min
+    Running --> Paused: 10 reverts in 10min
     Running --> Halted: gas >300gwei<br/>daily loss >0.5 ETH<br/>balance <0.1 ETH
     Degraded --> Running: latency recovers
     Degraded --> Halted: breaker trips

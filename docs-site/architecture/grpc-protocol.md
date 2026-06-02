@@ -53,7 +53,7 @@ sequenceDiagram
         and
             Go->>Builder: eth_sendBundle (Titan)
         and
-            Go->>Builder: eth_sendBundle (Beaver)
+            Go->>Builder: eth_sendBundle (Eden)
         end
         Go-->>Rust: SubmitArbResponse{accepted=true, bundle_hash}
     end
@@ -144,7 +144,7 @@ enum SystemState {
 stateDiagram-v2
     [*] --> RUNNING
     RUNNING --> DEGRADED: node latency >500ms
-    RUNNING --> PAUSED: 3 consecutive reverts / 10m
+    RUNNING --> PAUSED: 10 consecutive reverts / 10m
     RUNNING --> HALTED: gas >300gwei<br/>daily loss >0.5 ETH<br/>balance <0.1 ETH
     DEGRADED --> RUNNING: latency recovers
     DEGRADED --> HALTED: breaker trips

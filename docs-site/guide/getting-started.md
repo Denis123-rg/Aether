@@ -77,7 +77,7 @@ This starts `aether-rust`, `aether-go`, and Prometheus.
 docker compose -f deploy/docker/docker-compose.yml up -d prometheus
 
 # 2. Start Rust core (gRPC server)
-cargo run --release --bin aether-grpc-server
+cargo run --release --bin aether-rust
 
 # 3. Start Go executor (in a separate terminal)
 go run ./cmd/executor

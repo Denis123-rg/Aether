@@ -22,16 +22,20 @@
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use aether_common::types::ProtocolType;
 use aether_detector::bellman_ford::BellmanFord;
+use aether_detector::gas::{estimate_total_gas, gas_cost_wei};
 use aether_detector::opportunity::DetectedCycle;
+use aether_detector::optimizer::ternary_search_optimal_input;
 use aether_ingestion::subscription::{EventChannels, PendingTxEvent};
 use aether_pools::bancor::BNT_ADDRESS;
+use aether_pools::uniswap_v2::UniswapV2Pool;
 use aether_pools::router_decoder::{decode_pending_many, DecodeError, DecodedSwap, Protocol};
 use aether_pools::{
-    predict_post_state_with_replay, PoolState, PoolStateCache, ReplayProtocol, UnifiedPostState,
+    predict_post_state_with_replay, Pool, PoolState, PoolStateCache, ReplayProtocol,
+    UnifiedPostState,
 };
 use aether_simulator::calldata::build_execute_arb_calldata;
 use aether_simulator::mempool_backrun::{
@@ -56,6 +60,10 @@ use uuid::Uuid;
 use crate::service::aether_proto;
 
 use crate::engine::PoolMetadata;
+use aether_grpc_server::cycle_gating::{
+    self, GatingConfig, PostSimGateVerdict, PreSimGateVerdict,
+};
+use aether_grpc_server::hot_token::{HotTokenConfig, HotTokenTracker};
 use crate::mempool_writer::{
     MempoolPredictionSink, NewMempoolPrediction, PredictedPostState, PROTOCOL_BALANCER,
     PROTOCOL_BANCOR, PROTOCOL_CURVE, PROTOCOL_ONE_INCH_V6, PROTOCOL_SUSHI, PROTOCOL_UNI_V2, PROTOCOL_UNI_V3,
@@ -78,6 +86,42 @@ fn canonical_pair(a: Address, b: Address) -> (Address, Address) {
         (b, a)
     }
 }
+
+/// Aave V3 `flashLoanSimple` premium, in basis points (0.09%). Charged on
+/// the borrowed (input) amount and repaid alongside principal inside
+/// `AetherExecutor.executeOperation`, so it is a real cost the off-chain
+/// sizing gate must subtract before declaring an arb profitable.
+const AAVE_FLASHLOAN_PREMIUM_BPS: u128 = 9;
+
+/// Slippage tolerance applied to each hop's optimizer-derived
+/// `expected_out` to populate `min_amount_out`. 100 bps (1%) mirrors the
+/// block-driven path's default `slippage_bps`.
+const BACKRUN_SLIPPAGE_BPS: u32 = 100;
+
+/// Lower bound of the input-sizing ternary search (0.001 ETH). The search
+/// peak, not this floor, determines the chosen size; the floor only keeps
+/// the optimizer away from dust inputs that always lose to fixed costs.
+const OPTIMIZE_MIN_INPUT_WEI: u128 = 1_000_000_000_000_000;
+
+/// Hard ceiling of the input-sizing ternary search (50 ETH). Matches the
+/// risk layer's "max single trade 50 ETH" and the block path's `max_trade`.
+/// The effective `max_input` is further clamped to half the shallowest hop
+/// pool's input-side reserve (see [`optimize_cycle_input`]) so the optimizer
+/// never sizes past the depth the (post-victim) pools can actually support.
+const OPTIMIZE_MAX_INPUT_WEI: u128 = 50_000_000_000_000_000_000;
+
+/// Number of ternary-search iterations. Matches the block-driven path; ~80
+/// iterations converge a U256 range to within a couple of wei.
+const OPTIMIZE_ITERATIONS: u32 = 80;
+
+/// Gas limit used when replaying a victim tx in the shadow sim. The Alchemy
+/// pending-tx subscription does not carry the victim's real gas_limit, and a
+/// tight value (the old 1M) OOG-halted multicall / aggregator victims (1inch,
+/// Universal Router) before their swap even executed — counted as
+/// `victim_halted` and masking otherwise valid backruns. Use mainnet block-gas
+/// headroom; the sim runs with `disable_balance_check` so the caller pays
+/// nothing for it.
+const MEMPOOL_VICTIM_GAS_LIMIT: u64 = 30_000_000;
 
 fn build_pair_index(registry: &HashMap<Address, PoolMetadata>) -> PairIndex {
     let mut idx: PairIndex = HashMap::with_capacity(registry.len());
@@ -106,6 +150,11 @@ pub struct BackrunValidatorConfig {
     pub chain_id: u64,
     pub min_profit_wei: U256,
     pub input_amount_wei: U256,
+    /// Mainnet gas price (gwei) used by the off-chain economic gate to
+    /// price the arb's gas cost when sizing the input amount. The revm
+    /// validator runs with `disable_base_fee`, so this value affects only
+    /// the pre-revm profitability gate, not the simulated execution.
+    pub gas_price_gwei: f64,
     pub sim_semaphore: Arc<Semaphore>,
     /// RPC provider used by [`validate_backrun_rpc`] to build
     /// [`aether_simulator::fork::RpcForkedState`] per attempt. When
@@ -182,6 +231,17 @@ pub struct SimContext {
     /// bytecode on every attempt. `None` until the first refresh lands.
     pub mempool_prewarm:
         Arc<ArcSwap<Option<Arc<aether_simulator::fork::PrewarmedState>>>>,
+    /// Time-decaying frequency counter over decoded mempool swap pairs. Every
+    /// decoded swap is recorded here — including pairs whose pool is not yet in
+    /// the registry (those are exactly the new-token admission candidates) —
+    /// powering the periodic hot-token reporter. See the `hot_token` module.
+    pub hot_tokens: Arc<HotTokenTracker>,
+    /// Multi-signal candidate gating config. The block-driven path runs the
+    /// same gates (`EngineConfig::gating`); the mempool path must apply them
+    /// too — without this the mempool path would hand corrupt-edge cycles
+    /// (collapsed `-ln(rate)` weights) straight to the revm validator. See
+    /// [`crate::cycle_gating`].
+    pub gating: GatingConfig,
 }
 
 impl SimContext {
@@ -208,7 +268,18 @@ impl SimContext {
             pair_index_cache: Mutex::new(None),
             post_state_replay_enabled: false,
             mempool_prewarm: Arc::new(ArcSwap::from_pointee(None)),
+            hot_tokens: Arc::new(HotTokenTracker::new(HotTokenConfig::default())),
+            gating: GatingConfig::default(),
         }
+    }
+
+    /// Override the candidate gating config so the mempool path uses the
+    /// same gates as the block-driven path (`EngineConfig::gating`). When
+    /// unset, [`GatingConfig::default`] (the production-calibrated defaults)
+    /// applies.
+    pub fn with_gating(mut self, gating: GatingConfig) -> Self {
+        self.gating = gating;
+        self
     }
 
     /// Flip the revm post-state replay fallback on. Callers should also
@@ -292,6 +363,9 @@ pub fn spawn_mempool_pipeline(
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         let mut rx = channels.subscribe_pending_txs();
+        // Periodic hot-token visibility report (every 30s). First tick fires
+        // immediately and no-ops while the table is empty.
+        let mut report_tick = tokio::time::interval(Duration::from_secs(30));
         info!(
             target: "aether::mempool",
             sim = sim_ctx.is_some(),
@@ -299,6 +373,11 @@ pub fn spawn_mempool_pipeline(
         );
         loop {
             tokio::select! {
+                _ = report_tick.tick() => {
+                    if let Some(ctx) = sim_ctx.as_ref() {
+                        report_hot_tokens(ctx);
+                    }
+                }
                 next = rx.recv() => match next {
                     Ok(event) => handle_event(&metrics, sim_ctx.as_ref(), event),
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
@@ -351,10 +430,25 @@ pub fn spawn_mempool_prewarm_refresher(
     tokio::spawn(async move {
         let mut new_blocks = channels.subscribe_new_blocks();
         let interval = interval_blocks.max(1);
-        // First refresh on startup so the validator is warm before the
-        // first new-block tick lands. block_number = 0 is purely a log
-        // tag here; `prewarm_state` resolves storage via BlockId so
-        // value semantics don't depend on it.
+        // Delay the first refresh so it doesn't overlap with the engine's
+        // own boot fetch — when both ran concurrently against a free-tier
+        // RPC they doubled the burst and tripped 429s for ~30s after
+        // startup. AETHER_PREWARM_INITIAL_DELAY_SECS lets the boot fetch
+        // and the upstream's per-second quota settle before the prewarm
+        // adds its ~126 calls. Default 20s; set 0 to keep the legacy
+        // immediate behaviour when running against a private RPC.
+        let initial_delay_secs = std::env::var("AETHER_PREWARM_INITIAL_DELAY_SECS")
+            .ok()
+            .and_then(|v| v.parse::<u64>().ok())
+            .unwrap_or(20);
+        if initial_delay_secs > 0 {
+            info!(
+                target: "aether::mempool",
+                delay_secs = initial_delay_secs,
+                "delaying initial mempool prewarm to avoid boot-burst overlap"
+            );
+            tokio::time::sleep(std::time::Duration::from_secs(initial_delay_secs)).await;
+        }
         run_prewarm_refresh(&sim_ctx, &provider, &metrics, 0).await;
         let mut last_refresh_block: u64 = 0;
         info!(
@@ -416,27 +510,24 @@ async fn run_prewarm_refresh(
     if let Some(addr) = executor_addr {
         code_addrs.push(addr);
     }
-    let mut v2_addrs: Vec<Address> = Vec::new();
 
     for meta in registry_guard.values() {
         code_addrs.push(meta.pool_id.address);
-        if matches!(
-            meta.protocol,
-            ProtocolType::UniswapV2 | ProtocolType::SushiSwap,
-        ) {
-            v2_addrs.push(meta.pool_id.address);
-        }
     }
     code_addrs.sort_unstable();
     code_addrs.dedup();
-    v2_addrs.sort_unstable();
-    v2_addrs.dedup();
 
     let pool_count = registry_guard.len();
     drop(registry_guard);
 
+    // Warm bytecode only. The backrun validator forks at `latest` and
+    // injects code alone (see `PrewarmedState::inject_code_only`) so the
+    // victim replay sees fresh reserves; pre-fetching the V2 reserve slot
+    // here would be wasted RPC (and add to the boot-burst the concurrency
+    // cap is fighting). Pass no V2 addresses so the storage fan-out is a
+    // no-op.
     let fresh =
-        aether_simulator::fork::prewarm_state(provider, block_number, &code_addrs, &v2_addrs)
+        aether_simulator::fork::prewarm_state(provider, block_number, &code_addrs, &[])
             .await;
 
     sim_ctx
@@ -463,6 +554,46 @@ async fn run_prewarm_refresh(
 /// is dispatched onto tokio's blocking pool to keep its CPU cost off the
 /// main runtime workers — the engine's 3 ms p99 detection budget cannot
 /// share worker threads with a 3.8 MB-per-event clone under load.
+/// Wall-clock seconds since the Unix epoch. Saturates at 0 for the
+/// (impossible in practice) pre-epoch case so the `u64` cast never wraps.
+fn now_unix_secs() -> u64 {
+    Utc::now().timestamp().max(0) as u64
+}
+
+/// Periodic operator-visibility log answering "which tokens is the mempool
+/// trading most right now". Prunes cold pairs, then logs the top hot pairs and
+/// the subset that look like pool-admission candidates (≥ `min_venues` distinct
+/// venues). Pure logging — no submission, no registry mutation.
+fn report_hot_tokens(ctx: &SimContext) {
+    let now = now_unix_secs();
+    let pruned = ctx.hot_tokens.prune(now);
+    let tracked = ctx.hot_tokens.len();
+    if tracked == 0 {
+        return;
+    }
+    let top = ctx.hot_tokens.ranked(now);
+    let candidates = ctx.hot_tokens.candidates(now, 10);
+    for (rank, p) in top.iter().take(10).enumerate() {
+        info!(
+            target: "aether::mempool",
+            rank = rank + 1,
+            token_a = %p.token_a,
+            token_b = %p.token_b,
+            score = p.score,
+            hits = p.hits,
+            venues = p.venues,
+            "HOT TOKEN"
+        );
+    }
+    info!(
+        target: "aether::mempool",
+        tracked_pairs = tracked,
+        pruned = pruned,
+        candidates = candidates.len(),
+        "hot-token report"
+    );
+}
+
 fn handle_event(
     metrics: &Arc<EngineMetrics>,
     sim_ctx: Option<&Arc<SimContext>>,
@@ -477,14 +608,38 @@ fn handle_event(
     let router_label = format!("{:#x}", to);
 
     match decode_pending_many(to, &event.input) {
-        Ok(swaps) => {
+        Ok(mut swaps) => {
             if swaps.is_empty() {
                 metrics.inc_pending_decode_errors("multicall_no_swaps");
                 return;
             }
+            // ETH-input swaps (swapExactETHForTokens, ethUnoswap*, etc.) carry
+            // amount_in in msg.value, not calldata, so the decoder emits
+            // amount_in = ZERO for them. The first emitted swap is the ETH-
+            // consuming hop; subsequent swaps in a multicall operate on the
+            // wrapped output. Backfill only swap[0] so the pre_sim_filter no
+            // longer drops ETH-input flows as zero_amount.
+            if !event.value.is_zero() {
+                if let Some(first) = swaps.first_mut() {
+                    if first.amount_in.is_zero() {
+                        first.amount_in = event.value;
+                    }
+                }
+            }
             for swap in swaps {
                 emit_decoded(metrics, &router_label, &swap, &event);
                 let Some(ctx) = sim_ctx else { continue };
+                // Count every decoded swap — including pairs whose pool is not
+                // yet registered (pre_sim_filter drops those below) — so the
+                // hot-token tracker surfaces fresh, frequently-traded tokens as
+                // pool-admission candidates.
+                ctx.hot_tokens.record(
+                    swap.token_in,
+                    swap.token_out,
+                    swap.protocol,
+                    swap.pool_address,
+                    now_unix_secs(),
+                );
                 if !pre_sim_filter(metrics, ctx, &swap) {
                     continue;
                 }
@@ -854,7 +1009,15 @@ fn try_post_state_scan(
     let cycles = ctx
         .detector
         .detect_from_affected(&graph, &[in_idx, out_idx]);
-    let profitable: Vec<_> = cycles.into_iter().filter(|c| c.is_profitable()).collect();
+    let mut profitable: Vec<_> = cycles.into_iter().filter(|c| c.is_profitable()).collect();
+    // Most-profitable first. `detect_from_affected` returns cycles in
+    // traversal order, so the previous `profitable.first()` handed the
+    // validator an arbitrary candidate rather than the best one.
+    profitable.sort_by(|a, b| {
+        b.profit_factor()
+            .partial_cmp(&a.profit_factor())
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
 
     // Persist the prediction unconditionally — both profitable and
     // unprofitable swaps are useful signal for the reconciler (issue #131
@@ -924,8 +1087,62 @@ fn try_post_state_scan(
     // The validator returns the per-attempt outcome via metrics; this
     // call site is intentionally fire-and-forget so the analytical
     // candidate metric remains the contract for the dashboard.
+    //
+    // When AETHER_BACKRUN_SKIP_VICTIM=1 AND the victim is a V2/Sushi
+    // single-hop swap, build a slot-8 storage override carrying the
+    // analytical post-state reserves. The validator uses it to patch the
+    // pair and skip the victim replay entirely. Outside of that narrow
+    // case we pass None, preserving the original "replay victim then arb"
+    // semantic.
+    let victim_storage_overrides: Option<Vec<(Address, U256, U256)>> = (|| {
+        if std::env::var("AETHER_BACKRUN_SKIP_VICTIM")
+            .ok()
+            .as_deref() != Some("1") {
+            return None;
+        }
+        if !matches!(swap.protocol, Protocol::UniswapV2 | Protocol::SushiSwap) {
+            return None;
+        }
+        if !swap.path_extra.is_empty() {
+            return None;
+        }
+        let pool_addr = meta.pool_id.address;
+        // Map analytical (post_in, post_out) to (R0', R1') of the pair.
+        let (r0_f, r1_f) = if swap.token_in == meta.token0 {
+            (post_in, post_out)
+        } else {
+            (post_out, post_in)
+        };
+        if !(r0_f.is_finite() && r1_f.is_finite()) || r0_f <= 0.0 || r1_f <= 0.0 {
+            return None;
+        }
+        // V2 reserves are uint112 — clamp to that ceiling.
+        let max_u112: u128 = (1u128 << 112) - 1;
+        let r0 = (r0_f as u128).min(max_u112);
+        let r1 = (r1_f as u128).min(max_u112);
+        // Packed slot 8 layout: bits [0..112)=reserve0, [112..224)=reserve1,
+        // [224..256)=blockTimestampLast. Timestamp affects only the TWAP
+        // oracle accumulator, never the swap math — pass 0.
+        let packed: U256 =
+            U256::from(r0) | (U256::from(r1) << 112) | (U256::ZERO << 224);
+        Some(vec![(pool_addr, U256::from(8u64), packed)])
+    })();
+
     if let (Some(publisher), Some(cfg)) = (ctx.arb_publisher.as_ref(), ctx.backrun.as_ref()) {
-        if let Some(best) = profitable.first() {
+        // Pre-sim gating, mirroring the block-driven path (engine.rs). Gate
+        // against `graph` — the post-victim clone the cycle was detected on —
+        // and hand the validator the best cycle that survives the gates,
+        // dropping corrupt-edge / f64-overflow / fingerprint-cluster cycles
+        // before they waste a revm fork.
+        let fingerprint_index =
+            cycle_gating::build_fingerprint_index(&profitable, &ctx.gating);
+        let best = profitable.iter().find(|c| {
+            matches!(
+                cycle_gating::gate_pre_sim(c, &graph, &fingerprint_index, &ctx.gating, metrics),
+                PreSimGateVerdict::Pass
+            )
+        });
+        if let Some(best) = best {
             let _ = run_backrun_validation(
                 metrics,
                 publisher,
@@ -936,6 +1153,13 @@ fn try_post_state_scan(
                 event,
                 router_label,
                 snapshot.block_number,
+                victim_storage_overrides,
+                &ctx.pool_states,
+                meta.pool_id.address,
+                swap.token_in,
+                post_in,
+                post_out,
+                ctx.gating,
             );
         }
     }
@@ -1150,7 +1374,13 @@ fn try_post_state_scan_bancor_multihop(
     let cycles = ctx
         .detector
         .detect_from_affected(&graph, &[in_idx, bnt_idx, out_idx]);
-    let profitable: Vec<_> = cycles.into_iter().filter(|c| c.is_profitable()).collect();
+    let mut profitable: Vec<_> = cycles.into_iter().filter(|c| c.is_profitable()).collect();
+    // Most-profitable first (see single-leg path for rationale).
+    profitable.sort_by(|a, b| {
+        b.profit_factor()
+            .partial_cmp(&a.profit_factor())
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
 
     // Persist TWO prediction rows — one per affected pool. Both share the
     // victim's tx hash and predicted_target_block so the reconciler can
@@ -1201,7 +1431,19 @@ fn try_post_state_scan_bancor_multihop(
     }
 
     if let (Some(publisher), Some(cfg)) = (ctx.arb_publisher.as_ref(), ctx.backrun.as_ref()) {
-        if let Some(best) = profitable.first() {
+        // Pre-sim gating, mirroring the single-leg path. Gate against the
+        // post-victim graph clone and pick the best surviving cycle.
+        let fingerprint_index =
+            cycle_gating::build_fingerprint_index(&profitable, &ctx.gating);
+        let best = profitable.iter().find(|c| {
+            matches!(
+                cycle_gating::gate_pre_sim(c, &graph, &fingerprint_index, &ctx.gating, metrics),
+                PreSimGateVerdict::Pass
+            )
+        });
+        if let Some(best) = best {
+            // post-state replay path uses revm directly against the live
+            // fork; no V2 single-hop override shortcut applies here.
             let _ = run_backrun_validation(
                 metrics,
                 publisher,
@@ -1212,6 +1454,13 @@ fn try_post_state_scan_bancor_multihop(
                 event,
                 router_label,
                 snapshot.block_number,
+                None,
+                &ctx.pool_states,
+                Address::ZERO,
+                swap.token_in,
+                0.0,
+                0.0,
+                ctx.gating,
             );
         }
     }
@@ -1291,7 +1540,7 @@ fn try_post_state_replay(
         value: event.value,
         data: event.input.clone(),
         gas_price: event.gas_price,
-        gas_limit: 1_000_000,
+        gas_limit: MEMPOOL_VICTIM_GAS_LIMIT,
     };
     let params = ReplayParams {
         block_number,
@@ -1457,6 +1706,13 @@ fn run_backrun_validation(
     event: &PendingTxEvent,
     router_label: &str,
     block_number: u64,
+    victim_storage_overrides: Option<Vec<(Address, U256, U256)>>,
+    pool_states: &PoolStateCache,
+    victim_pool: Address,
+    victim_token_in: Address,
+    victim_post_in: f64,
+    victim_post_out: f64,
+    gating: GatingConfig,
 ) -> Option<()> {
     // Bounded concurrency. `try_acquire_owned` so a saturated semaphore
     // drops the attempt rather than queueing — the next pending swap will
@@ -1483,7 +1739,7 @@ fn run_backrun_validation(
     // (e.g. cycle crosses a vertex with no outbound edge under the
     // current snapshot) the attempt rejects rather than publishing a
     // malformed bundle.
-    let steps = match cycle_to_swap_steps(graph, token_index, cycle, cfg.input_amount_wei) {
+    let mut steps = match cycle_to_swap_steps(graph, token_index, cycle, cfg.input_amount_wei) {
         Some(s) if !s.is_empty() => s,
         _ => {
             metrics.inc_mempool_backrun_rejected("cycle_unbuildable");
@@ -1491,6 +1747,51 @@ fn run_backrun_validation(
         }
     };
     let flashloan_token = steps[0].token_in;
+
+    // Size the flashloan to maximize realized net profit (gross − input − gas
+    // − Aave premium) via exact V2/Sushi AMM math. Falls back to the fixed
+    // size for non-V2/Sushi cycles or missing pool state; drops the candidate
+    // pre-revm when no size clears `min_profit_wei`.
+    // Detector/optimizer net-profit estimate, captured for the post-sim
+    // cross-check (gate 4). Zero on the fallback path means the gate has
+    // nothing to compare against and passes.
+    let mut expected_net_wei: u128 = 0;
+    let flashloan_amount = match optimize_cycle_input(
+        &steps,
+        pool_states,
+        victim_pool,
+        victim_token_in,
+        victim_post_in,
+        victim_post_out,
+        cfg.gas_price_gwei,
+        cfg.min_profit_wei,
+    ) {
+        SizingOutcome::Sized(sizing) => {
+            debug!(
+                input_amount = %sizing.input_amount,
+                net_profit_wei = sizing.net_profit_wei,
+                "mempool-backrun: optimized arb size"
+            );
+            expected_net_wei = sizing.net_profit_wei;
+            // amount_in is an upper bound (the contract clamps to the real
+            // post-prior-hop balance); min_amount_out is the slippage guard.
+            let mut prev_in = sizing.input_amount;
+            for (i, step) in steps.iter_mut().enumerate() {
+                step.amount_in = prev_in;
+                let expected = sizing.per_hop_expected_out[i];
+                step.min_amount_out = expected
+                    .saturating_mul(U256::from(10_000u32 - BACKRUN_SLIPPAGE_BPS))
+                    / U256::from(10_000u32);
+                prev_in = expected;
+            }
+            sizing.input_amount
+        }
+        SizingOutcome::BelowMinProfit => {
+            metrics.inc_mempool_backrun_rejected("below_min_profit_optimized");
+            return None;
+        }
+        SizingOutcome::Fallback => cfg.input_amount_wei,
+    };
 
     // Deadline: now + 24s (~2 blocks of mainnet slot time). Mirrors the
     // block-driven path's deadline convention.
@@ -1502,27 +1803,50 @@ fn run_backrun_validation(
     let calldata = build_execute_arb_calldata(
         &steps,
         flashloan_token,
-        cfg.input_amount_wei,
+        flashloan_amount,
         deadline,
         cfg.min_profit_wei,
         U256::from(9000u64), // 90% tip share — conservative starting point
     );
 
-    // Build the forked state at the snapshot block. `new_at_latest`
-    // sidesteps the BlockId resolution issue when the provider is an
-    // Anvil fork; on real mainnet RPC the difference is invisible
-    // because `latest` and the snapshot block are typically within one
-    // slot of each other.
-    let mut state = match aether_simulator::fork::RpcForkedState::new_at_latest(
-        provider.clone(),
-        block_number,
-        now_secs,
-        // Base fee unknown at the snapshot — pass 1 gwei and rely on
-        // `disable_base_fee = true` inside the simulator's cfg. This is
-        // safe because the only effect of base_fee here is the EIP-1559
-        // gas-price check, which the validator already disables.
-        1_000_000_000,
-    ) {
+    // Build the forked state PINNED to the detected block. The cycle was
+    // detected and sized against the snapshot graph at `block_number` plus
+    // the analytical victim post-state, so the sim must fork that same block
+    // — then replay the victim on top — to execute against the exact state
+    // the candidate was sized for. Forking `latest` (chain head) let blocks
+    // mined between detection and this (spawn_blocking) sim drift the
+    // reserves out from under the analytically-derived `min_amount_out`
+    // guards, which is the dominant "passes detection then reverts" cause.
+    // The block-driven path pins identically (engine.rs `RpcForkedState::new`).
+    //
+    // `AETHER_BACKRUN_FORK_LATEST=1` restores the `latest` behaviour for
+    // Anvil forks whose locally-mined block numbers past the fork base may
+    // not resolve cleanly for state queries.
+    //
+    // Base fee unknown at the snapshot — pass 1 gwei and rely on
+    // `disable_base_fee = true` inside the simulator's cfg (the only effect
+    // of base_fee here is the EIP-1559 gas-price check, which the validator
+    // disables).
+    let fork_latest = std::env::var("AETHER_BACKRUN_FORK_LATEST")
+        .ok()
+        .as_deref()
+        == Some("1");
+    let fork_result = if fork_latest {
+        aether_simulator::fork::RpcForkedState::new_at_latest(
+            provider.clone(),
+            block_number,
+            now_secs,
+            1_000_000_000,
+        )
+    } else {
+        aether_simulator::fork::RpcForkedState::new(
+            provider.clone(),
+            block_number,
+            now_secs,
+            1_000_000_000,
+        )
+    };
+    let mut state = match fork_result {
         Some(s) => s,
         None => {
             metrics.inc_mempool_backrun_rejected("fork_construction_failed");
@@ -1530,15 +1854,18 @@ fn run_backrun_validation(
         }
     };
 
-    // Inject the long-lived pre-warmed snapshot built by the refresher
-    // task. Without this each shadow-sim starts with an empty `CacheDB`
-    // → ~10-20 cold upstream-RPC round-trips per V2 swap (bytecode +
-    // slot 8). With it, tracked-pool bytecode + V2 reserve slots are
-    // served from the in-memory cache and only unknown addresses
-    // (router state, ERC20 balances/allowances) hit the network.
+    // Inject ONLY the pre-warmed bytecode from the refresher task. Warming
+    // bytecode (by code hash) eliminates the dominant cold-fetch cost —
+    // ~10-20 RPC round-trips of contract code per V2 swap — without
+    // touching mutable state. The V2 packed-reserve slot is intentionally
+    // NOT injected: shadowing the fresh reserve read with the (up to several
+    // blocks stale) prewarm snapshot is what made the victim replay trip its
+    // own `amountOutMin` slippage guard and revert. Reserves lazy-fetch fresh
+    // from the forked block, so the victim replays against the pre-victim
+    // state the candidate was detected and sized against.
     let warm_guard = cfg.mempool_prewarm.load();
     if let Some(warm) = warm_guard.as_ref() {
-        warm.inject_into(&mut state);
+        warm.inject_code_only(&mut state);
         metrics.inc_mempool_prewarm_hit();
     } else {
         metrics.inc_mempool_prewarm_miss();
@@ -1550,13 +1877,16 @@ fn run_backrun_validation(
         value: event.value,
         data: event.input.clone(),
         gas_price: event.gas_price,
-        gas_limit: 1_000_000, // generous; victim's actual gas_limit not on the subscription stream
+        gas_limit: MEMPOOL_VICTIM_GAS_LIMIT,
     };
     let arb = ArbTx {
         caller: cfg.searcher_caller,
         to: cfg.executor_address,
+        // A flashloan + multi-hop arb (Aave ~80k + per-hop swaps + executor
+        // overhead) routinely exceeds 1.5M for 3+ hops, OOG-halting a valid
+        // arb leg. 3M matches the live-fork integration test's budget.
         data: calldata,
-        gas_limit: 1_500_000,
+        gas_limit: 3_000_000,
     };
     let params = ValidatorParams {
         block_number,
@@ -1567,6 +1897,7 @@ fn run_backrun_validation(
         profit_recipient: cfg.searcher_caller,
         balance_slot: cfg.balance_slot,
         executor_bytecode: cfg.executor_bytecode.clone(),
+        skip_victim_with_overrides: victim_storage_overrides,
     };
 
     let result = validate_backrun_rpc(state, &victim, &arb, &params);
@@ -1588,6 +1919,20 @@ fn run_backrun_validation(
             arb_gas_used = result.arb_gas_used,
             "BACKRUN VALIDATION REJECTED"
         );
+        return None;
+    }
+
+    // Post-sim cross-check (gate 4), mirroring the block-driven path
+    // (engine.rs `gate_post_sim`). The validator only accepts profitable
+    // sims, so this primarily catches the detector/optimizer wildly
+    // over-estimating profit versus what revm actually realized against the
+    // (pinned) forked state — a stale-snapshot signature. Drop before
+    // publishing rather than handing the executor a contradicted arb.
+    let actual_profit_u128: u128 = result.gross_profit_wei.try_into().unwrap_or(u128::MAX);
+    if let PostSimGateVerdict::Drop(_) =
+        cycle_gating::gate_post_sim(expected_net_wei, actual_profit_u128, &gating, metrics)
+    {
+        metrics.inc_mempool_backrun_rejected("revm_contradicts");
         return None;
     }
 
@@ -1616,7 +1961,11 @@ fn run_backrun_validation(
         block_number,
         timestamp_ns: now_secs as i64 * 1_000_000_000,
         flashloan_token: flashloan_token.to_vec().into(),
-        flashloan_amount: u256_bytes(cfg.input_amount_wei),
+        // Publish the OPTIMIZER-SIZED loan that was actually simulated, not
+        // the fixed `cfg.input_amount_wei` default — otherwise the Go
+        // executor would request a different loan than was validated, and
+        // the reconciler would compare against the wrong size.
+        flashloan_amount: u256_bytes(flashloan_amount),
         steps: steps.into_iter().map(swap_step_to_proto).collect(),
         calldata: arb.data.into(),
         source: aether_proto::ArbSource::MempoolBackrun as i32,
@@ -1693,6 +2042,215 @@ fn gross_profit_bucket(profit_wei: U256) -> &'static str {
     }
 }
 
+/// Outcome of attempting to optimally size a backrun cycle's input.
+enum SizingOutcome {
+    /// The cycle is not all-UniswapV2/SushiSwap, or a hop pool's exact
+    /// state was unavailable. The caller falls back to the fixed-size
+    /// path unchanged — never a silent drop.
+    Fallback,
+    /// The cycle is optimizable but the best realized net profit (after
+    /// gas and the Aave premium) is below `min_profit_wei`. The caller
+    /// drops the candidate and counts `below_min_profit_optimized`.
+    BelowMinProfit,
+    /// A profitable input size was found.
+    Sized(OptimizedSizing),
+}
+
+/// Result of optimally sizing a backrun cycle's input amount.
+struct OptimizedSizing {
+    /// Flashloan / hop-0 input amount that maximizes realized net profit.
+    input_amount: U256,
+    /// Exact `get_amount_out` for each hop at `input_amount`, in hop order.
+    /// `per_hop_expected_out[i]` is the output of hop `i` (== input of hop
+    /// `i+1`); the last entry is the cycle's gross output.
+    per_hop_expected_out: Vec<U256>,
+    /// Realized net profit at `input_amount` after gas + Aave premium.
+    net_profit_wei: u128,
+}
+
+/// Resolve each hop of a backrun cycle to a concrete [`UniswapV2Pool`] with
+/// exact on-chain reserves, overlaying the post-victim reserves on the
+/// victim's hop, and ternary-search the input amount that maximizes
+/// realized net profit (gross output − input − gas − Aave premium).
+///
+/// Returns [`SizingOutcome::Fallback`] for any cycle that is not entirely
+/// UniswapV2 / SushiSwap or whose hop state is missing — the caller keeps
+/// the existing fixed-size behaviour in that case. AMM math uses the pools'
+/// own exact-U256 `get_amount_out` (never the decimal-normalized
+/// `PriceGraph` f64 reserves, which are unreliable for sizing).
+///
+/// The victim's pool reserves are read from `(victim_post_in,
+/// victim_post_out)` — the analytical post-victim state computed upstream
+/// in `predict_and_validate` — because the arb executes *after* the victim
+/// swap lands, so the victim's pool is already shifted by the time the
+/// backrun runs.
+#[allow(clippy::too_many_arguments)]
+fn optimize_cycle_input(
+    steps: &[aether_common::types::SwapStep],
+    pool_states: &PoolStateCache,
+    victim_pool: Address,
+    victim_token_in: Address,
+    victim_post_in: f64,
+    victim_post_out: f64,
+    gas_price_gwei: f64,
+    min_profit_wei: U256,
+) -> SizingOutcome {
+    if steps.is_empty() {
+        return SizingOutcome::Fallback;
+    }
+
+    // Resolve every hop to a concrete UniswapV2Pool with exact reserves.
+    // Any non-V2/Sushi hop or missing pool state aborts to the fixed path.
+    let mut hop_pools: Vec<UniswapV2Pool> = Vec::with_capacity(steps.len());
+    for step in steps {
+        let Some(entry) = pool_states.get(&step.pool_address) else {
+            return SizingOutcome::Fallback;
+        };
+        let mut pool = match entry.value().as_ref() {
+            PoolState::UniswapV2(p) | PoolState::SushiSwap(p) => p.clone(),
+            _ => return SizingOutcome::Fallback,
+        };
+        // Overlay the post-victim reserves on the victim's pool so sizing
+        // reflects the state the arb will actually trade against.
+        if step.pool_address == victim_pool {
+            let Some((r0, r1)) =
+                victim_post_reserves(&pool, victim_token_in, victim_post_in, victim_post_out)
+            else {
+                return SizingOutcome::Fallback;
+            };
+            pool.update_state(r0, r1);
+        }
+        hop_pools.push(pool);
+    }
+
+    // Gas cost mirrors the block path: per-protocol base gas + fixed
+    // overheads, priced at the configured gwei. All hops are V2/Sushi, so
+    // tick counts are zero.
+    let protocols: Vec<ProtocolType> = steps.iter().map(|s| s.protocol).collect();
+    let tick_counts = vec![0u32; protocols.len()];
+    let total_gas = estimate_total_gas(&protocols, &tick_counts);
+    let gas_cost = gas_cost_wei(total_gas, gas_price_gwei);
+
+    // Run the exact-math hop chain for a candidate input, returning the
+    // cycle's gross output (same token as the input) or `None` if any hop
+    // cannot quote (zero amount / depleted reserve).
+    let token_in0 = steps[0].token_in;
+    let run_chain = |input: U256| -> Option<U256> {
+        let mut current = input;
+        let mut current_token = token_in0;
+        for (i, pool) in hop_pools.iter().enumerate() {
+            current = pool.get_amount_out(current_token, current)?;
+            if current.is_zero() {
+                return None;
+            }
+            current_token = steps[i].token_out;
+        }
+        Some(current)
+    };
+
+    // Net profit (signed wei) = gross_out − input − gas − premium.
+    // Premium is the Aave V3 flashLoanSimple fee on the borrowed input.
+    let profit_fn = |input: U256| -> i128 {
+        let Some(gross_out) = run_chain(input) else {
+            // Unquotable size: steer the search away from it.
+            return i128::MIN / 2;
+        };
+        let premium = saturating_u256_to_i128(input)
+            .saturating_mul(AAVE_FLASHLOAN_PREMIUM_BPS as i128)
+            / 10_000;
+        saturating_u256_to_i128(gross_out)
+            .saturating_sub(saturating_u256_to_i128(input))
+            .saturating_sub(gas_cost as i128)
+            .saturating_sub(premium)
+    };
+
+    // max_input is bounded by the FIRST hop's input-side reserve — the only
+    // hop denominated in the flashloan/input token. Intermediate hops are
+    // priced in other tokens/decimals, so folding their raw reserves into
+    // this cap would be a unit mismatch (e.g. USDC's 6-decimal reserve is
+    // numerically tiny next to an 18-decimal WETH input and would wrongly
+    // collapse the cap). Their depth is already captured by the
+    // constant-product `profit_fn`, which sees marginal output collapse past
+    // their liquidity. Allow at most half the input reserve, then clamp to
+    // the hard ceiling.
+    let first_pool = &hop_pools[0];
+    let first_reserve_in = if token_in0 == first_pool.token0 {
+        first_pool.reserve0
+    } else {
+        first_pool.reserve1
+    };
+    let depth_cap = (first_reserve_in / U256::from(2u64)).min(U256::from(OPTIMIZE_MAX_INPUT_WEI));
+
+    let min_input = U256::from(OPTIMIZE_MIN_INPUT_WEI);
+    let max_input = depth_cap.min(U256::from(OPTIMIZE_MAX_INPUT_WEI));
+
+    let (optimal_input, net_profit_i128) = if min_input < max_input {
+        ternary_search_optimal_input(min_input, max_input, OPTIMIZE_ITERATIONS, profit_fn)
+    } else {
+        (min_input, profit_fn(min_input))
+    };
+
+    if net_profit_i128 <= 0 {
+        return SizingOutcome::BelowMinProfit;
+    }
+    let net_profit_wei = net_profit_i128 as u128;
+    if U256::from(net_profit_wei) < min_profit_wei {
+        return SizingOutcome::BelowMinProfit;
+    }
+
+    // Recompute the exact per-hop outputs at the chosen input.
+    let mut per_hop_expected_out = Vec::with_capacity(hop_pools.len());
+    let mut current = optimal_input;
+    let mut current_token = token_in0;
+    for (i, pool) in hop_pools.iter().enumerate() {
+        let Some(out) = pool.get_amount_out(current_token, current) else {
+            // The optimum quoted moments ago; a None here means a
+            // degenerate edge — fall back rather than publish junk.
+            return SizingOutcome::Fallback;
+        };
+        per_hop_expected_out.push(out);
+        current = out;
+        current_token = steps[i].token_out;
+    }
+
+    SizingOutcome::Sized(OptimizedSizing {
+        input_amount: optimal_input,
+        per_hop_expected_out,
+        net_profit_wei,
+    })
+}
+
+/// Map the analytical post-victim reserves `(post_in, post_out)` — oriented
+/// to the victim's `token_in -> token_out` direction — back onto a
+/// [`UniswapV2Pool`]'s `(reserve0, reserve1)`. Floors each f64 reserve and
+/// clamps to the uint112 ceiling that V2 pairs enforce on-chain. Returns
+/// `None` for non-finite or non-positive reserves.
+fn victim_post_reserves(
+    pool: &UniswapV2Pool,
+    victim_token_in: Address,
+    post_in: f64,
+    post_out: f64,
+) -> Option<(U256, U256)> {
+    if !(post_in.is_finite() && post_out.is_finite()) || post_in <= 0.0 || post_out <= 0.0 {
+        return None;
+    }
+    let max_u112: u128 = (1u128 << 112) - 1;
+    let to_reserve = |v: f64| -> U256 { U256::from((v as u128).min(max_u112)) };
+    let (r_in, r_out) = (to_reserve(post_in), to_reserve(post_out));
+    if victim_token_in == pool.token0 {
+        Some((r_in, r_out))
+    } else {
+        Some((r_out, r_in))
+    }
+}
+
+/// Saturating U256 → i128 for profit accounting. Token amounts seen here
+/// (≤ 50 ETH of input, proportionate outputs) sit far below `u128::MAX`, so
+/// this is exact in practice; the clamp only guards adversarial overflow.
+fn saturating_u256_to_i128(v: U256) -> i128 {
+    v.min(U256::from(i128::MAX as u128)).to::<u128>() as i128
+}
+
 /// Convert a `DetectedCycle` (vertex-index path) into the `SwapStep`
 /// sequence consumed by `build_execute_arb_calldata`. Picks the first
 /// graph edge between each consecutive vertex pair. Returns `None` when
@@ -1713,10 +2271,20 @@ fn cycle_to_swap_steps(
         let (from_idx, to_idx) = (window[0], window[1]);
         let from_addr = *token_index.get_address(from_idx)?;
         let to_addr = *token_index.get_address(to_idx)?;
+        // Pick the SAME edge Bellman-Ford scored the cycle on: the
+        // lowest-weight (best-rate) pool for this hop. Using the first
+        // matching edge meant that when two pools connect the same token
+        // pair, the cycle was scored on pool X's rate but the bundle swapped
+        // through pool Y (`min_by` in bellman_ford.rs vs `.find` here).
         let edge = graph
             .edges_from(from_idx)
             .iter()
-            .find(|e| e.to == to_idx)?;
+            .filter(|e| e.to == to_idx)
+            .min_by(|a, b| {
+                a.weight
+                    .partial_cmp(&b.weight)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            })?;
         steps.push(aether_common::types::SwapStep {
             protocol: edge.protocol,
             pool_address: edge.pool_address,
@@ -2342,6 +2910,7 @@ mod tests {
             chain_id: 1,
             min_profit_wei: U256::ZERO,
             input_amount_wei: U256::ZERO,
+            gas_price_gwei: 20.0,
             sim_semaphore: Arc::new(Semaphore::new(1)),
             provider: None,
             mempool_prewarm: Arc::new(ArcSwap::from_pointee(None)),
@@ -2474,6 +3043,7 @@ mod tests {
             chain_id: 1,
             min_profit_wei: U256::ZERO,
             input_amount_wei: U256::ZERO,
+            gas_price_gwei: 20.0,
             sim_semaphore: Arc::new(tokio::sync::Semaphore::new(1)),
             provider: None,
             mempool_prewarm: Arc::new(ArcSwap::from_pointee(None)),
@@ -2877,5 +3447,95 @@ mod tests {
         let swap = bancor_multihop_swap();
         assert!(!pre_sim_filter(&metrics, &ctx, &swap));
         assert_eq!(filtered_count(&metrics, "not_in_registry"), 1);
+    }
+
+    /// The optimizer sizes a genuinely profitable two-venue WETH/USDC cycle
+    /// to a positive net-profit input (exercises pool resolution, the AMM
+    /// profit_fn, ternary search, per-hop expected-out, and the gate).
+    #[test]
+    fn optimizer_sizes_profitable_two_venue_v2_arb() {
+        use aether_pools::new_pool_state_cache;
+        let weth = address!("C02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2");
+        let usdc = address!("A0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48");
+        let pool_a = address!("00000000000000000000000000000000000000A1");
+        let pool_b = address!("00000000000000000000000000000000000000B2");
+        let (t0, t1) = if weth < usdc { (weth, usdc) } else { (usdc, weth) };
+        let mk = |addr, weth_res: u128, usdc_res: u128| {
+            let mut p = UniswapV2Pool::new(addr, t0, t1, 30);
+            let (r0, r1) = if t0 == weth {
+                (weth_res, usdc_res)
+            } else {
+                (usdc_res, weth_res)
+            };
+            p.update_state(U256::from(r0), U256::from(r1));
+            p
+        };
+        // Pool A quotes ~2100 USDC/WETH, Pool B ~2000 — a ~5% gap that clears
+        // the 2x0.3% pool fees + 9bps premium for a WETH->USDC->WETH loop.
+        let pa = mk(pool_a, 1_000_000_000_000_000_000_000u128, 2_100_000_000_000u128);
+        let pb = mk(pool_b, 1_000_000_000_000_000_000_000u128, 2_000_000_000_000u128);
+        let pool_states = new_pool_state_cache();
+        pool_states.insert(pool_a, std::sync::Arc::new(PoolState::UniswapV2(pa)));
+        pool_states.insert(pool_b, std::sync::Arc::new(PoolState::UniswapV2(pb)));
+        let mk_step = |pool, ti, to| aether_common::types::SwapStep {
+            protocol: ProtocolType::UniswapV2,
+            pool_address: pool,
+            token_in: ti,
+            token_out: to,
+            amount_in: U256::ZERO,
+            min_amount_out: U256::ZERO,
+            calldata: Vec::new(),
+        };
+        let steps = vec![mk_step(pool_a, weth, usdc), mk_step(pool_b, usdc, weth)];
+        let outcome = optimize_cycle_input(
+            &steps,
+            &pool_states,
+            Address::ZERO, // no victim overlay
+            weth,
+            0.0,
+            0.0,
+            1.0,                            // 1 gwei gas
+            U256::from(1_000_000_000u64),   // trivial min-profit floor
+        );
+        let SizingOutcome::Sized(sizing) = outcome else {
+            panic!("expected Sized for a profitable two-venue arb");
+        };
+        assert!(sizing.net_profit_wei > 0, "net profit must be positive");
+        assert_eq!(sizing.per_hop_expected_out.len(), 2);
+        assert!(sizing.input_amount > U256::ZERO);
+        // Final-hop expected out must exceed the input (gross > input).
+        assert!(sizing.per_hop_expected_out[1] > sizing.input_amount);
+    }
+
+    /// A cycle with a non-V2/Sushi hop falls back to the fixed-size path
+    /// rather than mis-sizing with the V2 constant-product model.
+    #[test]
+    fn optimizer_falls_back_for_non_v2_cycle() {
+        use aether_pools::new_pool_state_cache;
+        let pool = address!("88e6A0c2dDD26FEEb64F039a2c41296FcB3f5640");
+        let pool_states = new_pool_state_cache();
+        pool_states.insert(pool, std::sync::Arc::new(synthetic_v3_pool_state()));
+        let weth = address!("C02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2");
+        let usdc = address!("A0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48");
+        let steps = vec![aether_common::types::SwapStep {
+            protocol: ProtocolType::UniswapV3,
+            pool_address: pool,
+            token_in: weth,
+            token_out: usdc,
+            amount_in: U256::from(1u64),
+            min_amount_out: U256::ZERO,
+            calldata: Vec::new(),
+        }];
+        let outcome = optimize_cycle_input(
+            &steps,
+            &pool_states,
+            Address::ZERO,
+            weth,
+            0.0,
+            0.0,
+            1.0,
+            U256::ZERO,
+        );
+        assert!(matches!(outcome, SizingOutcome::Fallback));
     }
 }

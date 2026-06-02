@@ -26,7 +26,7 @@ features:
   - title: Rust + Go + Solidity
     details: Rust for the latency-critical hot path. Go for coordination and monitoring. Solidity for on-chain settlement.
   - title: Multi-Builder Submission
-    details: Simultaneous bundle submission to Flashbots, Titan, Beaver, and rsync builders for maximum inclusion probability.
+    details: Simultaneous bundle submission to Flashbots, Titan, Eden, and rsync builders for maximum inclusion probability.
   - title: Full Observability
     details: Prometheus metrics, Grafana dashboards, automated circuit breakers, and incident response playbooks.
 ---

@@ -44,7 +44,7 @@
 //! Every decoded swap is paired with a [`Protocol`] tag so downstream
 //! simulators can route to the right post-state computation.
 
-use alloy::primitives::{address, Address, U256};
+use alloy::primitives::{address, Address, Bytes, U256};
 use alloy::sol;
 use alloy::sol_types::SolCall;
 
@@ -438,6 +438,34 @@ sol! {
         function uniswapV3Swap(uint256 amount, uint256 minReturn, uint256[] pools) external payable returns (uint256);
         function uniswapV3SwapTo(address payable recipient, uint256 amount, uint256 minReturn, uint256[] pools) external payable returns (uint256);
     }
+
+    /// Uniswap Universal Router. Batches an arbitrary sequence of
+    /// sub-commands: `execute(bytes commands, bytes[] inputs)` plus the
+    /// deadline-suffixed overload. `commands[i]` is a 1-byte opcode whose
+    /// low 6 bits ([`UR_COMMAND_TYPE_MASK`]) select the action; `inputs[i]`
+    /// is the ABI-encoded params for that action (no selector — decoded via
+    /// `abi_decode_raw`). We decode only the V2/V3 swap opcodes; every other
+    /// opcode (PERMIT2_*, WRAP_ETH, UNWRAP_WETH, SWEEP, PAY_PORTION, …) is a
+    /// non-swap helper and is skipped. The two `execute` signatures hash to
+    /// distinct selectors, so they live in separate interfaces.
+    #[allow(missing_docs)]
+    interface IUniversalRouter {
+        function execute(bytes commands, bytes[] inputs) external payable;
+    }
+    #[allow(missing_docs)]
+    interface IUniversalRouterDeadline {
+        function execute(bytes commands, bytes[] inputs, uint256 deadline) external payable;
+    }
+    /// Per-command input tuples. `inputs[i]` is `abi.encode(...)` of these
+    /// params with no selector, so we decode with `abi_decode_raw`. The
+    /// function names are arbitrary — only the parameter shapes matter.
+    #[allow(missing_docs)]
+    interface IUniversalRouterCommands {
+        function v3SwapExactIn(address recipient, uint256 amountIn, uint256 amountOutMin, bytes path, bool payerIsUser);
+        function v3SwapExactOut(address recipient, uint256 amountOut, uint256 amountInMax, bytes path, bool payerIsUser);
+        function v2SwapExactIn(address recipient, uint256 amountIn, uint256 amountOutMin, address[] path, bool payerIsUser);
+        function v2SwapExactOut(address recipient, uint256 amountOut, uint256 amountInMax, address[] path, bool payerIsUser);
+    }
 }
 
 /// 1inch v6 AggregationRouter address on Ethereum Mainnet. Pinned here so
@@ -445,6 +473,38 @@ sol! {
 /// truth — adding a chain or moving routers means editing one constant.
 pub const ONE_INCH_V6_ROUTER: Address =
     address!("111111125421cA6dc452d289314280a0f8842A65");
+
+/// Uniswap Universal Router addresses on Ethereum Mainnet. The original
+/// Permit2-era deployment and the current ("v1.2") deployment are both
+/// pinned so the decoder and the default subscription filter agree on one
+/// source of truth.
+pub const UNIVERSAL_ROUTER_ADDRESSES: &[Address] = &[
+    address!("3fC91A3afd70395Cd496C647d5a6CC9D4B2b7FAD"), // UR (Permit2 era)
+    address!("66a9893cC07D91D95644AEDD05D03f95e1dBA8Af"), // UR v1.2 (current)
+];
+
+/// Low-6-bit mask isolating a Universal Router command's type from its flag
+/// bits (`0x80` = FLAG_ALLOW_REVERT, `0x40` reserved). See UR `Commands.sol`.
+const UR_COMMAND_TYPE_MASK: u8 = 0x3f;
+const UR_V3_SWAP_EXACT_IN: u8 = 0x00;
+const UR_V3_SWAP_EXACT_OUT: u8 = 0x01;
+const UR_V2_SWAP_EXACT_IN: u8 = 0x08;
+const UR_V2_SWAP_EXACT_OUT: u8 = 0x09;
+
+/// Map a Universal Router swap amount to the user-committed amount, folding
+/// the `CONTRACT_BALANCE` sentinel (`1 << 255`, "spend the whole current
+/// balance") to `U256::ZERO`. That sentinel marks an amount only known at
+/// execution time — a chained hop consuming a prior command's output, or a
+/// freshly-wrapped ETH balance. Emitting `0` lets the pipeline either
+/// backfill `swap[0]` from `msg.value` (ETH-in flows) or drop the chained
+/// hop as `zero_amount`, matching how the other multi-record decoders behave.
+fn ur_amount_or_zero(a: U256) -> U256 {
+    if a >= (U256::from(1u8) << 255) {
+        U256::ZERO
+    } else {
+        a
+    }
+}
 
 /// 1inch v6 pool-encoding bit constants. The router packs each pool word
 /// as `low 160 bits = pool address`, with flag bits in the high end. The
@@ -583,6 +643,13 @@ fn decode_at_depth(
 
     // 1inch v6 AggregationRouter — multi-record producer; peeled before
     // try_decode_single so the per-hop pool addresses propagate.
+    // Universal Router execute(commands, inputs) — multi-record producer,
+    // peeled before the single-call families since its selector is distinct
+    // and it can emit several V2/V3 swaps from one tx.
+    if let Some(swaps) = try_universal_router(selector, calldata, to)? {
+        return Ok(swaps);
+    }
+
     if let Some(swaps) = try_one_inch_v6(selector, calldata, to)? {
         return Ok(swaps);
     }
@@ -1026,6 +1093,156 @@ fn parse_v3_path(path: &[u8]) -> Result<(Address, Address, u32, Vec<Address>), D
     }
     let token_out = tokens.remove(0);
     Ok((token_in, token_out, fee, tokens))
+}
+
+/// Universal Router `execute(commands, inputs)` decoder — a multi-record
+/// producer (like UniV3 multicall and 1inch v6). Walks the command opcodes
+/// and turns each V2/V3 swap into a [`DecodedSwap`]; non-swap opcodes
+/// (permits, wrap/unwrap, sweep, pay-portion, …) are skipped. Returns
+/// `Ok(None)` when `selector` is not a UR `execute` so the caller falls
+/// through to the other decoder families; returns `Ok(Some(vec))` — possibly
+/// empty — when it is (an empty vec is handled by `decode_pending_many`'s
+/// consumer as `multicall_no_swaps`, identical to a swap-less multicall).
+///
+/// Per-command input bytes carry no selector (they are `abi.encode(...)` of
+/// the action params), so they decode via `abi_decode_raw`. A command whose
+/// paired input is missing, malformed, or has a degenerate path is skipped
+/// rather than failing the whole tx — a single bad sub-command must not
+/// mislabel an otherwise-decodable batch.
+fn try_universal_router(
+    selector: [u8; 4],
+    calldata: &[u8],
+    router: Address,
+) -> Result<Option<Vec<DecodedSwap>>, DecodeError> {
+    let (commands, inputs): (Bytes, Vec<Bytes>) =
+        if selector == IUniversalRouter::executeCall::SELECTOR {
+            let c = IUniversalRouter::executeCall::abi_decode(calldata)
+                .map_err(|e| DecodeError::AbiDecode(e.to_string()))?;
+            (c.commands, c.inputs)
+        } else if selector == IUniversalRouterDeadline::executeCall::SELECTOR {
+            let c = IUniversalRouterDeadline::executeCall::abi_decode(calldata)
+                .map_err(|e| DecodeError::AbiDecode(e.to_string()))?;
+            (c.commands, c.inputs)
+        } else {
+            return Ok(None);
+        };
+
+    let mut out: Vec<DecodedSwap> = Vec::new();
+    for (i, cmd_byte) in commands.iter().enumerate() {
+        // inputs[i] pairs positionally with commands[i]; a truncated payload
+        // with fewer inputs than commands is tolerated (skip the command).
+        let Some(input) = inputs.get(i) else { continue };
+        match cmd_byte & UR_COMMAND_TYPE_MASK {
+            UR_V3_SWAP_EXACT_IN => {
+                let p = IUniversalRouterCommands::v3SwapExactInCall::abi_decode_raw(input)
+                    .map_err(|e| DecodeError::AbiDecode(e.to_string()))?;
+                let Ok((token_in, token_out, fee, extras)) = parse_v3_path(&p.path) else {
+                    continue;
+                };
+                out.push(DecodedSwap {
+                    protocol: Protocol::UniswapV3,
+                    router,
+                    token_in,
+                    token_out,
+                    amount_in: ur_amount_or_zero(p.amountIn),
+                    amount_out_min: p.amountOutMin,
+                    recipient: p.recipient,
+                    fee_bps: fee,
+                    path_extra: extras,
+                    curve_indices: None,
+                    pool_address: None,
+                    one_inch_zero_for_one: None,
+                });
+            }
+            UR_V3_SWAP_EXACT_OUT => {
+                let p = IUniversalRouterCommands::v3SwapExactOutCall::abi_decode_raw(input)
+                    .map_err(|e| DecodeError::AbiDecode(e.to_string()))?;
+                // V3 exact-output paths are reverse-encoded (tokenOut first);
+                // reuse the same flip the native exactOutput decoder applies.
+                let Ok((path_first, path_second, fee, extras)) = parse_v3_path(&p.path) else {
+                    continue;
+                };
+                let (token_in, token_out) =
+                    swap_path_first_hop_for_exact_output(path_first, path_second, &extras);
+                out.push(DecodedSwap {
+                    protocol: Protocol::UniswapV3,
+                    router,
+                    token_in,
+                    token_out,
+                    amount_in: ur_amount_or_zero(p.amountOut),
+                    amount_out_min: p.amountInMax,
+                    recipient: p.recipient,
+                    fee_bps: fee,
+                    path_extra: extras,
+                    curve_indices: None,
+                    pool_address: None,
+                    one_inch_zero_for_one: None,
+                });
+            }
+            UR_V2_SWAP_EXACT_IN => {
+                let p = IUniversalRouterCommands::v2SwapExactInCall::abi_decode_raw(input)
+                    .map_err(|e| DecodeError::AbiDecode(e.to_string()))?;
+                if let Some(s) = ur_v2_decoded(
+                    router,
+                    &p.path,
+                    ur_amount_or_zero(p.amountIn),
+                    p.amountOutMin,
+                    p.recipient,
+                ) {
+                    out.push(s);
+                }
+            }
+            UR_V2_SWAP_EXACT_OUT => {
+                let p = IUniversalRouterCommands::v2SwapExactOutCall::abi_decode_raw(input)
+                    .map_err(|e| DecodeError::AbiDecode(e.to_string()))?;
+                // UR V2 paths are forward-encoded [tokenIn … tokenOut] for
+                // both exact-in and exact-out, so the same builder applies.
+                if let Some(s) = ur_v2_decoded(
+                    router,
+                    &p.path,
+                    ur_amount_or_zero(p.amountOut),
+                    p.amountInMax,
+                    p.recipient,
+                ) {
+                    out.push(s);
+                }
+            }
+            _ => continue, // non-swap command — nothing to emit
+        }
+    }
+    Ok(Some(out))
+}
+
+/// Build a UniswapV2 [`DecodedSwap`] from a Universal Router V2 command's
+/// `address[] path`. UR V2 swaps always target Uniswap V2 pools (never
+/// Sushi), so the protocol is fixed. Mirrors [`decode_v2_call`]'s field
+/// layout: `token_in = path[0]`, `token_out = path[1]`, remaining hops in
+/// `path_extra`. Returns `None` for a degenerate (<2-token) path so the
+/// caller skips that command instead of erroring the whole batch.
+fn ur_v2_decoded(
+    router: Address,
+    path: &[Address],
+    amount_in: U256,
+    amount_out_min: U256,
+    recipient: Address,
+) -> Option<DecodedSwap> {
+    if path.len() < 2 {
+        return None;
+    }
+    Some(DecodedSwap {
+        protocol: Protocol::UniswapV2,
+        router,
+        token_in: path[0],
+        token_out: path[1],
+        amount_in,
+        amount_out_min,
+        recipient,
+        fee_bps: 0,
+        path_extra: path.iter().skip(2).copied().collect(),
+        curve_indices: None,
+        pool_address: None,
+        one_inch_zero_for_one: None,
+    })
 }
 
 fn try_balancer(
@@ -1767,7 +1984,7 @@ mod tests {
             sourceToken: weth,
             targetToken: bnt,
             sourceAmount: U256::from(1_000_000_000_000_000_000u128), // 1 WETH
-            minReturnAmount: U256::from(2_500u64 * 10u64.pow(18)),    // 2500 BNT
+            minReturnAmount: U256::from(2_500u128 * 10u128.pow(18)),    // 2500 BNT
             deadline: U256::from(99_999_999_999u64),
             beneficiary,
         }
@@ -1778,7 +1995,7 @@ mod tests {
         assert_eq!(decoded.token_in, weth);
         assert_eq!(decoded.token_out, bnt);
         assert_eq!(decoded.amount_in, U256::from(1_000_000_000_000_000_000u128));
-        assert_eq!(decoded.amount_out_min, U256::from(2_500u64 * 10u64.pow(18)));
+        assert_eq!(decoded.amount_out_min, U256::from(2_500u128 * 10u128.pow(18)));
         assert_eq!(decoded.recipient, beneficiary);
         assert_eq!(decoded.fee_bps, 0);
         assert!(decoded.path_extra.is_empty());
@@ -2265,5 +2482,241 @@ mod tests {
         let single = decode_pending(one_inch_router(), &calldata).expect("decode");
         assert_eq!(single.pool_address, Some(p1));
         assert_eq!(single.token_in, weth);
+    }
+
+    // ── Universal Router ──────────────────────────────────────────────
+
+    const WETH_A: Address = address!("C02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2");
+    const USDC_A: Address = address!("A0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48");
+
+    fn ur_router() -> Address {
+        UNIVERSAL_ROUTER_ADDRESSES[1] // current v1.2 deployment
+    }
+
+    /// Build a UniV3 packed path `tokenIn(20) | fee(3) | tokenOut(20)`.
+    fn v3_path(token_in: Address, fee: u32, token_out: Address) -> Vec<u8> {
+        let mut p = Vec::with_capacity(43);
+        p.extend_from_slice(token_in.as_slice());
+        p.extend_from_slice(&fee.to_be_bytes()[1..4]); // u24, big-endian
+        p.extend_from_slice(token_out.as_slice());
+        p
+    }
+
+    /// Encode a command-input tuple the way the Universal Router does:
+    /// `abi.encode(params)` with NO selector (strip the 4-byte selector the
+    /// `sol!`-generated `abi_encode` prepends).
+    fn raw_params(call_with_selector: Vec<u8>) -> Bytes {
+        Bytes::from(call_with_selector[4..].to_vec())
+    }
+
+    fn build_execute(commands: Vec<u8>, inputs: Vec<Bytes>) -> Vec<u8> {
+        IUniversalRouter::executeCall {
+            commands: Bytes::from(commands),
+            inputs,
+        }
+        .abi_encode()
+    }
+
+    #[test]
+    fn ur_v3_swap_exact_in_single_command() {
+        let amount_in = U256::from(1_000_000_000_000_000_000u128);
+        let amount_out_min = U256::from(2_500_000_000u128);
+        let recip = address!("000000000000000000000000000000000000dEaD");
+        let input = raw_params(
+            IUniversalRouterCommands::v3SwapExactInCall {
+                recipient: recip,
+                amountIn: amount_in,
+                amountOutMin: amount_out_min,
+                path: Bytes::from(v3_path(WETH_A, 3000, USDC_A)),
+                payerIsUser: true,
+            }
+            .abi_encode(),
+        );
+        let calldata = build_execute(vec![UR_V3_SWAP_EXACT_IN], vec![input]);
+
+        let swaps = decode_pending_many(ur_router(), &calldata).expect("decode");
+        assert_eq!(swaps.len(), 1);
+        let s = &swaps[0];
+        assert_eq!(s.protocol, Protocol::UniswapV3);
+        assert_eq!(s.router, ur_router());
+        assert_eq!(s.token_in, WETH_A);
+        assert_eq!(s.token_out, USDC_A);
+        assert_eq!(s.amount_in, amount_in);
+        assert_eq!(s.amount_out_min, amount_out_min);
+        assert_eq!(s.fee_bps, 3000);
+        assert_eq!(s.recipient, recip);
+    }
+
+    #[test]
+    fn ur_v2_swap_exact_in_single_command() {
+        let amount_in = U256::from(5_000_000u128);
+        let recip = address!("000000000000000000000000000000000000bEEF");
+        let input = raw_params(
+            IUniversalRouterCommands::v2SwapExactInCall {
+                recipient: recip,
+                amountIn: amount_in,
+                amountOutMin: U256::from(1u64),
+                path: vec![USDC_A, WETH_A],
+                payerIsUser: true,
+            }
+            .abi_encode(),
+        );
+        let calldata = build_execute(vec![UR_V2_SWAP_EXACT_IN], vec![input]);
+
+        let swaps = decode_pending_many(ur_router(), &calldata).expect("decode");
+        assert_eq!(swaps.len(), 1);
+        let s = &swaps[0];
+        assert_eq!(s.protocol, Protocol::UniswapV2);
+        assert_eq!(s.token_in, USDC_A);
+        assert_eq!(s.token_out, WETH_A);
+        assert_eq!(s.amount_in, amount_in);
+        assert_eq!(s.fee_bps, 0);
+    }
+
+    #[test]
+    fn ur_skips_non_swap_commands_and_pairs_inputs_by_index() {
+        // commands: [WRAP_ETH(0x0b), V3_SWAP_EXACT_IN(0x00)]. inputs[0] is a
+        // wrap payload (opaque to us), inputs[1] the real swap. Only the swap
+        // should be emitted, and it must read inputs[1] (correct pairing).
+        let wrap_input = Bytes::from(vec![0u8; 64]); // arbitrary, never decoded
+        let swap_input = raw_params(
+            IUniversalRouterCommands::v3SwapExactInCall {
+                recipient: Address::ZERO,
+                amountIn: U256::from(42u64),
+                amountOutMin: U256::ZERO,
+                path: Bytes::from(v3_path(WETH_A, 500, USDC_A)),
+                payerIsUser: false,
+            }
+            .abi_encode(),
+        );
+        let calldata = build_execute(vec![0x0b, UR_V3_SWAP_EXACT_IN], vec![wrap_input, swap_input]);
+
+        let swaps = decode_pending_many(ur_router(), &calldata).expect("decode");
+        assert_eq!(swaps.len(), 1, "only the swap command should emit");
+        assert_eq!(swaps[0].amount_in, U256::from(42u64));
+        assert_eq!(swaps[0].fee_bps, 500);
+    }
+
+    #[test]
+    fn ur_allow_revert_flag_bit_is_masked() {
+        // 0x80 | 0x00 = V3_SWAP_EXACT_IN with FLAG_ALLOW_REVERT set.
+        let input = raw_params(
+            IUniversalRouterCommands::v3SwapExactInCall {
+                recipient: Address::ZERO,
+                amountIn: U256::from(7u64),
+                amountOutMin: U256::ZERO,
+                path: Bytes::from(v3_path(WETH_A, 3000, USDC_A)),
+                payerIsUser: true,
+            }
+            .abi_encode(),
+        );
+        let calldata = build_execute(vec![0x80 | UR_V3_SWAP_EXACT_IN], vec![input]);
+        let swaps = decode_pending_many(ur_router(), &calldata).expect("decode");
+        assert_eq!(swaps.len(), 1);
+        assert_eq!(swaps[0].amount_in, U256::from(7u64));
+    }
+
+    #[test]
+    fn ur_contract_balance_sentinel_maps_to_zero() {
+        // amountIn = 1<<255 (CONTRACT_BALANCE) → amount_in == 0 so the
+        // pipeline backfills from msg.value / drops as a chained hop.
+        let sentinel = U256::from(1u8) << 255;
+        let input = raw_params(
+            IUniversalRouterCommands::v3SwapExactInCall {
+                recipient: Address::ZERO,
+                amountIn: sentinel,
+                amountOutMin: U256::ZERO,
+                path: Bytes::from(v3_path(WETH_A, 3000, USDC_A)),
+                payerIsUser: false,
+            }
+            .abi_encode(),
+        );
+        let calldata = build_execute(vec![UR_V3_SWAP_EXACT_IN], vec![input]);
+        let swaps = decode_pending_many(ur_router(), &calldata).expect("decode");
+        assert_eq!(swaps.len(), 1);
+        assert_eq!(swaps[0].amount_in, U256::ZERO);
+    }
+
+    #[test]
+    fn ur_execute_with_deadline_overload_decodes() {
+        let input = raw_params(
+            IUniversalRouterCommands::v2SwapExactInCall {
+                recipient: Address::ZERO,
+                amountIn: U256::from(123u64),
+                amountOutMin: U256::ZERO,
+                path: vec![WETH_A, USDC_A],
+                payerIsUser: true,
+            }
+            .abi_encode(),
+        );
+        let calldata = IUniversalRouterDeadline::executeCall {
+            commands: Bytes::from(vec![UR_V2_SWAP_EXACT_IN]),
+            inputs: vec![input],
+            deadline: U256::from(99_999_999_999u64),
+        }
+        .abi_encode();
+        let swaps = decode_pending_many(ur_router(), &calldata).expect("decode");
+        assert_eq!(swaps.len(), 1);
+        assert_eq!(swaps[0].protocol, Protocol::UniswapV2);
+        assert_eq!(swaps[0].amount_in, U256::from(123u64));
+    }
+
+    #[test]
+    fn ur_swapless_execute_returns_empty_not_error() {
+        // A permit-only / wrap-only batch (no swap opcodes) must decode to an
+        // empty record set (consumer treats as multicall_no_swaps), NOT an
+        // UnknownSelector error — the execute selector IS recognised.
+        let calldata = build_execute(vec![0x0a, 0x0b], vec![Bytes::new(), Bytes::new()]);
+        let swaps = decode_pending_many(ur_router(), &calldata).expect("recognised selector");
+        assert!(swaps.is_empty());
+    }
+
+    #[test]
+    fn ur_multiple_swaps_in_one_execute() {
+        let in0 = raw_params(
+            IUniversalRouterCommands::v3SwapExactInCall {
+                recipient: Address::ZERO,
+                amountIn: U256::from(10u64),
+                amountOutMin: U256::ZERO,
+                path: Bytes::from(v3_path(WETH_A, 3000, USDC_A)),
+                payerIsUser: true,
+            }
+            .abi_encode(),
+        );
+        let in1 = raw_params(
+            IUniversalRouterCommands::v2SwapExactInCall {
+                recipient: Address::ZERO,
+                amountIn: U256::from(20u64),
+                amountOutMin: U256::ZERO,
+                path: vec![USDC_A, WETH_A],
+                payerIsUser: false,
+            }
+            .abi_encode(),
+        );
+        let calldata = build_execute(vec![UR_V3_SWAP_EXACT_IN, UR_V2_SWAP_EXACT_IN], vec![in0, in1]);
+        let swaps = decode_pending_many(ur_router(), &calldata).expect("decode");
+        assert_eq!(swaps.len(), 2);
+        assert_eq!(swaps[0].protocol, Protocol::UniswapV3);
+        assert_eq!(swaps[1].protocol, Protocol::UniswapV2);
+    }
+
+    #[test]
+    fn ur_unknown_router_still_unaffected_for_other_selectors() {
+        // Regression guard: a non-UR selector on a UR address must still fall
+        // through the normal families (here: a plain V2 router call shape is
+        // not a UR execute, so it should NOT be hijacked by the UR decoder).
+        use IUniswapV2Router02::swapExactTokensForTokensCall;
+        let calldata = swapExactTokensForTokensCall {
+            amountIn: U256::from(1u64),
+            amountOutMin: U256::ZERO,
+            path: vec![WETH_A, USDC_A],
+            to: Address::ZERO,
+            deadline: U256::from(1u64),
+        }
+        .abi_encode();
+        // Even sent to a UR address, this decodes via the V2 family (the UR
+        // decoder returns Ok(None) for non-execute selectors).
+        let s = decode_pending(ur_router(), &calldata).expect("decode");
+        assert_eq!(s.protocol, Protocol::UniswapV2);
     }
 }

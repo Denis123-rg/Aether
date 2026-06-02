@@ -240,6 +240,35 @@ impl PriceGraph {
         }
     }
 
+    /// Mark an edge's `filtered` flag without touching its weight or reserves.
+    ///
+    /// Used by the boot-time reserve fetcher to disable graph edges for pools
+    /// whose RPC fetch failed (`getReserves`/`slot0` returned empty bytes, etc).
+    /// Without this Bellman-Ford keeps traversing the placeholder rate=1.0 edge
+    /// from [`Self::add_edge`] and synthesises phantom cycles by chaining the
+    /// dead edge against any real edge between the same two vertices.
+    ///
+    /// No-op when no edge matches `(from, to, pool_id)`. Safe to call before or
+    /// after [`Self::update_edge_from_reserves`]; the next reserve refresh will
+    /// overwrite the flag with the min-liquidity-floor verdict.
+    pub fn set_edge_filtered(
+        &mut self,
+        from: usize,
+        to: usize,
+        pool_id: PoolId,
+        filtered: bool,
+    ) {
+        if let Some(existing) = self.edges[from]
+            .iter_mut()
+            .find(|e| e.to == to && e.pool_id == pool_id)
+        {
+            existing.filtered = filtered;
+            let idx = self.edge_index[&(from, to, pool_id)];
+            self.all_edges[idx].filtered = filtered;
+            self.dirty[idx] = true;
+        }
+    }
+
     /// Get all outgoing edges from a vertex.
     #[inline]
     pub fn edges_from(&self, vertex: usize) -> &[PriceEdge] {

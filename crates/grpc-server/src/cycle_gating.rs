@@ -38,9 +38,17 @@
 //! a label drawn from a fixed set so dashboards can pre-render every panel
 //! without churn.
 
+use std::sync::atomic::{AtomicUsize, Ordering};
+
 use aether_detector::opportunity::DetectedCycle;
 use aether_state::price_graph::PriceGraph;
 use tracing::{info, warn};
+
+/// Per-process cap on the number of `profit_factor_impossible` cycle paths
+/// logged. The metric counter still increments unbounded; this just keeps
+/// the log readable when the gate is firing thousands of times per minute.
+static IMPOSSIBLE_LOG_BUDGET: AtomicUsize = AtomicUsize::new(0);
+const IMPOSSIBLE_LOG_CAP: usize = 20;
 
 use crate::EngineMetrics;
 
@@ -213,6 +221,43 @@ pub fn gate_pre_sim(
     // f64-overflow signature directly without needing graph traversal.
     if !pf.is_finite() || pf > config.profit_factor_impossible {
         metrics.inc_cycle_gate_dropped(GateDropReason::ProfitFactorImpossible.as_label());
+        // Per-cycle diagnostic: log the path and each edge's reserves +
+        // weight so an operator can identify the corrupt edge driving the
+        // f64-overflow signature. Capped at IMPOSSIBLE_LOG_CAP samples per
+        // process lifetime to avoid log flooding when BF keeps re-finding
+        // the same corrupt cycle.
+        if IMPOSSIBLE_LOG_BUDGET.fetch_add(1, Ordering::Relaxed) >= IMPOSSIBLE_LOG_CAP {
+            return PreSimGateVerdict::Drop(GateDropReason::ProfitFactorImpossible);
+        }
+        let edges_dbg: Vec<String> = (0..cycle.path.len().saturating_sub(1))
+            .map(|i| {
+                let from = cycle.path[i];
+                let to = cycle.path[i + 1];
+                let best = graph
+                    .edges_from(from)
+                    .iter()
+                    .filter(|e| e.to == to)
+                    .min_by(|a, b| {
+                        a.weight
+                            .partial_cmp(&b.weight)
+                            .unwrap_or(std::cmp::Ordering::Equal)
+                    })
+                    .map(|e| {
+                        format!(
+                            "{}->{} w={:.3e} r_in={:.3e} r_out={:.3e} pool={:#x}",
+                            from, to, e.weight, e.reserve_in, e.reserve_out, e.pool_id.address
+                        )
+                    })
+                    .unwrap_or_else(|| format!("{}->{} <no-edge>", from, to));
+                best
+            })
+            .collect();
+        warn!(
+            profit_factor = pf,
+            hops = cycle.num_hops(),
+            edges = ?edges_dbg,
+            "DROP profit_factor_impossible"
+        );
         return PreSimGateVerdict::Drop(GateDropReason::ProfitFactorImpossible);
     }
 

@@ -347,6 +347,13 @@ pub fn default_router_addresses() -> Vec<Address> {
         address!("BA12222222228d8Ba445958a75a0704d566BF2C8"), // Balancer V2 Vault
         address!("eEF417e1D5CC832e619ae18D2F140De2999dD4fB"), // Bancor V3 BancorNetwork
         address!("111111125421cA6dc452d289314280a0f8842A65"), // 1inch v6 AggregationRouter
+        // ── Uniswap Universal Router (most modern Uniswap flow) ──
+        // Batches V2/V3 swaps via execute(commands, inputs); decoded by
+        // `aether-pools::router_decoder::try_universal_router`. Without these
+        // the bulk of present-day Uniswap mempool volume never reaches us.
+        // Keep in sync with `router_decoder::UNIVERSAL_ROUTER_ADDRESSES`.
+        address!("3fC91A3afd70395Cd496C647d5a6CC9D4B2b7FAD"), // Universal Router (Permit2 era)
+        address!("66a9893cC07D91D95644AEDD05D03f95e1dBA8Af"), // Universal Router v1.2 (current)
         // ── Curve pools (pool-direct `exchange()` traffic) ──
         // Curve calls hit pool addresses directly when the user / aggregator
         // skips the Curve Router. Without these in the `toAddress` filter
