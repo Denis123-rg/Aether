@@ -29,3 +29,5 @@ out/
 
 # Replay / backtest output (generated)
 /reports/
+contracts/crytic-export/
+contracts/lcov.info
