@@ -1,0 +1,9 @@
+testMode: assertion
+workers: 8
+testLimit: 200000
+timeout: 3600
+seqLen: 100
+deployer: "0x30000"
+sender: ["0x10000", "0x20000", "0x30000"]
+cryticArgs: ["--foundry-compile-all"]
+allContracts: false

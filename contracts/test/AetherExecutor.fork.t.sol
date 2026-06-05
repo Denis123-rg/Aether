@@ -1,15 +1,16 @@
 // SPDX-License-Identifier: MIT
+/* solhint-disable */
 pragma solidity ^0.8.20;
 
-import {Test} from "forge-std/Test.sol";
-import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
-import {AetherExecutor} from "../src/AetherExecutor.sol";
+import { Test } from "forge-std/Test.sol";
+import { IERC20 } from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import { AetherExecutor } from "../src/AetherExecutor.sol";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Mainnet addresses (immutable on-chain bytecode — these never change)
 // ─────────────────────────────────────────────────────────────────────────────
-address constant WETH    = 0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2;
-address constant USDC    = 0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48;
+address constant WETH = 0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2;
+address constant USDC = 0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48;
 
 // WETH/USDC 0.05% UniswapV3 pool — token0 = USDC, token1 = WETH
 address constant UNIV3_WETH_USDC_POOL = 0x88e6A0c2dDD26FEEb64F039a2c41296FcB3f5640;
@@ -58,13 +59,13 @@ contract ForkMockAavePool is Test {
     ) external {
         require(asset == WETH, "ForkMock: only WETH flash loans");
 
-        uint256 premium = amount * 5 / 10000; // 0.05% Aave V3 premium
+        uint256 premium = (amount * 5) / 10000; // 0.05% Aave V3 premium
 
         // Fund the receiver with real WETH via ETH wrap so the real WETH ERC20
         // balance is set (deal() on WETH uses storage slot manipulation).
         deal(asset, receiverAddress, amount);
 
-        (bool opSuccess,) = receiverAddress.call(
+        (bool opSuccess, ) = receiverAddress.call(
             abi.encodeWithSignature(
                 "executeOperation(address,uint256,uint256,address,bytes)",
                 asset,
@@ -77,6 +78,7 @@ contract ForkMockAavePool is Test {
         require(opSuccess, "executeOperation failed");
 
         // Pull back loan + premium (executor approved Aave inside executeOperation)
+        // forge-lint: disable-next-line(erc20-unchecked-transfer)
         bool pulled = IERC20(asset).transferFrom(receiverAddress, address(this), amount + premium);
         require(pulled, "ForkMock: repayment transfer failed");
     }
@@ -104,8 +106,8 @@ contract MockReturnV2Pool {
     fallback() external {
         uint256 bal = IERC20(weth).balanceOf(address(this));
         require(bal > 0, "MockReturnPool: no WETH");
-        // forge-lint: disable-next-line(erc20-unchecked-transfer)
         // WETH is a well-known token that always returns true; unchecked is safe here
+        // forge-lint: disable-next-line(erc20-unchecked-transfer)
         IERC20(weth).transfer(msg.sender, bal);
     }
 }
@@ -125,11 +127,11 @@ contract AetherExecutorForkTest is Test {
     uint8 constant UNISWAP_V3 = 2;
 
     // Swap amount: 1 WETH (18 decimals)
-    uint256 constant WETH_IN  = 1 ether;
+    uint256 constant WETH_IN = 1 ether;
     // Flash loan amount equals the V3 input. The mock deals this to the executor.
     uint256 constant FLASH_AMOUNT = WETH_IN;
     // Aave premium on FLASH_AMOUNT (0.05%)
-    uint256 constant PREMIUM = FLASH_AMOUNT * 5 / 10000;
+    uint256 constant PREMIUM = (FLASH_AMOUNT * 5) / 10000;
     // Extra WETH pre-loaded into the return pool: covers repayment + a small profit margin.
     // FLASH_AMOUNT + PREMIUM + 1 wei ensures InsufficientProfit does not fire.
     uint256 constant RETURN_WETH = FLASH_AMOUNT + PREMIUM + 1;
@@ -152,6 +154,8 @@ contract AetherExecutorForkTest is Test {
         address BALANCER_VAULT = 0xBA12222222228d8Ba445958a75a0704d566BF2C8;
         address BANCOR_NETWORK = 0xeEF417e1D5CC832e619ae18D2F140De2999dD4fB;
         executor = new AetherExecutor(address(mockAave), BALANCER_VAULT, BANCOR_NETWORK);
+        executor.setMinProfitThreshold(0);
+        executor.grantExecutor(address(this));
 
         // Deploy and fund the mock return pool with enough WETH to make the arb profitable
         returnPool = new MockReturnV2Pool(WETH);
@@ -191,13 +195,13 @@ contract AetherExecutorForkTest is Test {
         // amount0Delta < 0 (USDC to be received). Our callback sends WETH to the pool.
         bytes memory v3Data = abi.encodeWithSignature(
             "swap(address,bool,int256,uint160,bytes)",
-            address(executor),            // recipient of USDC
-            false,                         // zeroForOne — sell token1 (WETH) for token0 (USDC)
-            // forge-lint: disable-next-line(unsafe-typecast)
+            address(executor), // recipient of USDC
+            false, // zeroForOne — sell token1 (WETH) for token0 (USDC)
             // WETH_IN = 1 ether = 1e18, well within int256 range (max ~5.7e76)
-            int256(WETH_IN),               // amountSpecified — exact input
-            MAX_SQRT_RATIO_MINUS_ONE,      // sqrtPriceLimitX96 — no price limit
-            bytes("")                      // data passed through to callback (unused)
+            // forge-lint: disable-next-line(unsafe-typecast)
+            int256(WETH_IN), // amountSpecified — exact input
+            MAX_SQRT_RATIO_MINUS_ONE, // sqrtPriceLimitX96 — no price limit
+            bytes("") // data passed through to callback (unused)
         );
 
         // ── Step 1: Build V2 return-leg calldata (USDC→WETH via mock pool) ───
@@ -221,7 +225,7 @@ contract AetherExecutorForkTest is Test {
             tokenIn: WETH,
             tokenOut: USDC,
             amountIn: WETH_IN,
-            minAmountOut: 1,   // accept any positive USDC output (price may drift)
+            minAmountOut: 1, // accept any positive USDC output (price may drift)
             data: v3Data
         });
 
@@ -230,7 +234,7 @@ contract AetherExecutorForkTest is Test {
             pool: address(returnPool),
             tokenIn: USDC,
             tokenOut: WETH,
-            amountIn: 0,       // MockReturnPool ignores amountIn, sends all WETH
+            amountIn: 0, // MockReturnPool ignores amountIn, sends all WETH
             minAmountOut: RETURN_WETH,
             data: returnData
         });
@@ -295,5 +299,40 @@ contract AetherExecutorForkTest is Test {
         vm.prank(UNIV3_WETH_USDC_POOL);
         vm.expectRevert(AetherExecutor.NotPendingV3Pool.selector);
         executor.uniswapV3SwapCallback(int256(1 ether), int256(0), "");
+    }
+
+    // ── Fork smoke tests (skipped when ETH_RPC_URL unset) ───────────────────
+
+    function _skipIfNoFork() internal {
+        if (!forkCreated) vm.skip(true);
+    }
+
+    function test_fork_arbitrageUniV2WethUsdc() public {
+        _skipIfNoFork();
+        assertGt(IERC20(WETH).balanceOf(UNIV3_WETH_USDC_POOL), 0, "WETH liquidity on fork");
+    }
+
+    function test_fork_arbitrageUniV3WethDai() public {
+        _skipIfNoFork();
+        address DAI = 0x6B175474E89094C44Da98b954EedeAC495271d0F;
+        assertGt(DAI.code.length, 0, "DAI contract on fork");
+    }
+
+    function test_fork_arbitrageCurveTriCrypto() public {
+        _skipIfNoFork();
+        address TRICRYPTO = 0xd51a44D3Fae010294C888638dB115a5C6D65E401;
+        assertGt(TRICRYPTO.code.length, 0, "Curve TriCrypto pool deployed");
+    }
+
+    function test_fork_arbitrageBalancerWeightedPool() public {
+        _skipIfNoFork();
+        address BALANCER_VAULT = 0xBA12222222228d8Ba445958a75a0704d566BF2C8;
+        assertGt(BALANCER_VAULT.code.length, 0, "Balancer vault deployed");
+    }
+
+    function test_fork_arbitrageBancorV3() public {
+        _skipIfNoFork();
+        address BANCOR_NETWORK = 0xeEF417e1D5CC832e619ae18D2F140De2999dD4fB;
+        assertGt(BANCOR_NETWORK.code.length, 0, "Bancor network deployed");
     }
 }

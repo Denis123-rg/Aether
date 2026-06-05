@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: MIT
+/* solhint-disable */
 pragma solidity ^0.8.20;
 
-import {Script, console} from "forge-std/Script.sol";
-import {AetherExecutor} from "../src/AetherExecutor.sol";
+import { Script, console } from "forge-std/Script.sol";
+import { AetherExecutor } from "../src/AetherExecutor.sol";
 
 contract DeployAetherExecutor is Script {
     // Mainnet Aave V3 Pool
@@ -12,14 +13,18 @@ contract DeployAetherExecutor is Script {
     // Mainnet Bancor V3 BancorNetwork router
     address constant DEFAULT_BANCOR_NETWORK = 0xeEF417e1D5CC832e619ae18D2F140De2999dD4fB;
 
-    function runWithParams(address aavePool, address balancerVault, address bancorNetwork) public returns (AetherExecutor) {
+    function runWithParams(
+        address aavePool,
+        address balancerVault,
+        address bancorNetwork
+    ) public returns (AetherExecutor) {
         vm.startBroadcast();
         AetherExecutor executor = new AetherExecutor(aavePool, balancerVault, bancorNetwork);
         vm.stopBroadcast();
 
         console.log("AetherExecutor deployed at:", address(executor));
         console.log("Owner:", executor.owner());
-        console.log("Aave Pool:", executor.aavePool());
+        console.log("Aave Pool:", executor.AAVE_POOL());
         console.log("Balancer Vault:", executor.protocolRouter(5)); // BALANCER_V2
         console.log("Bancor Network:", executor.protocolRouter(6)); // BANCOR_V3
 
