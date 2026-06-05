@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"math/big"
@@ -28,6 +29,7 @@ import (
 	aethergrpc "github.com/aether-arb/aether/internal/grpc"
 	pb "github.com/aether-arb/aether/internal/pb"
 	"github.com/aether-arb/aether/internal/risk"
+	"github.com/aether-arb/aether/internal/strategy"
 	"github.com/aether-arb/aether/internal/tracing"
 )
 
@@ -43,6 +45,23 @@ var (
 	mempoolInflight *MempoolInflightTracker
 )
 
+// Package-level integration state for Phase 1 wiring, populated by main():
+//
+//   - builderSelector: the A/B builder selector. nil until main() builds it,
+//     so processArb and the snapshot loop nil-guard it (tests that call
+//     processArb directly never initialise it).
+//   - metricsStore: the TimescaleDB metrics writer. Defaults to a no-op so
+//     every Record call is safe before main() swaps in the real store and in
+//     unit tests. Set from DATABASE_URL in main().
+//
+// Globals (rather than threading new params through processArb) keep the
+// existing processArb signature — which the test suite depends on — stable,
+// matching the mempool* pattern above.
+var (
+	builderSelector *strategy.Selector
+	metricsStore    db.MetricsStore = db.NoopMetricsStore{}
+)
+
 // Config holds executor service configuration.
 // ChainID, ExecutorAddr, and the live ETH balance are no longer carried here —
 // they are resolved against the connected node at startup (see main) and the
@@ -51,6 +70,15 @@ type Config struct {
 	GRPCAddress    string
 	BuilderConfigs []BuilderConfig
 	MaxGasGwei     float64
+	Strategy       StrategyConfig
+}
+
+// StrategyConfig holds the A/B builder selector tuning, sourced from the
+// `strategy:` section of builders.yaml. Zero values are fine — strategy.New
+// substitutes its own defaults.
+type StrategyConfig struct {
+	ExplorationFloor float64
+	PriorAttempts    float64
 }
 
 func defaultConfig() Config {
@@ -84,6 +112,10 @@ func loadConfig() Config {
 			})
 		}
 		cfg.BuilderConfigs = builders
+		cfg.Strategy = StrategyConfig{
+			ExplorationFloor: bc.Strategy.ExplorationFloor,
+			PriorAttempts:    bc.Strategy.PriorAttempts,
+		}
 		slog.Info("builders loaded", "count", len(builders), "path", buildersPath)
 	}
 
@@ -195,30 +227,60 @@ func main() {
 	}
 	slog.Info("executor contract verified on-chain", "executor_address", execCfg.ExecutorAddress, "code_bytes", len(code))
 
-	// Load searcher private key for transaction signing and bundle submission.
-	searcherKey := os.Getenv("SEARCHER_KEY")
-
-	// Create submitter BEFORE clearing the key - it needs the key for FlashbotsSigner.
-	submitter, err := NewSubmitter(cfg.BuilderConfigs, searcherKey)
-	if err != nil {
-		slog.Error("failed to create submitter", "err", err)
-		os.Exit(1)
-	}
-
-	var txSigner *TransactionSigner
-	if searcherKey != "" {
-		var signerErr error
-		txSigner, signerErr = NewTransactionSigner(searcherKey, chainID.Int64())
-		if signerErr != nil {
-			slog.Error("failed to load SEARCHER_KEY", "err", signerErr)
+	// Signer selection. The out-of-process remote signer is preferred whenever
+	// AETHER_SIGNER_SOCKET is set (production / systemd): the searcher key never
+	// enters this process and is used for BOTH bundle signing and the
+	// X-Flashbots-Signature auth header. When no signer socket is configured we
+	// fall back to the in-process SEARCHER_KEY so dev / shadow / demo runs (and
+	// the test suite) keep working unchanged.
+	var (
+		txSigner  TxSigner
+		submitter *Submitter
+	)
+	if signerSocket := resolveSignerSocket(); signerSocket != "" {
+		rs, rsErr := NewRemoteSigner(signerSocket, chainID.Int64())
+		if rsErr != nil {
+			slog.Error("remote signer connect failed", "socket", signerSocket, "err", rsErr)
 			os.Exit(1)
 		}
-		slog.Info("searcher signer loaded", "addr", txSigner.Address().Hex())
+		// Explicit liveness sign of a known digest, per the integration brief.
+		if pingErr := rs.Ping(); pingErr != nil {
+			slog.Error("remote signer ping failed", "socket", signerSocket, "err", pingErr)
+			os.Exit(1)
+		}
+		txSigner = rs
+		// No key in-process — the submitter authenticates via the remote signer.
+		submitter, err = NewSubmitter(cfg.BuilderConfigs, "")
+		if err != nil {
+			slog.Error("failed to create submitter", "err", err)
+			os.Exit(1)
+		}
+		submitter.SetAuthSigner(remoteFlashbotsAuth{rs: rs})
+		// Defense in depth: with the remote signer in use, make sure a stray
+		// SEARCHER_KEY in the environment can never be read by anything later.
+		os.Unsetenv("SEARCHER_KEY")
+		slog.Info("remote signer connected", "addr", rs.Address().Hex(), "socket", signerSocket)
 	} else {
-		slog.Warn("SEARCHER_KEY not set, transactions will not be signed")
+		searcherKey := os.Getenv("SEARCHER_KEY")
+		// Create submitter BEFORE clearing the key - it needs the key for FlashbotsSigner.
+		submitter, err = NewSubmitter(cfg.BuilderConfigs, searcherKey)
+		if err != nil {
+			slog.Error("failed to create submitter", "err", err)
+			os.Exit(1)
+		}
+		if searcherKey != "" {
+			local, signerErr := NewTransactionSigner(searcherKey, chainID.Int64())
+			if signerErr != nil {
+				slog.Error("failed to load SEARCHER_KEY", "err", signerErr)
+				os.Exit(1)
+			}
+			txSigner = local
+			slog.Info("searcher signer loaded (in-process key)", "addr", local.Address().Hex())
+		} else {
+			slog.Warn("no signer configured (AETHER_SIGNER_SOCKET unset, SEARCHER_KEY empty); transactions will not be signed")
+		}
+		os.Unsetenv("SEARCHER_KEY")
 	}
-
-	os.Unsetenv("SEARCHER_KEY")
 
 	// Setup graceful shutdown
 	ctx, cancel := context.WithCancel(context.Background())
@@ -235,6 +297,33 @@ func main() {
 			pg.Close()
 		}
 	}()
+
+	// TimescaleDB metrics writer. Shares DATABASE_URL with the ledger and
+	// degrades to a no-op store when unset / unreachable, so a metrics outage
+	// can never stall or crash the executor. Assigned before SetMetricsObserver
+	// below so risk-breaker callbacks land in Timescale from the first trip.
+	metricsStore = db.MetricsStoreFromEnv(ctx, os.Getenv("DATABASE_URL"))
+	defer metricsStore.Close()
+
+	// A/B builder selector over the enabled builders. Pure policy object: the
+	// executor still fans every bundle out to ALL enabled builders; the
+	// selector only tracks per-builder outcomes, ranks them, and feeds the
+	// once-a-minute snapshot log (see processArb and logSelectorSnapshotLoop).
+	enabledBuilders := make([]string, 0, len(cfg.BuilderConfigs))
+	for _, b := range cfg.BuilderConfigs {
+		if b.Enabled {
+			enabledBuilders = append(enabledBuilders, b.Name)
+		}
+	}
+	builderSelector = strategy.New(enabledBuilders, strategy.Config{
+		ExplorationFloor: cfg.Strategy.ExplorationFloor,
+		PriorAttempts:    cfg.Strategy.PriorAttempts,
+	})
+	slog.Info("a/b builder selector initialised",
+		"builders", enabledBuilders,
+		"exploration_floor", cfg.Strategy.ExplorationFloor,
+		"prior_attempts", cfg.Strategy.PriorAttempts,
+	)
 
 	// Initialize components
 	nonceManager := NewNonceManager(0)
@@ -297,6 +386,13 @@ func main() {
 	go func() {
 		defer wg.Done()
 		gasOracle.UpdateLoop(ctx, 12*time.Second)
+	}()
+
+	// Start A/B selector snapshot logger (debug visibility into routing).
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		logSelectorSnapshotLoop(ctx, time.Minute)
 	}()
 
 	// Start ETH balance watcher. The initial fetch is synchronous and fatal
@@ -499,6 +595,21 @@ func processArb(
 		buildSpan.End()
 		span.RecordError(err)
 		span.SetStatus(codes.Error, "build bundle failed")
+		// A signer outage is a fail-safe condition: without a signature we
+		// cannot submit, and a flapping signer would otherwise burn through
+		// arbs as plain build errors. Pause the system (a future Telegram
+		// alert fires from the breaker trip) so submission stops until the
+		// signer recovers, and surface it to Timescale + Prometheus.
+		if errors.Is(err, errSignerUnavailable) {
+			recordSignerError()
+			metricsStore.Record(db.Metric{
+				Name:  "signer_error",
+				Value: 1,
+				Tags:  map[string]string{"stage": "bundle_build", "source": sourceLbl},
+			})
+			rm.Pause("signer_unavailable")
+			slog.ErrorContext(ctx, "remote signer unavailable — pausing executor", "arb_id", arb.Id, "err", err)
+		}
 		return false, fmt.Errorf("build bundle: %w", err)
 	}
 	if bundle.Source == "" {
@@ -621,6 +732,9 @@ func processArb(
 		recordBundleIncluded(sourceLbl, profitWei, gasGwei, arb.TotalGas)
 	}
 	rm.RecordBundleResult(included)
+
+	// Fold the per-builder outcome into the A/B selector and TimescaleDB.
+	recordBundleMetrics(sourceLbl, profitWei, receivedAt, results, included)
 
 	// Inline daily roll-up so `pnl_daily` accumulates during fork / live
 	// runs without a separate cron. bundle_count bumps every submit. The
@@ -783,6 +897,91 @@ func consumeArbStream(ctx context.Context, client *aethergrpc.Client, bundler *B
 	}
 }
 
+// recordBundleMetrics folds one submission round into the A/B selector and the
+// TimescaleDB metrics stream. The executor fans out to every enabled builder,
+// so at submit time we credit each builder that ACKed the bundle with the
+// attempt and, when the bundle was accepted, the (expected) profit. This
+// over-attributes under fan-out — only one builder ultimately lands the bundle
+// — and the future GetBundleStats inclusion-poll loop is what reconciles the
+// realized profit to the single winning builder; until then this is the only
+// per-builder signal available and is good enough to rank relative performance.
+func recordBundleMetrics(source string, profitWei *big.Int, receivedAt time.Time, results []SubmissionResult, included bool) {
+	profitEth := weiToEth(profitWei)
+	for _, r := range results {
+		if builderSelector != nil {
+			out := strategy.Outcome{Included: r.Success}
+			if r.Success && included {
+				out.ProfitWei = profitWei
+			}
+			builderSelector.Record(r.Builder, out)
+		}
+		metricsStore.Record(db.Metric{
+			Name:  "builder_selected",
+			Value: boolToFloat(r.Success),
+			Tags:  map[string]string{"builder": r.Builder, "source": source},
+		})
+		metricsStore.Record(db.Metric{
+			Name:  "bundle_latency_ms",
+			Value: float64(r.Latency.Nanoseconds()) / 1e6,
+			Tags:  map[string]string{"builder": r.Builder, "source": source, "scope": "builder"},
+		})
+	}
+	if !receivedAt.IsZero() {
+		metricsStore.Record(db.Metric{
+			Name:  "bundle_latency_ms",
+			Value: float64(time.Since(receivedAt).Nanoseconds()) / 1e6,
+			Tags:  map[string]string{"source": source, "scope": "end_to_end"},
+		})
+	}
+	if included {
+		metricsStore.Record(db.Metric{
+			Name:  "bundle_profit",
+			Value: profitEth,
+			Tags:  map[string]string{"source": source},
+		})
+	}
+}
+
+// logSelectorSnapshotLoop logs the A/B selector snapshot every interval for
+// operator visibility and mirrors each builder's current allocation into
+// Timescale. Exits on ctx cancellation; a no-op if the selector is unset.
+func logSelectorSnapshotLoop(ctx context.Context, interval time.Duration) {
+	if builderSelector == nil {
+		return
+	}
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			for builder, st := range builderSelector.Snapshot() {
+				slog.Info("ab_selector_snapshot",
+					"builder", builder,
+					"attempts", st.Attempts,
+					"inclusions", st.Inclusions,
+					"win_rate", st.WinRate,
+					"score_eth_per_attempt", st.ScoreEthPerAttempt,
+					"allocation", st.Allocation,
+				)
+				metricsStore.Record(db.Metric{
+					Name:  "builder_allocation",
+					Value: st.Allocation,
+					Tags:  map[string]string{"builder": builder},
+				})
+			}
+		}
+	}
+}
+
+func boolToFloat(b bool) float64 {
+	if b {
+		return 1
+	}
+	return 0
+}
+
 // executorMetricsObserver adapts risk-layer state events to Prometheus.
 // Kept as a struct so cmd/executor keeps the Prometheus dependency and
 // internal/risk stays pure.
@@ -790,10 +989,19 @@ type executorMetricsObserver struct{}
 
 func (executorMetricsObserver) OnStateChange(s risk.SystemState) {
 	setSystemState(stateToInt(s))
+	// Mirror to Timescale so the dashboard / runbook can chart state over time.
+	// metricsStore is always non-nil (no-op by default) and Record is
+	// non-blocking, satisfying the "keep observer callbacks cheap" contract.
+	metricsStore.Record(db.Metric{Name: "system_state", Value: float64(stateToInt(s))})
 }
 
 func (executorMetricsObserver) OnCircuitBreakerTrip(reason string) {
 	recordCircuitBreakerTrip(reason)
+	metricsStore.Record(db.Metric{
+		Name:  "risk_breaker",
+		Value: 1,
+		Tags:  map[string]string{"reason": reason},
+	})
 }
 
 // stateToInt maps system states to a numeric gauge value. -1 surfaces an

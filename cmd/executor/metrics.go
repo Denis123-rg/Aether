@@ -114,6 +114,10 @@ var (
 		Name: "aether_executor_shadow_bundles_total",
 		Help: "Bundles built+logged but not submitted (AETHER_SHADOW=1)",
 	})
+	signerErrorsTotal = prometheus.NewCounter(prometheus.CounterOpts{
+		Name: "aether_executor_signer_errors_total",
+		Help: "Remote signer failures during bundle signing (each one pauses the executor)",
+	})
 	// Counts every big.Int → float64 down-cast inside addBigIntCounter that
 	// loses precision. Cumulative profit / gas spent counters cross 2^53 wei
 	// after a few ETH of lifetime activity, so loss is expected and the log
@@ -144,6 +148,7 @@ func init() {
 		systemStateGauge,
 		circuitBreakerTripsTotal,
 		shadowBundles,
+		signerErrorsTotal,
 		metricsPrecisionLoss,
 	)
 	// Pre-touch both `source` labels so the Prometheus text exposition
@@ -255,6 +260,10 @@ func setSystemState(s int) {
 
 func recordCircuitBreakerTrip(reason string) {
 	circuitBreakerTripsTotal.WithLabelValues(reason).Inc()
+}
+
+func recordSignerError() {
+	signerErrorsTotal.Inc()
 }
 
 func addBigIntCounter(counter prometheus.Counter, value *big.Int) {

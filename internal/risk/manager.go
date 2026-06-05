@@ -347,6 +347,19 @@ func (rm *RiskManager) RecordRevert(revertType RevertType) {
 	}
 }
 
+// Pause forces the system into the Paused state with the given reason,
+// emitting the same observer signals (OnCircuitBreakerTrip + OnStateChange)
+// as an automatic circuit-breaker trip. It is used by the executor when an
+// external dependency the bot cannot operate without — currently the local
+// remote signer — becomes unavailable, so submission stops until an operator
+// (or a future health-driven resume) brings the system back. Pausing from a
+// terminal Halted state is a no-op transition but still counts the trip.
+func (rm *RiskManager) Pause(reason string) {
+	rm.mu.Lock()
+	defer rm.mu.Unlock()
+	rm.notifyTrip(reason, StatePaused)
+}
+
 // RecordTrade records a completed trade for daily tracking.
 func (rm *RiskManager) RecordTrade(volumeWei *big.Int, pnlWei *big.Int) {
 	rm.mu.Lock()

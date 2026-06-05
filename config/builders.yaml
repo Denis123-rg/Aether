@@ -31,3 +31,12 @@ builders:
 submission:
   fan_out: true
   max_retries: 2
+
+# A/B builder selector tuning (internal/strategy). The executor still fans
+# every bundle out to all enabled builders; the selector tracks per-builder
+# outcomes (acceptance + attributed profit), ranks builders, and emits a
+# snapshot every minute for observability. Omit either field to accept the
+# selector defaults (exploration_floor=0.15, prior_attempts=1).
+strategy:
+  exploration_floor: 0.15
+  prior_attempts: 1.0

@@ -63,13 +63,16 @@ type Bundle struct {
 type BundleConstructor struct {
 	nonceManager *NonceManager
 	gasOracle    *GasOracle
-	signer       *TransactionSigner
+	signer       TxSigner
 	chainID      int64
 }
 
 // NewBundleConstructor creates a new bundle constructor.
-// The signer is used to sign transactions; if nil, transactions are left unsigned.
-func NewBundleConstructor(nm *NonceManager, go_ *GasOracle, signer *TransactionSigner, chainID int64) *BundleConstructor {
+// The signer is used to sign transactions; if nil, transactions are left
+// unsigned. It accepts any TxSigner — the in-process *TransactionSigner or the
+// out-of-process *RemoteSigner — so the bundle path is agnostic to where the
+// key lives. Pass an untyped nil for the unsigned (test) path.
+func NewBundleConstructor(nm *NonceManager, go_ *GasOracle, signer TxSigner, chainID int64) *BundleConstructor {
 	return &BundleConstructor{
 		nonceManager: nm,
 		gasOracle:    go_,

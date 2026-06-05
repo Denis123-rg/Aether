@@ -163,6 +163,21 @@ type BuildersFileConfig struct {
 		FanOut     bool `yaml:"fan_out"`
 		MaxRetries int  `yaml:"max_retries"`
 	} `yaml:"submission"`
+	// Strategy tunes the A/B builder selector (internal/strategy). Both
+	// fields are optional: zero / omitted values fall back to the selector's
+	// built-in defaults (exploration_floor=0.15, prior_attempts=1) in
+	// strategy.New, so existing builders.yaml files keep working unchanged.
+	Strategy BuilderStrategyConfig `yaml:"strategy"`
+}
+
+// BuilderStrategyConfig holds the A/B selector tuning knobs.
+type BuilderStrategyConfig struct {
+	// ExplorationFloor is the total fraction of volume reserved for
+	// exploration, split evenly across builders (see strategy.Config).
+	ExplorationFloor float64 `yaml:"exploration_floor"`
+	// PriorAttempts seeds the smoothing prior on the score denominator so a
+	// builder with a tiny sample cannot leapfrog a long track record.
+	PriorAttempts float64 `yaml:"prior_attempts"`
 }
 
 // LoadBuildersConfig reads and parses a builders YAML config file.

@@ -62,8 +62,39 @@ type Submitter struct {
 	submitFn   func(context.Context, BuilderConfig, *Bundle) SubmissionResult
 	httpClient *http.Client
 	signer     *FlashbotsSigner
+	// authSigner, when set, overrides signer for the X-Flashbots-Signature
+	// header. The executor installs the remote signer here when the searcher
+	// key is held out-of-process, so Flashbots auth never needs an in-process
+	// key. nil → fall back to the local signer (if any).
+	authSigner flashbotsAuther
 	metrics    map[string]*BuilderMetrics
 	mu         sync.RWMutex
+}
+
+// SetAuthSigner installs an alternative Flashbots auth signer (e.g. the remote
+// signer) for the X-Flashbots-Signature header. It overrides the in-process
+// FlashbotsSigner for authentication. Safe for concurrent use.
+func (s *Submitter) SetAuthSigner(a flashbotsAuther) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.authSigner = a
+}
+
+// flashbotsAuth returns the active Flashbots auth signer: the injected
+// authSigner if present, else the local FlashbotsSigner, else nil. The nil
+// checks operate on concrete types to avoid a non-nil interface wrapping a nil
+// pointer.
+func (s *Submitter) flashbotsAuth() flashbotsAuther {
+	s.mu.RLock()
+	a := s.authSigner
+	s.mu.RUnlock()
+	if a != nil {
+		return a
+	}
+	if s.signer != nil {
+		return s.signer
+	}
+	return nil
 }
 
 // NewSubmitter creates a new submitter with real HTTP-based bundle submission.
@@ -349,10 +380,11 @@ func (s *Submitter) submitToBuilder(ctx context.Context, builder BuilderConfig, 
 func (s *Submitter) setAuthHeaders(req *http.Request, builder BuilderConfig, body []byte) error {
 	switch builder.AuthType {
 	case "flashbots":
-		if s.signer == nil {
-			return fmt.Errorf("builder %s requires flashbots auth but no searcher key configured", builder.Name)
+		auth := s.flashbotsAuth()
+		if auth == nil {
+			return fmt.Errorf("builder %s requires flashbots auth but no signer configured", builder.Name)
 		}
-		sig, err := s.signer.Sign(body)
+		sig, err := auth.Sign(body)
 		if err != nil {
 			return fmt.Errorf("sign request for %s: %w", builder.Name, err)
 		}
@@ -399,7 +431,8 @@ func (s *Submitter) Metrics() map[string]*BuilderMetrics {
 // GetBundleStats queries the Flashbots relay for bundle inclusion stats.
 // Only works when a FlashbotsSigner is configured.
 func (s *Submitter) GetBundleStats(ctx context.Context, bundleHash string, blockNumber uint64) (json.RawMessage, error) {
-	if s.signer == nil {
+	auth := s.flashbotsAuth()
+	if auth == nil {
 		return nil, fmt.Errorf("signer required for flashbots_getBundleStatsV2")
 	}
 
@@ -441,7 +474,7 @@ func (s *Submitter) GetBundleStats(ctx context.Context, bundleHash string, block
 	}
 	req.Header.Set("Content-Type", "application/json")
 
-	sig, err := s.signer.Sign(bodyBytes)
+	sig, err := auth.Sign(bodyBytes)
 	if err != nil {
 		return nil, fmt.Errorf("sign stats request: %w", err)
 	}
