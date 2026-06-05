@@ -12,6 +12,7 @@ aether-pools = { path = "../pools" }
 aether-state = { path = "../state" }
 aether-detector = { path = "../detector" }
 aether-simulator = { path = "../simulator" }
+aether-discovery = { path = "../discovery" }
 revm-database = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }

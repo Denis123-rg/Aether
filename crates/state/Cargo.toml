@@ -5,12 +5,15 @@ edition.workspace = true
 
 [dependencies]
 aether-common = { path = "../common" }
+aether-discovery = { path = "../discovery" }
 aether-pools = { path = "../pools" }
 alloy = { workspace = true }
 dashmap = { workspace = true }
 arc-swap = { workspace = true }
 tracing = { workspace = true }
 ruint = { workspace = true }
+prometheus = "0.13.4"
+tokio = { workspace = true }
 
 [dev-dependencies]
 criterion = { workspace = true }

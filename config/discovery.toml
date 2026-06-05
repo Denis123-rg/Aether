@@ -1,0 +1,58 @@
+# Aether Discovery Service configuration
+#
+# Listens to PoolCreated / PairCreated events from DEX factories,
+# validates new pools via revm fork simulation, scores by TVL and volume,
+# and maintains a ranked in-memory cache (up to 50_000 pools).
+
+[discovery]
+enabled = true
+max_pools = 50000
+prune_interval_secs = 3600
+prune_max_age_secs = 3600
+score_refresh_interval_secs = 300
+validation_swap_eth = 0.001
+
+[scoring]
+# score = sqrt(tvl) * volume_24h * (1 - fee) * (1 - slippage)
+tvl_weight = 1.0
+volume_weight = 1.0
+slippage_estimate_bps = 50
+
+[hot_cache]
+update_interval_secs = 5
+top_n = 500
+
+[[factories]]
+name = "uniswap_v2"
+protocol = "uniswap_v2"
+address = "0x5C69bEe701ef814a2B6a3EDD4B1652CB9cc5aA6f"
+fee_bps = 30
+event = "PairCreated"
+
+[[factories]]
+name = "sushiswap"
+protocol = "sushiswap"
+address = "0xC0AEe478e3658e2610c5F7A4A2D1773cDCC8b275"
+fee_bps = 30
+event = "PairCreated"
+
+[[factories]]
+name = "uniswap_v3"
+protocol = "uniswap_v3"
+address = "0x1F98431c8aD98523631AE4a59f267346ea31F984"
+fee_bps = 30
+event = "PoolCreated"
+
+# Curve factory — BasePoolAdded events handled separately when enabled.
+[[factories]]
+name = "curve"
+protocol = "curve"
+address = "0x0959158b6040D32d9a7C9b7bc94A37AeC10cEc22"
+fee_bps = 4
+event = "PlainPoolDeployed"
+
+[the_graph]
+# Optional subgraph endpoint for TVL / volume enrichment.
+# When unset, discovery falls back to on-chain multicall estimates.
+endpoint = ""
+timeout_secs = 10

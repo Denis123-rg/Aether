@@ -11,6 +11,7 @@ use tokio::net::UnixListener;
 #[cfg(unix)]
 use tokio_stream::wrappers::UnixListenerStream;
 
+mod discovery_integration;
 mod engine;
 mod mempool_pipeline;
 mod mempool_writer;
@@ -108,6 +109,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Fetch initial on-chain reserves so the price graph has real edges.
     engine.fetch_initial_reserves().await;
 
+    // Shutdown coordination via watch channel (created early for discovery).
+    let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+
+    // Dynamic discovery + hot cache (falls back to static pools.toml when disabled).
+    let _discovery_runtime = discovery_integration::maybe_start_discovery(
+        &engine,
+        &metrics,
+        engine.rpc_provider(),
+        shutdown_rx.clone(),
+    )
+    .await;
+
     // Create the RpcProvider, sharing the engine's event channels so events
     // flow from the provider into the engine's event loop.
     // Reads AETHER_NODES_CONFIG for multi-node pool config, falls back to ETH_RPC_URL.
@@ -120,9 +133,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Arc::clone(engine.event_channels()),
         Arc::clone(&metrics),
     ));
-
-    // Shutdown coordination via watch channel.
-    let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
 
     // Spawn the engine in a background task.
     let engine_clone = Arc::clone(&engine);

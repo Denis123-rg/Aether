@@ -378,6 +378,29 @@ impl PriceGraph {
         }
     }
 
+    /// Return a clone containing only edges whose pool address is in `allowed`.
+    ///
+    /// Used by the hot cache path so Bellman-Ford scans only the top-N
+    /// discovery pools instead of the full static registry on disk.
+    pub fn clone_retaining_pools(&self, allowed: &std::collections::HashSet<Address>) -> Self {
+        if allowed.is_empty() {
+            return self.clone();
+        }
+        let mut filtered = self.clone();
+        let to_remove: Vec<PoolId> = filtered
+            .all_edges
+            .iter()
+            .filter(|e| !allowed.contains(&e.pool_address))
+            .map(|e| e.pool_id)
+            .collect::<std::collections::HashSet<_>>()
+            .into_iter()
+            .collect();
+        for pool_id in to_remove {
+            filtered.remove_pool_edges(&pool_id);
+        }
+        filtered
+    }
+
     /// Grow the graph to accommodate at least `new_size` vertices.
     /// Existing edges are preserved.
     pub fn resize(&mut self, new_size: usize) {
@@ -1425,5 +1448,33 @@ mod tests {
             (edge.weight - expected_weight).abs() < 1e-12,
             "18/18 decimal pair must match pre-change weight"
         );
+    }
+
+    #[test]
+    fn clone_retaining_pools_filters_edges() {
+        use std::collections::HashSet;
+        let mut g = PriceGraph::new(3);
+        let hot_id = make_pool_id(10, ProtocolType::UniswapV2);
+        let cold_id = make_pool_id(11, ProtocolType::SushiSwap);
+        g.add_edge(0, 1, 1.2, hot_id, hot_id.address, ProtocolType::UniswapV2, U256::from(100));
+        g.add_edge(1, 0, 0.8, hot_id, hot_id.address, ProtocolType::UniswapV2, U256::from(100));
+        g.add_edge(0, 2, 1.5, cold_id, cold_id.address, ProtocolType::SushiSwap, U256::from(50));
+        g.add_edge(2, 0, 0.6, cold_id, cold_id.address, ProtocolType::SushiSwap, U256::from(50));
+
+        let mut allowed = HashSet::new();
+        allowed.insert(hot_id.address);
+        let filtered = g.clone_retaining_pools(&allowed);
+        assert_eq!(filtered.num_edges(), 2);
+        assert!(filtered.all_edges().iter().all(|e| e.pool_address == hot_id.address));
+    }
+
+    #[test]
+    fn clone_retaining_empty_set_returns_full_graph() {
+        use std::collections::HashSet;
+        let mut g = PriceGraph::new(2);
+        let pid = make_pool_id(1, ProtocolType::UniswapV2);
+        g.add_edge(0, 1, 1.0, pid, pid.address, ProtocolType::UniswapV2, U256::ZERO);
+        let filtered = g.clone_retaining_pools(&HashSet::new());
+        assert_eq!(filtered.num_edges(), g.num_edges());
     }
 }

@@ -26,6 +26,7 @@ aether-pools = { path = "../pools" }
 aether-state = { path = "../state" }
 aether-detector = { path = "../detector" }
 aether-simulator = { path = "../simulator" }
+aether-discovery = { path = "../discovery" }
 alloy = { workspace = true }
 arc-swap = { workspace = true }
 tokio = { workspace = true }

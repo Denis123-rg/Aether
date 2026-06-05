@@ -1,0 +1,23 @@
+[package]
+name = "aether-discovery"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+aether-common = { path = "../common" }
+aether-ingestion = { path = "../ingestion" }
+aether-pools = { path = "../pools" }
+aether-simulator = { path = "../simulator" }
+alloy = { workspace = true }
+dashmap = { workspace = true }
+tokio = { workspace = true }
+serde = { workspace = true }
+toml = { workspace = true }
+tracing = { workspace = true }
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+serde_json = { workspace = true }
+revm-database = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3.27.0"

@@ -27,6 +27,8 @@ use aether_pools::{new_pool_state_cache, Pool, PoolState, PoolStateCache};
 use aether_simulator::calldata::build_execute_arb_calldata;
 use aether_simulator::fork::{prewarm_state, ForkedState, PrewarmedState, RpcForkedState};
 use aether_simulator::EvmSimulator;
+use aether_discovery::types::PoolInfo;
+use aether_state::hot_cache::HotCache;
 use aether_state::price_graph::PriceGraph;
 use aether_state::snapshot::SnapshotManager;
 use aether_state::token_index::TokenIndex;
@@ -216,6 +218,9 @@ pub struct AetherEngine {
     /// Persistent trade ledger. NoopLedger by default; PgLedger when
     /// `DATABASE_URL` is set at startup.
     ledger: Arc<dyn Ledger>,
+    /// Hot cache of top-scoring discovery pools. When set and non-empty,
+    /// detection scans only edges belonging to these pools.
+    hot_cache: Arc<ArcSwap<Option<Arc<HotCache>>>>,
 }
 
 /// Lightweight snapshot of the current block's key fields.
@@ -584,7 +589,74 @@ impl AetherEngine {
             v2_reserves_cache: aether_simulator::v2_reserves_cache::V2ReservesCache::new(),
             metrics,
             ledger,
+            hot_cache: Arc::new(ArcSwap::from_pointee(None)),
         }
+    }
+
+    /// Attach the hot cache handle populated by the discovery pipeline.
+    pub fn set_hot_cache(&self, cache: Arc<HotCache>) {
+        self.hot_cache.store(Arc::new(Some(cache)));
+    }
+
+    /// Register newly promoted hot-cache pools and deregister evicted ones.
+    pub async fn sync_hot_cache_pools(
+        &self,
+        added: &[PoolInfo],
+        removed: &[Address],
+    ) {
+        for pool in added {
+            if self.pool_registry.load().contains_key(&pool.address) {
+                continue;
+            }
+            self.register_pool(
+                pool.address,
+                pool.token0,
+                pool.token1,
+                pool.protocol,
+                pool.fee_bps,
+            )
+            .await;
+        }
+
+        for addr in removed {
+            self.remove_pool(*addr).await;
+        }
+
+        if !added.is_empty() && self.rpc_provider.is_some() {
+            self.fetch_initial_reserves().await;
+        }
+    }
+
+    /// Remove a pool from the registry and price graph.
+    pub async fn remove_pool(&self, pool_addr: Address) {
+        let pool_id = {
+            let reg = self.pool_registry.load();
+            reg.get(&pool_addr).map(|m| m.pool_id)
+        };
+        let Some(pool_id) = pool_id else {
+            return;
+        };
+
+        {
+            let mut reg = (**self.pool_registry.load()).clone();
+            reg.remove(&pool_addr);
+            self.pool_registry.store(Arc::new(reg));
+        }
+
+        {
+            let mut graph = self.working_graph.lock().await;
+            graph.remove_pool_edges(&pool_id);
+            self.snapshot_manager
+                .publish(graph.clone(), self.current_block.load().number, 0);
+        }
+
+        self.pool_states.remove(&pool_addr);
+        debug!(%pool_addr, "Pool removed from hot cache sync");
+    }
+
+    /// Borrow the hot cache when discovery is enabled.
+    pub fn hot_cache(&self) -> Option<Arc<HotCache>> {
+        self.hot_cache.load().as_ref().clone()
     }
 
     /// Borrow the live pool-state cache so external consumers (mempool
@@ -1872,7 +1944,15 @@ impl AetherEngine {
         // update would never trigger a detection scan (TOCTOU on dirty flags).
         let (detection_graph, block_number, timestamp_ns) = {
             let mut graph = self.working_graph.lock().await;
-            let snapshot_graph = graph.clone();
+            let mut snapshot_graph = graph.clone();
+            // When discovery hot cache is active, restrict detection to
+            // top-N pools only (not the full static pools.toml registry).
+            if let Some(cache) = self.hot_cache() {
+                let allowed = cache.pool_addresses();
+                if !allowed.is_empty() {
+                    snapshot_graph = snapshot_graph.clone_retaining_pools(&allowed);
+                }
+            }
             graph.clear_dirty();
             let block = (**self.current_block.load()).clone();
             (snapshot_graph, block.number, block.timestamp as i64)
