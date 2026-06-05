@@ -1,0 +1,18 @@
+# Local in-memory signer (cmd/signer) configuration.
+#
+# The signer runs as its own process and exposes secp256k1 signing over a
+# local-only unix-domain socket. The executor connects to `socket_path` to sign
+# bundle digests without ever holding the private key in its own address space.
+#
+# These values are loaded via os.ExpandEnv, which supports bare ${VAR} (NOT the
+# bash ${VAR:-default} form). The literals below are the production defaults;
+# to override from the environment, replace a value with e.g. "${MY_VAR}" and
+# ensure that variable is always set in the unit file.
+
+# Unix-domain socket the signer listens on (created 0600 at startup). The
+# parent directory is created with 0700 if missing.
+socket_path: "/run/aether/signer.sock"
+
+# Path to the AES-256-GCM encrypted private key produced by:
+#   aether-signer encrypt -key 0x<priv> -out <key_file>
+key_file: "/etc/aether/signer/encrypted_key.bin"

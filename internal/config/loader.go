@@ -219,6 +219,58 @@ func ValidateBuildersConfig(cfg BuildersFileConfig) error {
 }
 
 // ---------------------------------------------------------------------------
+// Signer config (config/signer.yaml)
+// ---------------------------------------------------------------------------
+
+// SignerFileConfig maps the signer.yaml file structure for the local
+// in-memory signing service (cmd/signer).
+type SignerFileConfig struct {
+	// SocketPath is the unix-domain socket the signer listens on, e.g.
+	// /run/aether/signer.sock. Created with 0600 permissions at startup.
+	SocketPath string `yaml:"socket_path"`
+	// KeyFile is the path to the AES-256-GCM encrypted private key blob
+	// produced by `aether-signer encrypt`.
+	KeyFile string `yaml:"key_file"`
+}
+
+// LoadSignerConfig reads and parses the signer YAML config. ${VAR} references
+// are expanded so paths can be injected from the environment / systemd unit.
+func LoadSignerConfig(path string) (SignerFileConfig, error) {
+	var cfg SignerFileConfig
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return cfg, fmt.Errorf("read signer config %s: %w", path, err)
+	}
+
+	data = expandEnvVars(data)
+
+	if err := decodeStrictYAML(data, &cfg); err != nil {
+		return cfg, fmt.Errorf("parse signer config %s: %w", path, err)
+	}
+
+	cfg.SocketPath = strings.TrimSpace(cfg.SocketPath)
+	cfg.KeyFile = strings.TrimSpace(cfg.KeyFile)
+
+	if err := ValidateSignerConfig(cfg); err != nil {
+		return cfg, fmt.Errorf("validate signer config: %w", err)
+	}
+
+	return cfg, nil
+}
+
+// ValidateSignerConfig ensures the signer config has the required paths.
+func ValidateSignerConfig(cfg SignerFileConfig) error {
+	if cfg.SocketPath == "" {
+		return fmt.Errorf("socket_path must not be empty")
+	}
+	if cfg.KeyFile == "" {
+		return fmt.Errorf("key_file must not be empty")
+	}
+	return nil
+}
+
+// ---------------------------------------------------------------------------
 // Nodes config (config/nodes.yaml)
 // ---------------------------------------------------------------------------
 
