@@ -14,4 +14,4 @@ pub mod pool_admission;
 pub mod profitability_writer;
 pub mod provider;
 
-pub use metrics::{start_metrics_server, EngineMetrics};
+pub use metrics::{register_top_pools_provider, start_metrics_server, EngineMetrics};

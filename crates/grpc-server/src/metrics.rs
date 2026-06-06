@@ -1,5 +1,5 @@
 use std::net::SocketAddr;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use prometheus::{
@@ -1050,6 +1050,14 @@ impl Drop for MempoolBackrunSimGuard {
     }
 }
 
+/// JSON provider for GET /top-pools (registered by discovery integration).
+static TOP_POOLS_PROVIDER: OnceLock<Arc<dyn Fn() -> Vec<u8> + Send + Sync>> = OnceLock::new();
+
+/// Register a callback that returns JSON bytes for the top-pools endpoint.
+pub fn register_top_pools_provider(provider: Arc<dyn Fn() -> Vec<u8> + Send + Sync>) {
+    let _ = TOP_POOLS_PROVIDER.set(provider);
+}
+
 pub fn start_metrics_server(metrics: Arc<EngineMetrics>) {
     let addr = metrics_addr();
 
@@ -1100,15 +1108,25 @@ async fn handle_connection(
         .and_then(|line| line.split_whitespace().nth(1))
         .unwrap_or("/");
 
-    if path != "/metrics" {
-        let response = "HTTP/1.1 404 Not Found\r\nConnection: close\r\nContent-Length: 0\r\n\r\n";
-        socket.write_all(response.as_bytes()).await?;
-        return Ok(());
-    }
+    let (status, content_type, body): (&str, &str, Vec<u8>) = match path {
+        "/metrics" => ("200 OK", "text/plain; version=0.0.4", metrics.render()),
+        "/top-pools" => {
+            let json = TOP_POOLS_PROVIDER
+                .get()
+                .map(|f| f())
+                .unwrap_or_else(|| b"[]".to_vec());
+            ("200 OK", "application/json", json)
+        }
+        _ => {
+            let response =
+                "HTTP/1.1 404 Not Found\r\nConnection: close\r\nContent-Length: 0\r\n\r\n";
+            socket.write_all(response.as_bytes()).await?;
+            return Ok(());
+        }
+    };
 
-    let body = metrics.render();
     let header = format!(
-        "HTTP/1.1 200 OK\r\nContent-Type: text/plain; version=0.0.4\r\nConnection: close\r\nContent-Length: {}\r\n\r\n",
+        "HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\nConnection: close\r\nContent-Length: {}\r\n\r\n",
         body.len()
     );
     socket.write_all(header.as_bytes()).await?;

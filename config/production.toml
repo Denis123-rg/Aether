@@ -1,0 +1,15 @@
+# Aether production cross-service configuration.
+# Used by cmd/executor (admin HTTP) and cmd/telebot (Telegram dashboard).
+
+[telegram]
+bot_token = "env:TELEGRAM_BOT_TOKEN"
+admin_chat_ids = [123456789]
+dashboard_update_interval_secs = 3
+executor_metrics_url = "http://localhost:8080/metrics/json"
+
+[redis]
+url = "env:REDIS_URL"
+
+[executor]
+port = 8080
+discovery_top_pools_url = "http://localhost:9093/top-pools"

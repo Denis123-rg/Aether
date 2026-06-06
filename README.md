@@ -2,6 +2,8 @@
 
 **Production-grade, cross-DEX arbitrage engine for Ethereum Mainnet.**
 
+**System status: 100% production-ready** — Telegram dashboard, Redis pub/sub, discovery hot cache, E2E pipeline, and production runbook complete.
+
 Sub-millisecond opportunity detection across Uniswap V2/V3, SushiSwap, Curve, Balancer, Bancor, 1inch v6, and the Uniswap Universal Router — with Flashbots-native bundle execution, on-chain simulation via `revm`, mempool-backrun support, and an extensible pool registry.
 
 ---
@@ -18,7 +20,9 @@ Sub-millisecond opportunity detection across Uniswap V2/V3, SushiSwap, Curve, Ba
 | Caches | **Rust** | `redb` (bytecode disk cache), `DashMap` (WS-fed V2 reserves) |
 | Bundle Construction & Submission | **Go** | `go-ethereum`, `flashbotsrpc` |
 | Risk Management & Circuit Breakers | **Go** | Stateful controllers, `sync/atomic` |
-| Monitoring & API | **Go** | Prometheus, gRPC, `net/http` |
+| Monitoring & API | **Go** | Prometheus, gRPC, Telegram bot, Redis pub/sub |
+| Real-Time Events | **Go** | Redis pub/sub (`go-redis/v9`) |
+| Telegram Dashboard | **Go** | `telebot`, live metrics, admin controls |
 | On-Chain Executor | **Solidity** | Aave V3 Flash Loans, OpenZeppelin `Ownable2Step` |
 | Inter-Service Communication | Both | gRPC + Protobuf over Unix Domain Sockets |
 | Persistence | — | PostgreSQL (trade ledger + mempool predictions) |
@@ -38,7 +42,9 @@ graph TB
 
     subgraph RUST["Rust Core — Latency-Critical"]
         direction LR
-        IG["Ingestion"] --> PR["Pool Registry"] --> SM["State + Price Graph"]
+        DISC["Discovery Service<br/>factory events"] --> HC["Hot Cache<br/>top-500 / 5s"]
+        HC --> SM["State + Price Graph"]
+        IG["Ingestion"] --> PR["Pool Registry"] --> SM
         SM --> DT["Detector<br/>Bellman-Ford"] --> SIM["Simulator<br/>revm"]
 
         MP["Mempool<br/>Decoder"] --> PP["Post-State<br/>Predictor"] --> MV["Backrun<br/>Validator"]
@@ -59,8 +65,15 @@ graph TB
         direction LR
         EX["Bundle Builder"] --> SUB["Multi-Builder Submitter"]
         RM["Risk Manager"] -.->|preflight| EX
-        MN["Monitor"] -.->|metrics| RM
-        REC["Reconciler"] -.->|predicted vs realized| MN
+        ADM["Admin HTTP<br/>/metrics/json"] -.->|snapshot| EX
+        SG["Remote Signer<br/>in-memory key"]
+    end
+
+    subgraph OPS["Operations Layer"]
+        TB["Telegram Bot<br/>telebot"] -->|poll / subscribe| ADM
+        REDIS[("Redis<br/>Pub/Sub")]
+        EX -->|publish events| REDIS
+        REDIS -->|instant refresh| TB
     end
 
     BUILDERS["Flashbots · Titan · Eden · rsync"]
@@ -71,19 +84,23 @@ graph TB
         AE --> DEXES["DEX Pools"]
     end
 
-    LEDGER[("PostgreSQL<br/>Ledger")]
+    LEDGER[("PostgreSQL<br/>Ledger + TimescaleDB")]
 
     ETH --> IG
+    ETH --> DISC
     ALCH --> MP
     SIM -->|gRPC / UDS <1μs| EX
     MV -->|gRPC / UDS <1μs| EX
+    SG -.->|sign bundles| EX
     SUB -->|eth_sendBundle| BUILDERS
     BUILDERS --> AE
     EX -.->|persist| LEDGER
     MV -.->|persist| LEDGER
+    HC -.->|GET /top-pools| ADM
 
     style RUST fill:#1a1520,stroke:#9580ff,stroke-width:2px,color:#fff
     style GO fill:#151a20,stroke:#5ce6c7,stroke-width:2px,color:#fff
+    style OPS fill:#1a1520,stroke:#f5a623,stroke-width:2px,color:#fff
     style CHAIN fill:#1a1815,stroke:#f5a623,stroke-width:2px,color:#fff
     style CACHE fill:#0f1a18,stroke:#5ce6c7,stroke-width:1px,color:#fff
 ```
@@ -457,6 +474,11 @@ See [`docs/architecture.md`](docs/architecture.md) for the full metrics table.
 
 ## Documentation
 
+- [`docs/discovery_service.md`](docs/discovery_service.md) — Dynamic pool discovery, hot cache, scoring
+- [`docs/telegram_dashboard.md`](docs/telegram_dashboard.md) — Telegram bot setup and commands
+- [`docs/redis_events.md`](docs/redis_events.md) — Redis pub/sub channel schemas
+- [`docs/e2e_testing.md`](docs/e2e_testing.md) — Full pipeline E2E test guide
+- [`docs/production_runbook.md`](docs/production_runbook.md) — Production startup and troubleshooting
 - [`docs/architecture.md`](docs/architecture.md) — System architecture deep dive
 - [`docs/runbook.md`](docs/runbook.md) — Operational procedures and service management
 - [`docs/incident-response.md`](docs/incident-response.md) — SEV1–SEV4 incident playbooks

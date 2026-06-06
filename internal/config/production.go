@@ -1,0 +1,142 @@
+// Package config — production.toml loader for cross-service settings
+// (Telegram dashboard, Redis pub/sub, executor admin HTTP).
+package config
+
+import (
+	"fmt"
+	"os"
+	"strconv"
+	"strings"
+
+	"github.com/pelletier/go-toml/v2"
+)
+
+// ProductionConfig is the top-level production.toml structure.
+type ProductionConfig struct {
+	Telegram TelegramConfig `toml:"telegram"`
+	Redis    RedisConfig    `toml:"redis"`
+	Executor ExecutorHTTPConfig `toml:"executor"`
+}
+
+// TelegramConfig holds telebot settings.
+type TelegramConfig struct {
+	BotToken                  string  `toml:"bot_token"`
+	AdminChatIDs              []int64 `toml:"admin_chat_ids"`
+	DashboardUpdateIntervalSecs int `toml:"dashboard_update_interval_secs"`
+	ExecutorMetricsURL        string  `toml:"executor_metrics_url"`
+}
+
+// RedisConfig holds optional Redis pub/sub settings.
+type RedisConfig struct {
+	URL string `toml:"url"`
+}
+
+// ExecutorHTTPConfig holds the executor admin/metrics HTTP server settings.
+type ExecutorHTTPConfig struct {
+	Port                  int    `toml:"port"`
+	DiscoveryTopPoolsURL  string `toml:"discovery_top_pools_url"`
+}
+
+// LoadProductionConfig reads config/production.toml (or the path given).
+func LoadProductionConfig(path string) (ProductionConfig, error) {
+	var cfg ProductionConfig
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return cfg, fmt.Errorf("read production config %s: %w", path, err)
+	}
+
+	data = expandEnvProduction(data)
+
+	if err := toml.Unmarshal(data, &cfg); err != nil {
+		return cfg, fmt.Errorf("parse production config %s: %w", path, err)
+	}
+
+	resolveEnvFields(&cfg)
+	applyProductionDefaults(&cfg)
+
+	if err := ValidateProductionConfig(cfg); err != nil {
+		return cfg, fmt.Errorf("validate production config: %w", err)
+	}
+
+	return cfg, nil
+}
+
+func applyProductionDefaults(cfg *ProductionConfig) {
+	if cfg.Telegram.DashboardUpdateIntervalSecs <= 0 {
+		cfg.Telegram.DashboardUpdateIntervalSecs = 3
+	}
+	if cfg.Executor.Port <= 0 {
+		cfg.Executor.Port = 8080
+	}
+	if cfg.Telegram.ExecutorMetricsURL == "" {
+		cfg.Telegram.ExecutorMetricsURL = "http://localhost:8080/metrics/json"
+	}
+}
+
+// expandEnvProduction replaces env:VAR references with environment values.
+func expandEnvProduction(data []byte) []byte {
+	s := string(data)
+	lines := strings.Split(s, "\n")
+	for i, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if !strings.Contains(trimmed, "env:") {
+			continue
+		}
+		parts := strings.SplitN(trimmed, "=", 2)
+		if len(parts) != 2 {
+			continue
+		}
+		val := strings.TrimSpace(parts[1])
+		val = strings.Trim(val, `"'`)
+		if strings.HasPrefix(val, "env:") {
+			envKey := strings.TrimPrefix(val, "env:")
+			envVal := os.Getenv(envKey)
+			lines[i] = parts[0] + " = \"" + envVal + "\""
+		}
+	}
+	return []byte(strings.Join(lines, "\n"))
+}
+
+func resolveEnvFields(cfg *ProductionConfig) {
+	if strings.HasPrefix(cfg.Telegram.BotToken, "env:") {
+		cfg.Telegram.BotToken = os.Getenv(strings.TrimPrefix(cfg.Telegram.BotToken, "env:"))
+	}
+	if strings.HasPrefix(cfg.Redis.URL, "env:") {
+		cfg.Redis.URL = os.Getenv(strings.TrimPrefix(cfg.Redis.URL, "env:"))
+	}
+}
+
+// ValidateProductionConfig validates required fields.
+func ValidateProductionConfig(cfg ProductionConfig) error {
+	return nil
+}
+
+// ProductionConfigPath returns the path to production.toml.
+func ProductionConfigPath() string {
+	if p := os.Getenv("AETHER_PRODUCTION_CONFIG"); p != "" {
+		return p
+	}
+	return ConfigPath("production.toml")
+}
+
+// ParseAdminChatIDs parses a comma-separated list of chat IDs from env.
+func ParseAdminChatIDs(raw string) ([]int64, error) {
+	if raw == "" {
+		return nil, nil
+	}
+	parts := strings.Split(raw, ",")
+	out := make([]int64, 0, len(parts))
+	for _, p := range parts {
+		p = strings.TrimSpace(p)
+		if p == "" {
+			continue
+		}
+		id, err := strconv.ParseInt(p, 10, 64)
+		if err != nil {
+			return nil, fmt.Errorf("invalid chat id %q: %w", p, err)
+		}
+		out = append(out, id)
+	}
+	return out, nil
+}

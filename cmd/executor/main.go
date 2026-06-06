@@ -26,6 +26,7 @@ import (
 
 	"github.com/aether-arb/aether/internal/config"
 	"github.com/aether-arb/aether/internal/db"
+	"github.com/aether-arb/aether/internal/events"
 	aethergrpc "github.com/aether-arb/aether/internal/grpc"
 	pb "github.com/aether-arb/aether/internal/pb"
 	"github.com/aether-arb/aether/internal/risk"
@@ -60,6 +61,7 @@ var (
 var (
 	builderSelector *strategy.Selector
 	metricsStore    db.MetricsStore = db.NoopMetricsStore{}
+	eventPublisher  *events.Publisher
 )
 
 // Config holds executor service configuration.
@@ -415,6 +417,13 @@ func main() {
 
 	startMetricsServer()
 
+	// Redis event publisher (no-op when REDIS_URL unset).
+	eventPublisher = events.NewPublisherFromEnv()
+	defer eventPublisher.Close()
+
+	adminPort, discoveryURL := loadAdminPort()
+	startAdminServer(riskMgr, discoveryURL, adminPort, eventPublisher)
+
 	transport := "TCP"
 	if strings.HasPrefix(cfg.GRPCAddress, "unix:") {
 		transport = "UDS"
@@ -602,6 +611,11 @@ func processArb(
 		// signer recovers, and surface it to Timescale + Prometheus.
 		if errors.Is(err, errSignerUnavailable) {
 			recordSignerError()
+			setSignerHealthy(false)
+			if eventPublisher != nil {
+				eventPublisher.PublishSignerHealth(false)
+				eventPublisher.PublishBreakerStatus(true, "signer_unavailable")
+			}
 			metricsStore.Record(db.Metric{
 				Name:  "signer_error",
 				Value: 1,
@@ -735,6 +749,28 @@ func processArb(
 
 	// Fold the per-builder outcome into the A/B selector and TimescaleDB.
 	recordBundleMetrics(sourceLbl, profitWei, receivedAt, results, included)
+
+	// Update JSON metrics snapshot and publish Redis events for telebot.
+	profitEth := weiToEth(profitWei)
+	gasEth := gasGwei * float64(arb.TotalGas) / 1e9
+	winningBuilder := ""
+	bundleHash := ""
+	for _, r := range results {
+		if r.Success {
+			winningBuilder = r.Builder
+			bundleHash = r.BundleHash
+			break
+		}
+	}
+	if winningBuilder == "" && len(results) > 0 {
+		winningBuilder = results[0].Builder
+	}
+	updateSnapshotFromBundle(profitEth, gasEth, winningBuilder, bundleHash)
+	if eventPublisher != nil && eventPublisher.Enabled() {
+		eventPublisher.PublishNewBundle(bundleHash, winningBuilder, profitEth, gasEth)
+		snap := globalSnapshotStore.Get()
+		eventPublisher.PublishPnLUpdate(snap.PnLTotal, rm.WinRate())
+	}
 
 	// Inline daily roll-up so `pnl_daily` accumulates during fork / live
 	// runs without a separate cron. bundle_count bumps every submit. The

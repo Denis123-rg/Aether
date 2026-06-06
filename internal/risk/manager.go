@@ -347,6 +347,53 @@ func (rm *RiskManager) RecordRevert(revertType RevertType) {
 	}
 }
 
+// Resume transitions from Paused/Degraded back to Running. Returns an error
+// when the transition is invalid (e.g. from Halted without manual reset).
+func (rm *RiskManager) Resume() error {
+	rm.mu.Lock()
+	defer rm.mu.Unlock()
+	old := rm.state.Current()
+	if err := rm.state.Transition(StateRunning); err != nil {
+		return err
+	}
+	if rm.metricsObs != nil {
+		rm.metricsObs.OnStateChange(StateRunning)
+	}
+	slog.Info("system resumed", "from", string(old))
+	return nil
+}
+
+// SetMinProfitETH updates the minimum profit threshold at runtime.
+func (rm *RiskManager) SetMinProfitETH(eth float64) {
+	rm.mu.Lock()
+	defer rm.mu.Unlock()
+	rm.config.MinProfitETH = eth
+	slog.Info("min profit threshold updated", "eth", eth)
+}
+
+// MinProfitETH returns the current minimum profit threshold.
+func (rm *RiskManager) MinProfitETH() float64 {
+	rm.mu.RLock()
+	defer rm.mu.RUnlock()
+	return rm.config.MinProfitETH
+}
+
+// WinRate returns the inclusion rate (%) over the last 100 bundle results.
+func (rm *RiskManager) WinRate() float64 {
+	rm.mu.RLock()
+	defer rm.mu.RUnlock()
+	if rm.bundleResultCount == 0 {
+		return 0
+	}
+	included := 0
+	for i := 0; i < rm.bundleResultCount; i++ {
+		if rm.bundleResults[i] {
+			included++
+		}
+	}
+	return float64(included) / float64(rm.bundleResultCount) * 100
+}
+
 // Pause forces the system into the Paused state with the given reason,
 // emitting the same observer signals (OnCircuitBreakerTrip + OnStateChange)
 // as an automatic circuit-breaker trip. It is used by the executor when an

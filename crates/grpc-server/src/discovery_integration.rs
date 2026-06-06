@@ -89,6 +89,33 @@ pub async fn maybe_start_discovery(
         .await;
     engine.set_hot_cache(Arc::clone(&hot_cache));
 
+    // Expose top pools via GET /top-pools on the Rust metrics server so the
+    // Go executor (and telebot dashboard) can poll ranked hot-cache pools.
+    {
+        let hc = Arc::clone(&hot_cache);
+        aether_grpc_server::register_top_pools_provider(Arc::new(move || {
+            #[derive(serde::Serialize)]
+            struct TopPoolJSON {
+                address: String,
+                protocol: String,
+                score: f64,
+                tvl_usd: f64,
+            }
+            let pools: Vec<TopPoolJSON> = hc
+                .pool_infos()
+                .into_iter()
+                .take(20)
+                .map(|p| TopPoolJSON {
+                    address: format!("{:#x}", p.address),
+                    protocol: format!("{:?}", p.protocol),
+                    score: p.score,
+                    tvl_usd: p.tvl_usd,
+                })
+                .collect();
+            serde_json::to_vec(&pools).unwrap_or_else(|_| b"[]".to_vec())
+        }));
+    }
+
     // Spawn background loops.
     discovery.clone().spawn_prune_task(shutdown_rx.clone());
 
