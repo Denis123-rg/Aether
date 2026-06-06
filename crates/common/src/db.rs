@@ -633,6 +633,50 @@ mod tests {
     }
 
     #[test]
+    fn ledger_op_label_matches_variant() {
+        assert_eq!(
+            LedgerOp::InsertArb(Box::new(NewArb::default())).label(),
+            "insert_arb"
+        );
+        assert_eq!(
+            LedgerOp::InsertPool(Box::new(NewPool::default())).label(),
+            "insert_pool"
+        );
+        assert_eq!(
+            LedgerOp::UpdateInclusion(Box::new(InclusionUpdate::default())).label(),
+            "update_inclusion"
+        );
+    }
+
+    #[test]
+    fn u256_to_decimal_zero_and_one() {
+        assert_eq!(u256_to_decimal(U256::ZERO).to_string(), "0");
+        assert_eq!(
+            u256_to_decimal(U256::from(1u64)).to_string(),
+            "1"
+        );
+    }
+
+    #[test]
+    fn new_arb_default_is_constructible() {
+        let arb = NewArb::default();
+        assert_eq!(arb.hops, 0);
+        assert_eq!(arb.gas_estimate, 0);
+    }
+
+    #[test]
+    fn new_pool_default_is_constructible() {
+        let pool = NewPool::default();
+        assert_eq!(pool.source, "");
+    }
+
+    #[test]
+    fn inclusion_update_default_is_constructible() {
+        let u = InclusionUpdate::default();
+        assert!(!u.included);
+    }
+
+    #[test]
     fn ledger_metrics_register_round_trips() {
         let registry = Registry::new();
         let m = LedgerMetrics::register(&registry);

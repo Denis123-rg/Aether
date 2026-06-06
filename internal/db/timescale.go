@@ -226,6 +226,9 @@ func (s *PgMetricsStore) run(ctx context.Context) {
 // flush writes a batch as a single multi-row INSERT. Failures are logged and
 // dropped — metrics are observability, never worth stalling or crashing for.
 func (s *PgMetricsStore) flush(ctx context.Context, batch []Metric) {
+	if s.pool == nil {
+		return
+	}
 	query, args := buildMetricsInsert(batch)
 	if query == "" {
 		return

@@ -187,4 +187,73 @@ mod tests {
         let cfg = DiscoveryConfig::load(path).unwrap();
         assert!(cfg.discovery.enabled);
     }
+
+    #[test]
+    fn discovery_config_path_respects_env_override() {
+        std::env::set_var("AETHER_DISCOVERY_CONFIG", "/tmp/custom-discovery.toml");
+        assert_eq!(discovery_config_path(), "/tmp/custom-discovery.toml");
+        std::env::remove_var("AETHER_DISCOVERY_CONFIG");
+    }
+
+    #[tokio::test]
+    async fn hot_cache_diff_compute_drives_sync_inputs() {
+        use aether_state::hot_cache::{HotCache, HotCacheDiff, HotCacheMetrics};
+        use alloy::primitives::address;
+        use aether_common::types::ProtocolType;
+
+        let registry = prometheus::Registry::new();
+        let metrics = HotCacheMetrics::register(&registry);
+        let cache = std::sync::Arc::new(HotCache::new(metrics));
+
+        let pool_a = aether_discovery::types::PoolInfo {
+            address: address!("0x00000000000000000000000000000000000000a1"),
+            token0: address!("A0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"),
+            token1: address!("C02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2"),
+            protocol: ProtocolType::UniswapV2,
+            fee_bps: 30,
+            score: 0.8,
+            tvl_usd: 1.0,
+            volume_24h_usd: 1.0,
+            slippage_estimate: 0.01,
+            discovered_at: 1,
+        };
+        let pool_b = aether_discovery::types::PoolInfo {
+            address: address!("0x00000000000000000000000000000000000000b2"),
+            token0: pool_a.token0,
+            token1: pool_a.token1,
+            protocol: ProtocolType::UniswapV2,
+            fee_bps: 30,
+            score: 0.7,
+            tvl_usd: 1.0,
+            volume_24h_usd: 1.0,
+            slippage_estimate: 0.01,
+            discovered_at: 2,
+        };
+
+        let previous = cache.pool_addresses();
+        let diff = HotCacheDiff::compute(&previous, vec![pool_a.clone(), pool_b.clone()]);
+        assert_eq!(diff.added, 2);
+        assert_eq!(diff.added_pools.len(), 2);
+        cache.apply_diff(diff.clone());
+
+        let (tx, _rx) = tokio::sync::broadcast::channel(16);
+        let engine = std::sync::Arc::new(crate::engine::AetherEngine::new(
+            crate::engine::EngineConfig::default(),
+            tx,
+        ));
+        engine
+            .sync_hot_cache_pools(&diff.added_pools, &diff.removed_addresses)
+            .await;
+        assert!(engine.pool_registry().load().contains_key(&pool_a.address));
+        assert!(engine.pool_registry().load().contains_key(&pool_b.address));
+    }
+
+    #[test]
+    fn hot_cache_starts_empty_before_discovery_refresh() {
+        let registry = prometheus::Registry::new();
+        let metrics = aether_state::hot_cache::HotCacheMetrics::register(&registry);
+        let cache = aether_state::hot_cache::HotCache::new(metrics);
+        assert!(cache.is_empty());
+        assert_eq!(cache.len(), 0);
+    }
 }

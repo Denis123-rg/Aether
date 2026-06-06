@@ -4201,4 +4201,134 @@ fee_bps = 30
         let factor = denom - U256::from(clamped);
         assert_eq!(factor, U256::from(1u32), "Clamped factor should be 1 (not underflow)");
     }
+
+    fn sample_pool_info(addr_byte: u8) -> PoolInfo {
+        use alloy::primitives::address;
+        PoolInfo {
+            address: Address::from([addr_byte; 20]),
+            token0: address!("A0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"),
+            token1: address!("C02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2"),
+            protocol: ProtocolType::UniswapV2,
+            fee_bps: 30,
+            score: 0.9,
+            tvl_usd: 50_000.0,
+            volume_24h_usd: 10_000.0,
+            slippage_estimate: 0.01,
+            discovered_at: 1,
+        }
+    }
+
+    #[tokio::test]
+    async fn test_sync_hot_cache_pools_registers_new_pool() {
+        let (tx, _rx) = broadcast::channel(100);
+        let engine = AetherEngine::new(EngineConfig::default(), tx);
+        let pool = sample_pool_info(0x11);
+
+        engine.sync_hot_cache_pools(&[pool.clone()], &[]).await;
+
+        assert!(
+            engine.pool_registry().load().contains_key(&pool.address),
+            "new hot-cache pool should be registered"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_sync_hot_cache_pools_skips_already_registered() {
+        let (tx, _rx) = broadcast::channel(100);
+        let engine = AetherEngine::new(EngineConfig::default(), tx);
+        let pool = sample_pool_info(0x22);
+
+        engine
+            .register_pool(
+                pool.address,
+                pool.token0,
+                pool.token1,
+                pool.protocol,
+                pool.fee_bps,
+            )
+            .await;
+        let before = engine.pool_registry().load().len();
+
+        engine.sync_hot_cache_pools(&[pool], &[]).await;
+
+        assert_eq!(
+            engine.pool_registry().load().len(),
+            before,
+            "duplicate pool must not inflate registry"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_sync_hot_cache_pools_removes_evicted_pool() {
+        let (tx, _rx) = broadcast::channel(100);
+        let engine = AetherEngine::new(EngineConfig::default(), tx);
+        let pool = sample_pool_info(0x33);
+
+        engine
+            .register_pool(
+                pool.address,
+                pool.token0,
+                pool.token1,
+                pool.protocol,
+                pool.fee_bps,
+            )
+            .await;
+        assert!(engine.pool_registry().load().contains_key(&pool.address));
+
+        engine.sync_hot_cache_pools(&[], &[pool.address]).await;
+
+        assert!(
+            !engine.pool_registry().load().contains_key(&pool.address),
+            "removed pool should be deregistered"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_sync_hot_cache_pools_empty_added_and_removed() {
+        let (tx, _rx) = broadcast::channel(100);
+        let engine = AetherEngine::new(EngineConfig::default(), tx);
+
+        // No-op path — must not panic when both slices are empty.
+        engine.sync_hot_cache_pools(&[], &[]).await;
+        assert!(engine.pool_registry().load().is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_run_detection_cycle_with_empty_hot_cache() {
+        let (tx, _rx) = broadcast::channel(100);
+        let engine = AetherEngine::new(EngineConfig::default(), tx);
+
+        let registry = prometheus::Registry::new();
+        let metrics = aether_state::hot_cache::HotCacheMetrics::register(&registry);
+        let cache = Arc::new(HotCache::new(metrics));
+        engine.set_hot_cache(cache);
+
+        // Empty graph + empty hot-cache allowlist — early return path.
+        engine.run_detection_cycle().await;
+        assert!(engine.hot_cache().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_run_detection_cycle_hot_cache_nonempty_graph_empty() {
+        let (tx, _rx) = broadcast::channel(100);
+        let engine = AetherEngine::new(EngineConfig::default(), tx);
+
+        let registry = prometheus::Registry::new();
+        let metrics = aether_state::hot_cache::HotCacheMetrics::register(&registry);
+        let cache = Arc::new(HotCache::new(metrics));
+        let pool = sample_pool_info(0x44);
+        cache.apply_diff(aether_state::hot_cache::HotCacheDiff {
+            new_addresses: std::iter::once(pool.address).collect(),
+            new_infos: vec![pool],
+            added: 1,
+            removed: 0,
+            added_pools: vec![],
+            removed_addresses: vec![],
+        });
+        engine.set_hot_cache(cache);
+
+        // Graph still has zero edges — should hit the empty-graph early return
+        // even though the hot cache carries pool addresses.
+        engine.run_detection_cycle().await;
+    }
 }

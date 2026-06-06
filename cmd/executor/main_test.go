@@ -26,10 +26,22 @@ func ethToWei(eth float64) *big.Int {
 	return wei
 }
 
+// initTestMempoolRisk ensures mempool-backrun globals are initialized for tests
+// that exercise processArb on MEMPOOL_BACKRUN arbs without running main().
+func initTestMempoolRisk() {
+	if mempoolRiskCfg.MinProfitWei == nil {
+		mempoolRiskCfg = LoadMempoolRiskConfig()
+	}
+	if mempoolInflight == nil {
+		mempoolInflight = NewMempoolInflightTracker()
+	}
+}
+
 // newTestComponents creates a standard set of executor components for testing.
 // The submitter has no searcher key, so bundles without RawTxs will fail
 // submission (expected until signer is wired into test setup).
 func newTestComponents() (*risk.RiskManager, *BundleConstructor, *Submitter) {
+	initTestMempoolRisk()
 	rm := risk.NewRiskManager(risk.DefaultRiskConfig())
 	nm := NewNonceManager(0)
 	go_ := NewGasOracle(300.0)

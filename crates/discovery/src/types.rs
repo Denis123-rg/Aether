@@ -68,3 +68,77 @@ impl CachedPool {
         self.inserted_at.elapsed()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use aether_common::types::ProtocolType;
+    use alloy::primitives::address;
+
+    fn sample_pool() -> PoolInfo {
+        PoolInfo {
+            address: address!("0x0000000000000000000000000000000000000001"),
+            token0: address!("A0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"),
+            token1: address!("C02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2"),
+            protocol: ProtocolType::UniswapV2,
+            fee_bps: 30,
+            score: 0.75,
+            tvl_usd: 1_000_000.0,
+            volume_24h_usd: 50_000.0,
+            slippage_estimate: 0.01,
+            discovered_at: 18_000_000,
+        }
+    }
+
+    #[test]
+    fn pool_info_pool_id_matches_address_and_protocol() {
+        let p = sample_pool();
+        let id = p.pool_id();
+        assert_eq!(id.address, p.address);
+        assert_eq!(id.protocol, p.protocol);
+    }
+
+    #[test]
+    fn pool_score_inputs_default_zero() {
+        let inputs = PoolScoreInputs::default();
+        assert_eq!(inputs.tvl_usd, 0.0);
+        assert_eq!(inputs.volume_24h_usd, 0.0);
+        assert_eq!(inputs.fee_bps, 0);
+        assert_eq!(inputs.slippage_estimate, 0.0);
+    }
+
+    #[test]
+    fn validation_result_equality() {
+        assert_eq!(ValidationResult::Valid, ValidationResult::Valid);
+        assert_eq!(
+            ValidationResult::Invalid("x".into()),
+            ValidationResult::Invalid("x".into())
+        );
+        assert_ne!(
+            ValidationResult::Invalid("a".into()),
+            ValidationResult::Invalid("b".into())
+        );
+    }
+
+    #[test]
+    fn cached_pool_age_is_non_negative() {
+        let cached = CachedPool {
+            info: sample_pool(),
+            inserted_at: Instant::now(),
+            last_scored_at: Instant::now(),
+        };
+        assert!(cached.age() >= Duration::ZERO);
+    }
+
+    #[test]
+    fn discovery_event_variants_construct() {
+        let p = sample_pool();
+        let _ = DiscoveryEvent::PoolAdded(p.clone());
+        let _ = DiscoveryEvent::PoolUpdated(p);
+        let _ = DiscoveryEvent::PoolPruned {
+            address: address!("000000000000000000000000000000000000dEaD"),
+            reason: "stale".into(),
+        };
+        let _ = DiscoveryEvent::CachePruned { removed: 3 };
+    }
+}

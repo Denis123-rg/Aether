@@ -11,7 +11,7 @@ mod common;
 
 use std::time::Instant;
 
-use alloy::providers::ProviderBuilder;
+use alloy::providers::{Provider, ProviderBuilder};
 
 use common::{build_price_graph, default_pool_set, fetch_all_reserves, run_detection, PoolDef};
 

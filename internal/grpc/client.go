@@ -7,6 +7,8 @@ package grpc
 import (
 	"context"
 	"fmt"
+	"net"
+	"strings"
 	"time"
 
 	"google.golang.org/grpc"
@@ -32,7 +34,33 @@ type Client struct {
 // grpc.NewClient is lazy — the actual connection is established on the
 // first RPC call rather than during Dial, so this function returns quickly
 // even if the Rust server is not yet running.
+// validateDialTarget rejects empty, malformed, or unsupported gRPC dial targets
+// before grpc.NewClient is invoked.
+func validateDialTarget(addr string) error {
+	addr = strings.TrimSpace(addr)
+	if addr == "" {
+		return fmt.Errorf("empty address")
+	}
+	if strings.HasPrefix(addr, "unix://") {
+		if strings.TrimPrefix(addr, "unix://") == "" {
+			return fmt.Errorf("unix address missing path")
+		}
+		return nil
+	}
+	if strings.Contains(addr, "://") {
+		return fmt.Errorf("unsupported scheme")
+	}
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil || host == "" || port == "" {
+		return fmt.Errorf("invalid host:port: %w", err)
+	}
+	return nil
+}
+
 func Dial(addr string) (*Client, error) {
+	if err := validateDialTarget(addr); err != nil {
+		return nil, fmt.Errorf("invalid dial target: %w", err)
+	}
 	// grpc-go natively supports the unix:// scheme — UDS paths
 	// (e.g. "unix:///var/run/aether/engine.sock") work without a custom dialer.
 	conn, err := grpc.NewClient(addr,

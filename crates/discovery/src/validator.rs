@@ -1038,6 +1038,79 @@ mod tests {
         assert!(MIN_WETH_RESERVE_ETH > 0.0);
     }
 
+    #[test]
+    fn v3_fee_from_bps_converts_and_clamps() {
+        assert_eq!(v3_fee_from_bps(30), 3000);
+        assert_eq!(v3_fee_from_bps(0), 0);
+        // Saturates at uint24 max rather than wrapping.
+        assert_eq!(v3_fee_from_bps(1_000_000), 0x00FF_FFFF);
+    }
+
+    #[test]
+    fn dex_label_covers_all_protocols() {
+        assert_eq!(dex_label(ProtocolType::UniswapV2), "uniswap_v2");
+        assert_eq!(dex_label(ProtocolType::UniswapV3), "uniswap_v3");
+        assert_eq!(dex_label(ProtocolType::SushiSwap), "sushiswap");
+        assert_eq!(dex_label(ProtocolType::Curve), "curve");
+        assert_eq!(dex_label(ProtocolType::BalancerV2), "balancer_v2");
+        assert_eq!(dex_label(ProtocolType::BancorV3), "bancor_v3");
+    }
+
+    #[test]
+    fn result_label_maps_outcomes() {
+        assert_eq!(result_label(&ValidationResult::Valid), "valid");
+        assert_eq!(result_label(&ValidationResult::LowLiquidity), "low_liquidity");
+        assert_eq!(
+            result_label(&ValidationResult::Invalid("x".into())),
+            "invalid"
+        );
+    }
+
+    #[test]
+    fn v2_router_for_known_protocols() {
+        assert_ne!(v2_router_for(ProtocolType::UniswapV2), Address::ZERO);
+        assert_ne!(v2_router_for(ProtocolType::SushiSwap), Address::ZERO);
+        assert_eq!(v2_router_for(ProtocolType::Curve), Address::ZERO);
+    }
+
+    #[test]
+    fn eth_to_u256_non_finite_returns_zero() {
+        assert_eq!(eth_to_u256(f64::NAN), U256::ZERO);
+        assert_eq!(eth_to_u256(f64::INFINITY), U256::ZERO);
+    }
+
+    #[test]
+    fn validate_v2_reserves_weth_token0_path() {
+        let r0 = U256::from(1_000_000_000_000_000_000u64);
+        let r1 = U256::from(3_000_000_000_000u64);
+        let result = validate_v2_reserves(
+            WETH,
+            usdc(),
+            ProtocolType::UniswapV2,
+            30,
+            r0,
+            r1,
+            0.001,
+        );
+        assert_eq!(result, ValidationResult::Valid);
+    }
+
+    #[test]
+    fn validate_v2_reserves_negative_swap_invalid() {
+        let r0 = U256::from(1_000_000_000_000_000_000u64);
+        let r1 = U256::from(1_000_000_000_000_000_000u64);
+        let result = validate_v2_reserves(
+            WETH,
+            usdc(),
+            ProtocolType::UniswapV2,
+            30,
+            r0,
+            r1,
+            -1.0,
+        );
+        assert!(matches!(result, ValidationResult::Invalid(_)));
+    }
+
     /// Fork test — requires ETH_RPC_URL pointing at a mainnet fork (anvil).
     #[tokio::test]
     #[ignore = "requires ETH_RPC_URL mainnet fork"]
@@ -1086,34 +1159,6 @@ mod tests {
         assert_eq!(v3_fee_from_bps(5), 500); // 0.05%
         assert_eq!(v3_fee_from_bps(30), 3000); // 0.30%
         assert_eq!(v3_fee_from_bps(100), 10_000); // 1.00%
-    }
-
-    #[test]
-    fn v3_fee_from_bps_clamps_to_u24() {
-        // Pathological input must never exceed the uint24 range used to build
-        // the V3 calldata (guards the U24::from_limbs construction).
-        assert!(v3_fee_from_bps(u32::MAX) <= 0x00FF_FFFF);
-        assert_eq!(v3_fee_from_bps(0), 0);
-    }
-
-    #[test]
-    fn dex_label_covers_all_protocols() {
-        assert_eq!(dex_label(ProtocolType::UniswapV2), "uniswap_v2");
-        assert_eq!(dex_label(ProtocolType::UniswapV3), "uniswap_v3");
-        assert_eq!(dex_label(ProtocolType::SushiSwap), "sushiswap");
-        assert_eq!(dex_label(ProtocolType::Curve), "curve");
-        assert_eq!(dex_label(ProtocolType::BalancerV2), "balancer_v2");
-        assert_eq!(dex_label(ProtocolType::BancorV3), "bancor_v3");
-    }
-
-    #[test]
-    fn result_label_covers_all_variants() {
-        assert_eq!(result_label(&ValidationResult::Valid), "valid");
-        assert_eq!(result_label(&ValidationResult::LowLiquidity), "low_liquidity");
-        assert_eq!(
-            result_label(&ValidationResult::Invalid("x".into())),
-            "invalid"
-        );
     }
 
     // ──────────────── unified multi-DEX validation: fork tests ───────────────
