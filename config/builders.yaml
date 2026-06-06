@@ -29,14 +29,14 @@ builders:
     # auth_key: "${RSYNC_API_KEY}" once the env var is provisioned in .env.
 
 submission:
-  fan_out: true
+  # routing_mode: fanout (all builders) | select (A/B selector Best() picks one)
+  routing_mode: select
+  fan_out: true   # deprecated — used only when routing_mode is omitted
   max_retries: 2
 
-# A/B builder selector tuning (internal/strategy). The executor still fans
-# every bundle out to all enabled builders; the selector tracks per-builder
-# outcomes (acceptance + attributed profit), ranks builders, and emits a
-# snapshot every minute for observability. Omit either field to accept the
-# selector defaults (exploration_floor=0.15, prior_attempts=1).
+# A/B builder selector tuning (internal/strategy). When routing_mode=select the
+# executor submits each bundle to selector.Best() only; fanout mode still sends
+# to all enabled builders. Record() tracks outcomes for both modes.
 strategy:
   exploration_floor: 0.15
   prior_attempts: 1.0

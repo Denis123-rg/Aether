@@ -157,6 +157,11 @@ func (s *PgMetricsStore) Record(m Metric) {
 
 // Close stops the writer, flushing what it can within metricsCloseDrain, then
 // releases the pool. Safe to call once.
+// Ping checks database connectivity for health probes.
+func (s *PgMetricsStore) Ping(ctx context.Context) error {
+	return s.pool.Ping(ctx)
+}
+
 func (s *PgMetricsStore) Close() {
 	close(s.ch)
 	done := make(chan struct{})

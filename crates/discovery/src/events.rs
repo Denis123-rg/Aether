@@ -3,14 +3,19 @@
 //! Decodes `PairCreated` / `PoolCreated` logs and forwards them to the
 //! discovery service for validation and scoring.
 
+use std::sync::Arc;
+use std::time::Duration;
+
 use aether_common::types::ProtocolType;
 use aether_ingestion::event_decoder::{decode_log, EventSignatures, PoolEvent};
-use alloy::primitives::{Address, B256};
-use alloy::providers::{DynProvider, Provider};
 use alloy::network::Ethereum;
+use alloy::primitives::{Address, B256};
+use alloy::providers::{DynProvider, Provider, ProviderBuilder, WsConnect};
 use alloy::rpc::types::Filter;
+use futures::StreamExt;
 use tracing::{debug, info, warn};
 
+use crate::metrics::DiscoveryMetrics;
 use crate::service::DiscoveryService;
 
 /// Decoded factory event ready for ingestion.
@@ -67,6 +72,19 @@ pub async fn process_logs(
     factories: &[(Address, ProtocolType, u32)],
     logs: Vec<alloy::rpc::types::Log>,
 ) -> usize {
+    process_logs_with_metrics(service, factories, logs, None).await
+}
+
+/// Like [`process_logs`] but increments Prometheus counters when provided.
+pub async fn process_logs_with_metrics(
+    service: &DiscoveryService,
+    factories: &[(Address, ProtocolType, u32)],
+    logs: Vec<alloy::rpc::types::Log>,
+    metrics: Option<Arc<DiscoveryMetrics>>,
+) -> usize {
+    if let Some(m) = &metrics {
+        m.events_received.inc_by(logs.len() as f64);
+    }
     let mut ingested = 0usize;
     for log in logs {
         let factory_addr = log.address();
@@ -86,10 +104,187 @@ pub async fn process_logs(
             debug!(pool = %created.pool, ?protocol, "PoolCreated event decoded");
             if service.ingest_pool_created(created).await {
                 ingested += 1;
+                if let Some(m) = &metrics {
+                    m.pools_validated.inc();
+                }
+            } else if let Some(m) = &metrics {
+                m.pools_rejected.inc();
             }
         }
     }
     ingested
+}
+
+/// Resolve a WebSocket RPC URL from config and environment.
+pub fn resolve_ws_url(config_ws: &str) -> Option<String> {
+    if !config_ws.is_empty() {
+        return Some(config_ws.to_string());
+    }
+    if let Ok(url) = std::env::var("ETH_WS_URL") {
+        if !url.is_empty() {
+            return Some(url);
+        }
+    }
+    std::env::var("ETH_RPC_URL")
+        .ok()
+        .and_then(|url| http_to_ws_url(&url))
+}
+
+/// Convert an HTTP RPC URL to WebSocket (https→wss, http→ws).
+pub fn http_to_ws_url(url: &str) -> Option<String> {
+    let lower = url.to_ascii_lowercase();
+    if lower.starts_with("wss://") || lower.starts_with("ws://") {
+        return Some(url.to_string());
+    }
+    if lower.starts_with("https://") {
+        return Some(url.replacen("https://", "wss://", 1).replacen("HTTPS://", "wss://", 1));
+    }
+    if lower.starts_with("http://") {
+        return Some(url.replacen("http://", "ws://", 1).replacen("HTTP://", "ws://", 1));
+    }
+    None
+}
+
+/// Spawn the factory event listener. Tries WebSocket when mode is `websocket` or
+/// `auto`; falls back to HTTP polling when WS is unavailable or mode is `poll`.
+pub fn spawn_factory_listener(
+    http_provider: Option<DynProvider<Ethereum>>,
+    service: Arc<DiscoveryService>,
+    factories: Vec<(Address, ProtocolType, u32)>,
+    listener_mode: &str,
+    ws_url: &str,
+    poll_interval_secs: u64,
+    ws_fallback_poll: bool,
+    metrics: Option<Arc<DiscoveryMetrics>>,
+    shutdown: tokio::sync::watch::Receiver<bool>,
+) -> Vec<tokio::task::JoinHandle<()>> {
+    let mode = listener_mode.to_ascii_lowercase();
+    let mut handles = Vec::new();
+
+    let want_ws = mode == "websocket" || mode == "auto";
+    let want_poll = mode == "poll"
+        || (mode == "auto" && ws_fallback_poll)
+        || (mode == "websocket" && ws_fallback_poll);
+
+    if want_ws {
+        if let Some(ws) = resolve_ws_url(ws_url) {
+            let svc = Arc::clone(&service);
+            let fac = factories.clone();
+            let m = metrics.clone();
+            let mut shutdown_ws = shutdown.clone();
+            handles.push(tokio::spawn(async move {
+                spawn_ws_listener(ws, svc, fac, m, &mut shutdown_ws).await;
+            }));
+            info!("discovery: WebSocket listener started");
+        } else if mode == "websocket" {
+            warn!("discovery: listener_mode=websocket but no WS URL configured — falling back to poll");
+        }
+    }
+
+    if want_poll {
+        if let Some(provider) = http_provider {
+            handles.push(spawn_polling_listener(
+                provider,
+                service,
+                factories,
+                poll_interval_secs,
+                shutdown,
+            ));
+            info!(
+                interval_secs = poll_interval_secs,
+                "discovery: HTTP polling listener started"
+            );
+        } else {
+            warn!("discovery: no HTTP provider for polling fallback");
+        }
+    }
+
+    handles
+}
+
+/// WebSocket subscription loop with exponential-backoff reconnect.
+async fn spawn_ws_listener(
+    ws_url: String,
+    service: Arc<DiscoveryService>,
+    factories: Vec<(Address, ProtocolType, u32)>,
+    metrics: Option<Arc<DiscoveryMetrics>>,
+    shutdown: &mut tokio::sync::watch::Receiver<bool>,
+) {
+    let mut attempt = 0u32;
+    let max_backoff = Duration::from_secs(30);
+
+    loop {
+        if *shutdown.borrow() {
+            info!("discovery WS listener shutting down");
+            return;
+        }
+
+        match run_ws_subscription(&ws_url, &service, &factories, metrics.clone(), shutdown).await {
+            Ok(()) => {
+                info!("discovery WS listener exited cleanly");
+                return;
+            }
+            Err(e) => {
+                attempt = attempt.saturating_add(1);
+                let backoff = Duration::from_secs(1)
+                    .saturating_mul(1u64 << attempt.min(5))
+                    .min(max_backoff);
+                warn!(
+                    attempt,
+                    backoff_ms = backoff.as_millis() as u64,
+                    error = %e,
+                    "discovery WS subscription failed, reconnecting"
+                );
+                tokio::select! {
+                    _ = tokio::time::sleep(backoff) => {}
+                    _ = shutdown.changed() => {
+                        if *shutdown.borrow() { return; }
+                    }
+                }
+            }
+        }
+    }
+}
+
+async fn run_ws_subscription(
+    ws_url: &str,
+    service: &DiscoveryService,
+    factories: &[(Address, ProtocolType, u32)],
+    metrics: Option<Arc<DiscoveryMetrics>>,
+    shutdown: &mut tokio::sync::watch::Receiver<bool>,
+) -> anyhow::Result<()> {
+    let ws = WsConnect::new(ws_url);
+    let provider = ProviderBuilder::new().connect_ws(ws).await?;
+    let filter = build_factory_filter(factories);
+    let sub = provider.subscribe_logs(&filter).await?;
+    let mut stream = sub.into_stream();
+    info!(url = %ws_url, "discovery WebSocket subscribed to factory logs");
+
+    loop {
+        tokio::select! {
+            log_opt = stream.next() => {
+                match log_opt {
+                    Some(log) => {
+                        let n = process_logs_with_metrics(
+                            service,
+                            factories,
+                            vec![log],
+                            metrics.clone(),
+                        ).await;
+                        if n > 0 {
+                            info!(ingested = n, "discovery WS ingested pools");
+                        }
+                    }
+                    None => anyhow::bail!("WebSocket log stream ended"),
+                }
+            }
+            _ = shutdown.changed() => {
+                if *shutdown.borrow() {
+                    return Ok(());
+                }
+            }
+        }
+    }
 }
 
 /// Poll factory logs over a block range (used when WS subscription unavailable).
@@ -320,5 +515,51 @@ mod tests {
             (sushi, ProtocolType::SushiSwap, 30),
         ];
         let _filter = build_factory_filter(&factories);
+    }
+
+    #[test]
+    fn http_to_ws_converts_https() {
+        assert_eq!(
+            http_to_ws_url("https://eth-mainnet.g.alchemy.com/v2/key"),
+            Some("wss://eth-mainnet.g.alchemy.com/v2/key".to_string())
+        );
+    }
+
+    #[test]
+    fn http_to_ws_converts_http_local() {
+        assert_eq!(
+            http_to_ws_url("http://127.0.0.1:8545"),
+            Some("ws://127.0.0.1:8545".to_string())
+        );
+    }
+
+    #[test]
+    fn http_to_ws_passthrough_wss() {
+        let url = "wss://example.com/ws";
+        assert_eq!(http_to_ws_url(url), Some(url.to_string()));
+    }
+
+    #[test]
+    fn resolve_ws_url_from_config() {
+        assert_eq!(
+            resolve_ws_url("wss://custom.example/ws"),
+            Some("wss://custom.example/ws".to_string())
+        );
+    }
+
+    #[test]
+    fn resolve_ws_url_empty_uses_env() {
+        std::env::set_var("ETH_RPC_URL", "http://127.0.0.1:8545");
+        assert_eq!(
+            resolve_ws_url(""),
+            Some("ws://127.0.0.1:8545".to_string())
+        );
+        std::env::remove_var("ETH_RPC_URL");
+    }
+
+    #[test]
+    fn metrics_noop_registers() {
+        let m = DiscoveryMetrics::noop();
+        assert_eq!(m.events_received.get(), 0.0);
     }
 }

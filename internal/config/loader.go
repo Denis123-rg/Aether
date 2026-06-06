@@ -37,6 +37,15 @@ func ConfigPath(filename string) string {
 	return filepath.Join(ConfigDir(), filename)
 }
 
+// MigrationsDir returns the SQL migrations directory. Override with
+// AETHER_MIGRATIONS_PATH; otherwise resolves to <config-dir>/../migrations.
+func MigrationsDir() string {
+	if p := os.Getenv("AETHER_MIGRATIONS_PATH"); p != "" {
+		return p
+	}
+	return filepath.Join(ConfigDir(), "..", "migrations")
+}
+
 // ---------------------------------------------------------------------------
 // Risk config (config/risk.yaml)
 // ---------------------------------------------------------------------------
@@ -160,6 +169,10 @@ type BuilderEntry struct {
 type BuildersFileConfig struct {
 	Builders   []BuilderEntry `yaml:"builders"`
 	Submission struct {
+		// RoutingMode controls bundle submission: "fanout" (all builders) or
+		// "select" (single builder via A/B selector Best()).
+		RoutingMode string `yaml:"routing_mode"`
+		// FanOut is deprecated; when RoutingMode is empty, true → fanout, false → select.
 		FanOut     bool `yaml:"fan_out"`
 		MaxRetries int  `yaml:"max_retries"`
 	} `yaml:"submission"`

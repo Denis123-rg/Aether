@@ -15,7 +15,8 @@ use crate::config::DiscoveryConfig;
 use crate::events::FactoryPoolCreated;
 use crate::scorer::{default_slippage_estimate, estimate_v2_slippage};
 use crate::types::{PoolInfo, PoolScoreInputs, ValidationResult};
-use crate::validator::{validate_v2_pool_rpc, validate_v2_reserves};
+use crate::metrics::DiscoveryMetrics;
+use crate::validator::{validate_v2_pool_full, validate_v2_reserves};
 
 /// TVL / volume data source for scoring enrichment.
 pub trait PoolMetricsSource: Send + Sync {
@@ -151,6 +152,7 @@ pub struct DiscoveryService {
     metrics_source: Arc<dyn PoolMetricsSource>,
     provider: Option<DynProvider<Ethereum>>,
     event_tx: broadcast::Sender<crate::types::DiscoveryEvent>,
+    metrics: Option<Arc<DiscoveryMetrics>>,
 }
 
 /// Connect an erased alloy provider from an HTTP/WS RPC URL.
@@ -189,7 +191,17 @@ impl DiscoveryService {
             metrics_source,
             provider,
             event_tx,
+            metrics: None,
         }
+    }
+
+    /// Attach Prometheus metrics for discovery validation and events.
+    pub fn set_metrics(&mut self, metrics: Arc<DiscoveryMetrics>) {
+        self.metrics = Some(metrics);
+    }
+
+    pub fn metrics(&self) -> Option<Arc<DiscoveryMetrics>> {
+        self.metrics.clone()
     }
 
     pub fn config(&self) -> &DiscoveryConfig {
@@ -270,10 +282,11 @@ impl DiscoveryService {
 
     async fn validate_pool(&self, event: &FactoryPoolCreated) -> ValidationResult {
         let swap_eth = self.config.discovery.validation_swap_eth;
+        let validation_mode = self.config.discovery.validation_mode.clone();
         match event.protocol {
             ProtocolType::UniswapV2 | ProtocolType::SushiSwap => {
                 if let Some(provider) = &self.provider {
-                    validate_v2_pool_rpc(
+                    validate_v2_pool_full(
                         provider,
                         event.pool,
                         event.token0,
@@ -281,6 +294,8 @@ impl DiscoveryService {
                         event.protocol,
                         event.fee_bps,
                         swap_eth,
+                        &validation_mode,
+                        self.metrics.clone(),
                     )
                     .await
                 } else {

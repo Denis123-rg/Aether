@@ -45,6 +45,21 @@ pub struct DiscoverySettings {
     pub score_refresh_interval_secs: u64,
     #[serde(default = "default_validation_swap")]
     pub validation_swap_eth: f64,
+    /// Event listener mode: `websocket`, `poll`, or `auto` (try WS, fall back to poll).
+    #[serde(default = "default_listener_mode")]
+    pub listener_mode: String,
+    /// Optional dedicated WebSocket URL. Falls back to `ETH_WS_URL` or `ETH_RPC_URL` (http→ws).
+    #[serde(default)]
+    pub ws_url: String,
+    /// Polling interval when WS is unavailable or `listener_mode = poll`.
+    #[serde(default = "default_poll_interval")]
+    pub poll_interval_secs: u64,
+    /// When true, keep a polling listener running alongside WS as a safety net.
+    #[serde(default = "default_ws_fallback_poll")]
+    pub ws_fallback_poll: bool,
+    /// Validation mode: `revm` (fork simulation), `analytical` (math only), or `both`.
+    #[serde(default = "default_validation_mode")]
+    pub validation_mode: String,
 }
 
 impl Default for DiscoverySettings {
@@ -56,6 +71,11 @@ impl Default for DiscoverySettings {
             prune_max_age_secs: default_prune_max_age(),
             score_refresh_interval_secs: default_score_refresh(),
             validation_swap_eth: default_validation_swap(),
+            listener_mode: default_listener_mode(),
+            ws_url: String::new(),
+            poll_interval_secs: default_poll_interval(),
+            ws_fallback_poll: default_ws_fallback_poll(),
+            validation_mode: default_validation_mode(),
         }
     }
 }
@@ -133,6 +153,18 @@ fn default_score_refresh() -> u64 {
 }
 fn default_validation_swap() -> f64 {
     0.001
+}
+fn default_listener_mode() -> String {
+    "auto".to_string()
+}
+fn default_poll_interval() -> u64 {
+    12
+}
+fn default_ws_fallback_poll() -> bool {
+    true
+}
+fn default_validation_mode() -> String {
+    "both".to_string()
 }
 fn default_one() -> f64 {
     1.0

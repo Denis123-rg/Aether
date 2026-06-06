@@ -1,6 +1,6 @@
 # End-to-End Testing
 
-Full pipeline tests for the Aether arbitrage system.
+Full-stack pipeline tests for the Aether arbitrage system.
 
 ## Prerequisites
 
@@ -8,98 +8,96 @@ Full pipeline tests for the Aether arbitrage system.
 |------|---------|---------|
 | Foundry (`anvil`, `forge`) | latest | Mainnet fork + contract deploy |
 | Go | 1.26+ | Executor, telebot, signer |
-| Rust (`cargo`) | stable | Discovery + detection core |
-| `curl`, `python3` | any | HTTP assertions in E2E script |
-| Redis (optional) | 7+ | Pub/sub integration tests |
+| Rust (`cargo`) | stable | gRPC server + discovery |
+| `curl`, `python3` | any | HTTP assertions |
+| Redis (optional) | 7+ | Pub/sub + fallback tests |
 
 ## Quick Start
 
 ```bash
-# Full pipeline (anvil + executor + scenarios)
-chmod +x tests/e2e/run_full_pipeline.sh
-./tests/e2e/run_full_pipeline.sh
+# 1. Build all binaries and signer fixture
+chmod +x tests/e2e/*.sh
+./tests/e2e/setup_test_env.sh
 
-# With mainnet fork (recommended)
+# 2. Full pipeline (recommended with mainnet fork RPC)
 ETH_RPC_URL=https://eth-mainnet.g.alchemy.com/v2/YOUR_KEY \
   ./tests/e2e/run_full_pipeline.sh
+
+# 3. Cleanup
+./tests/e2e/cleanup.sh
 ```
 
-## What the Script Does
+Set `SKIP_BUILD=1` to reuse a prior `setup_test_env.sh` build.
 
-1. Builds Go binaries (`aether-executor`, `aether-telebot`) and Rust core
-2. Starts Anvil (forked mainnet at block 21,000,000 if `ETH_RPC_URL` set)
-3. Deploys `AetherExecutor.sol`
-4. Starts Redis (if available)
-5. Starts executor in shadow mode (`AETHER_SHADOW=1`)
-6. Runs 10 test scenarios
-7. Stops all services and reports pass/fail
+## What the Pipeline Starts
 
-## Test Scenarios
+| Service | Role |
+|---------|------|
+| Anvil | Mainnet fork (`ETH_RPC_URL`, block `FORK_BLOCK`) |
+| AetherExecutor | Deployed via `forge create` |
+| Mock builder | Python HTTP server accepting `eth_sendBundle` |
+| Remote signer | `aether-signer` on unix socket (`AETHER_SIGNER_SOCKET`) |
+| Rust `aether-grpc-server` | Discovery WebSocket + hot cache + gRPC stream |
+| Go executor | Remote signer, `routing_mode: select`, live submit |
+| Telebot | Dashboard polling (optional) |
+| Redis | Pub/sub; killed in scenario 7 to test polling fallback |
 
-| # | Scenario | Type |
-|---|----------|------|
-| 1 | Metrics endpoint returns all required fields | HTTP |
-| 2 | Health endpoint responds | HTTP |
-| 3 | Pause / resume via admin API | HTTP |
-| 4 | Set min profit threshold | HTTP |
-| 5 | Dashboard PnL fields present | HTTP |
-| 6 | Redis fallback to polling | Integration |
-| 7 | Go unit tests (telebot, events, admin) | Unit |
-| 8 | Signer recovery (pause → resume) | Unit |
-| 9 | Circuit breaker triggers on pause | Unit |
-| 10 | Invalid pool discarded by validator | Rust unit |
+Logs: `build/e2e/logs/`
+
+## Test Scenarios (10+)
+
+| # | Scenario | Verification |
+|---|----------|--------------|
+| 1 | Stack healthy | `/health` signer_healthy, Rust `/top-pools` |
+| 2 | `/pause` | `breaker_open` true in metrics JSON |
+| 3 | `/resume` | `breaker_open` false |
+| 4 | Signer outage → recovery | Kill signer, health false; restart, health true |
+| 5 | Discovery WebSocket | Rust WS URL conversion tests + top-pools live |
+| 6 | Invalid pool discarded | `aether-discovery` validator unit test |
+| 7 | Redis fallback | Kill Redis; executor metrics still reachable |
+| 8 | Circuit breaker | `internal/risk` consecutive-loss tests |
+| 9 | Routing `select` | Only one builder receives bundle (Go unit test) |
+| 10 | Dashboard PnL | `pnl_total` / `pnl_today` in metrics JSON + `tests/e2e` package |
+
+Additional: full `go test ./...` and `cargo test --workspace` regression.
+
+## Environment Variables
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `ETH_RPC_URL` | — | Mainnet fork upstream (required for revm/discovery E2E) |
+| `ETH_WS_URL` | derived from RPC | Discovery WebSocket (auto `http→ws`) |
+| `FORK_BLOCK` | `21000000` | Anvil fork block |
+| `DATABASE_URL` | unset | Optional TimescaleDB (migrations auto-applied at boot) |
+| `BUILD_DIR` | `build/e2e` | Artifact output |
+| `SKIP_BUILD` | `0` | Skip `setup_test_env.sh` |
 
 ## Go E2E Package
 
 ```bash
-# Against a running executor stack
-EXECUTOR_METRICS_URL=http://localhost:8080/metrics/json \
-EXECUTOR_ADMIN_URL=http://localhost:8080 \
+EXECUTOR_METRICS_URL=http://127.0.0.1:8080/metrics/json \
+EXECUTOR_ADMIN_URL=http://127.0.0.1:8080 \
   go test ./tests/e2e/... -v
 ```
 
-Tests skip gracefully when services are not reachable (for CI unit-only runs).
+Tests skip when the executor is unreachable (CI unit-only runs).
 
-## Interpreting Results
-
-```
-[e2e] ✓ metrics endpoint
-[e2e] ✓ pause/resume
-[e2e] ✗ redis fallback to polling
-[e2e] E2E Results: 9 passed, 1 failed
-```
-
-- **Exit 0** — all scenarios passed
-- **Exit 1** — one or more failures; check `build/e2e/logs/`
-
-### Log Files
-
-| File | Service |
-|------|---------|
-| `build/e2e/logs/anvil.log` | Anvil fork |
-| `build/e2e/logs/executor.log` | Go executor |
-| `build/e2e/logs/*.log` | Other services |
-
-## CI Integration
+## CI Example
 
 ```yaml
-# Example GitHub Actions step
-- name: E2E pipeline
+- name: E2E full pipeline
   env:
     ETH_RPC_URL: ${{ secrets.ETH_RPC_URL }}
-    SKIP_BUILD: "1"  # if pre-built
-  run: ./tests/e2e/run_full_pipeline.sh
+  run: |
+    ./tests/e2e/setup_test_env.sh
+    ./tests/e2e/run_full_pipeline.sh
 ```
 
-## Individual Test Commands
+## Individual Commands
 
 ```bash
-# Unit tests only (no services needed)
-go test ./internal/events/... ./cmd/telebot/... ./cmd/executor/... -count=1
-
-# Rust discovery tests
+go test ./... -count=1
+cargo test --workspace
 cargo test -p aether-discovery
-
-# Hot cache integration
-cargo test -p aether-integration-tests discovery_hot_cache
+go test ./cmd/executor/... -run Routing -count=1
 ```

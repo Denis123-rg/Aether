@@ -4,6 +4,10 @@ import (
 	"fmt"
 	"net"
 	"net/rpc/jsonrpc"
+
+	"github.com/ethereum/go-ethereum/accounts"
+	"github.com/ethereum/go-ethereum/common/hexutil"
+	"github.com/ethereum/go-ethereum/crypto"
 )
 
 // Client is a thin JSON-RPC-over-unix-socket client for the signer. It dials a
@@ -53,4 +57,35 @@ func (c *Client) Address() (string, error) {
 		return "", err
 	}
 	return reply.Address, nil
+}
+
+// Ping verifies the signer is reachable by signing a fixed all-zero probe digest.
+func (c *Client) Ping() error {
+	var probe [32]byte
+	if _, err := c.SignDigest(probe[:]); err != nil {
+		return fmt.Errorf("signer ping: %w", err)
+	}
+	return nil
+}
+
+// SignFlashbotsPayload produces the X-Flashbots-Signature header value
+// ("address:0xsignature") for a builder request body:
+//
+//	payload -> keccak256 -> hex string -> EIP-191 TextHash -> secp256k1 sign
+func (c *Client) SignFlashbotsPayload(payload []byte) (string, error) {
+	addrHex, err := c.Address()
+	if err != nil {
+		return "", fmt.Errorf("signer address: %w", err)
+	}
+	hashHex := crypto.Keccak256Hash(payload).Hex()
+	digest := accounts.TextHash([]byte(hashHex))
+	sig, err := c.SignDigest(digest)
+	if err != nil {
+		return "", fmt.Errorf("signer flashbots digest: %w", err)
+	}
+	if len(sig) != 65 {
+		return "", fmt.Errorf("signer: unexpected signature length %d, want 65", len(sig))
+	}
+	sig[64] += 27
+	return fmt.Sprintf("%s:%s", addrHex, hexutil.Encode(sig)), nil
 }

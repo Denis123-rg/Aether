@@ -17,7 +17,10 @@ tracing = { workspace = true }
 thiserror = { workspace = true }
 anyhow = { workspace = true }
 serde_json = { workspace = true }
+revm = { workspace = true }
 revm-database = { workspace = true }
+futures = "0.3"
+prometheus = "0.13.4"
 
 [dev-dependencies]
 tempfile = "3.27.0"

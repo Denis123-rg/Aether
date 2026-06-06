@@ -186,7 +186,7 @@ func TestRefreshSnapshotLoopOnce(t *testing.T) {
 		rm.RecordBundleResult(i%2 == 0)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	go refreshSnapshotLoop(ctx, rm, globalSnapshotStore, 0)
+	go refreshSnapshotLoop(ctx, rm, globalSnapshotStore, time.Millisecond)
 	cancel()
 	snap := globalSnapshotStore.Get()
 	if snap.WinRate == 0 {

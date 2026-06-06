@@ -66,23 +66,43 @@ func TestSubscriberReconnectsAfterRedisRestart(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	url := "redis://" + mr.Addr()
+	addr := mr.Addr()
+	url := "redis://" + addr
 	state := &DashboardState{}
 	sub := NewSubscriber(url, state, nil)
 	if sub == nil {
 		t.Fatal("subscriber nil")
 	}
 	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	sub.Start(ctx)
-	time.Sleep(50 * time.Millisecond)
 
-	mr.Close() // simulate disconnect
-	time.Sleep(100 * time.Millisecond)
-
-	// Restart miniredis on same addr isn't possible — verify state shows disconnected
-	if state.Get().RedisConnected {
-		// may still be connected briefly
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if state.Get().RedisConnected {
+			break
+		}
+		time.Sleep(25 * time.Millisecond)
 	}
+	if !state.Get().RedisConnected {
+		t.Fatal("expected initial redis connection")
+	}
+
+	mr.Close() // kill Redis — subscriber should mark disconnected
+
+	deadline = time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if !state.Get().RedisConnected {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if state.Get().RedisConnected {
+		t.Fatal("expected disconnected after redis killed")
+	}
+
+	// Subscriber marks disconnected after kill; reconnect loop retries until ctx done.
+	// Full same-address restart requires external Redis — here we verify disconnect detection.
 	cancel()
 	sub.Stop()
 }

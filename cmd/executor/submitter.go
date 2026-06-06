@@ -222,6 +222,49 @@ func (s *Submitter) SubmitToAll(ctx context.Context, bundle *Bundle) []Submissio
 	return results
 }
 
+// SubmitToBuilder sends the bundle to a single named builder (A/B select mode).
+func (s *Submitter) SubmitToBuilder(ctx context.Context, bundle *Bundle, builderName string) []SubmissionResult {
+	var target *BuilderConfig
+	for i := range s.builders {
+		if s.builders[i].Name == builderName && s.builders[i].Enabled {
+			target = &s.builders[i]
+			break
+		}
+	}
+	if target == nil {
+		return []SubmissionResult{{
+			Builder: builderName,
+			Success: false,
+			Error:   fmt.Errorf("builder %q not found or disabled", builderName),
+		}}
+	}
+
+	ctx, span := tracer.Start(ctx, "submit.selected",
+		trace.WithAttributes(attribute.String("builder", builderName)),
+	)
+	defer span.End()
+
+	if s.submitFn == nil && len(bundle.RawTxs) == 0 {
+		return []SubmissionResult{{
+			Builder: builderName,
+			Success: false,
+			Error:   fmt.Errorf("no signed transactions in bundle"),
+		}}
+	}
+
+	start := time.Now()
+	result := s.submitToBuilder(ctx, *target, bundle)
+	result.Latency = time.Since(start)
+	s.recordMetrics(target.Name, result)
+	if result.Success {
+		span.SetAttributes(attribute.String("bundle_hash", result.BundleHash))
+	} else if result.Error != nil {
+		span.RecordError(result.Error)
+		span.SetStatus(codes.Error, "builder rejected bundle")
+	}
+	return []SubmissionResult{result}
+}
+
 // jsonRPCRequest is the standard JSON-RPC 2.0 request envelope.
 type jsonRPCRequest struct {
 	JSONRPC string        `json:"jsonrpc"`

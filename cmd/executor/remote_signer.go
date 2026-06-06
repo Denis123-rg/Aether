@@ -7,11 +7,8 @@ import (
 	"os"
 	"strings"
 
-	"github.com/ethereum/go-ethereum/accounts"
 	"github.com/ethereum/go-ethereum/common"
-	"github.com/ethereum/go-ethereum/common/hexutil"
 	"github.com/ethereum/go-ethereum/core/types"
-	"github.com/ethereum/go-ethereum/crypto"
 
 	"github.com/aether-arb/aether/internal/signer"
 )
@@ -98,36 +95,21 @@ func (r *RemoteSigner) SignTx(tx *types.Transaction) (*types.Transaction, error)
 	return signed, nil
 }
 
-// Ping verifies the signer is reachable and able to sign by signing a fixed
-// 32-byte probe digest. Used at startup as an explicit liveness check beyond
-// the address probe (the prompt's "sign a known hash"). The signature is
-// discarded.
+// Ping verifies the signer is reachable via the shared signer client.
 func (r *RemoteSigner) Ping() error {
-	var probe [32]byte // deterministic all-zero digest
-	if _, err := r.client.SignDigest(probe[:]); err != nil {
-		return fmt.Errorf("%w: ping: %v", errSignerUnavailable, err)
+	if err := r.client.Ping(); err != nil {
+		return fmt.Errorf("%w: %v", errSignerUnavailable, err)
 	}
 	return nil
 }
 
-// SignFlashbotsPayload produces the X-Flashbots-Signature header value
-// ("address:0xsignature") for a builder request body, mirroring
-// FlashbotsSigner.Sign exactly but signing through the remote signer:
-//
-//	payload -> keccak256 -> hex string -> EIP-191 TextHash -> secp256k1 sign
+// SignFlashbotsPayload delegates to internal/signer.Client.SignFlashbotsPayload.
 func (r *RemoteSigner) SignFlashbotsPayload(payload []byte) (string, error) {
-	hashHex := crypto.Keccak256Hash(payload).Hex()
-	digest := accounts.TextHash([]byte(hashHex))
-	sig, err := r.client.SignDigest(digest)
+	signed, err := r.client.SignFlashbotsPayload(payload)
 	if err != nil {
-		return "", fmt.Errorf("%w: flashbots auth: %v", errSignerUnavailable, err)
+		return "", fmt.Errorf("%w: %v", errSignerUnavailable, err)
 	}
-	if len(sig) != 65 {
-		return "", fmt.Errorf("remote signer: unexpected signature length %d, want 65", len(sig))
-	}
-	// Adjust V from 0/1 to 27/28 per Ethereum convention (matches FlashbotsSigner).
-	sig[64] += 27
-	return fmt.Sprintf("%s:%s", r.address.Hex(), hexutil.Encode(sig)), nil
+	return signed, nil
 }
 
 // remoteFlashbotsAuth adapts a *RemoteSigner to the flashbotsAuther interface

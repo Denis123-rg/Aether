@@ -1,7 +1,7 @@
 //! Wire the discovery service and hot cache into the Aether engine at startup.
 //!
 //! When `config/discovery.toml` has `discovery.enabled = true`, spawns:
-//! - Factory event listener (RPC poll)
+//! - Factory event listener (WebSocket with HTTP poll fallback)
 //! - Discovery cache prune loop
 //! - Hot cache updater (every 5s → top 500 pools)
 //!
@@ -10,7 +10,8 @@
 use std::sync::Arc;
 
 use aether_discovery::config::DiscoveryConfig;
-use aether_discovery::events::spawn_polling_listener;
+use aether_discovery::events::spawn_factory_listener;
+use aether_discovery::metrics::DiscoveryMetrics;
 use aether_discovery::DiscoveryService;
 use aether_state::hot_cache::{HotCache, HotCacheMetrics, HotCacheUpdater, HotCacheUpdaterConfig};
 use alloy::network::Ethereum;
@@ -26,8 +27,7 @@ pub struct DiscoveryRuntime {
     pub discovery: Arc<DiscoveryService>,
     #[allow(dead_code)]
     pub hot_cache: Arc<HotCache>,
-    _discovery_prune: tokio::task::JoinHandle<()>,
-    _discovery_listener: Option<tokio::task::JoinHandle<()>>,
+    _discovery_listeners: Vec<tokio::task::JoinHandle<()>>,
     _hot_cache_updater: tokio::task::JoinHandle<()>,
 }
 
@@ -61,14 +61,18 @@ pub async fn maybe_start_discovery(
 
     info!(path = %config_path, "discovery enabled — starting dynamic pool pipeline");
 
-    let discovery = if let Some(provider) = rpc_provider.clone() {
-        Arc::new(DiscoveryService::with_provider(config.clone(), Some(provider)))
+    let discovery_metrics = DiscoveryMetrics::register(metrics.registry());
+
+    let mut discovery_inner = if let Some(provider) = rpc_provider.clone() {
+        DiscoveryService::with_provider(config.clone(), Some(provider))
     } else if let Ok(url) = std::env::var("ETH_RPC_URL") {
-        Arc::new(DiscoveryService::with_rpc_url(config.clone(), &url).await)
+        DiscoveryService::with_rpc_url(config.clone(), &url).await
     } else {
         warn!("discovery enabled but no RPC provider — running in offline scoring mode");
-        Arc::new(DiscoveryService::new(config.clone()))
+        DiscoveryService::new(config.clone())
     };
+    discovery_inner.set_metrics(Arc::clone(&discovery_metrics));
+    let discovery = Arc::new(discovery_inner);
 
     let hot_cache_metrics = HotCacheMetrics::register(metrics.registry());
     let hot_cache = Arc::new(HotCache::new(hot_cache_metrics));
@@ -119,16 +123,17 @@ pub async fn maybe_start_discovery(
     // Spawn background loops.
     discovery.clone().spawn_prune_task(shutdown_rx.clone());
 
-    let listener_handle = rpc_provider.map(|provider| {
-        let factories = config.factory_addresses();
-        spawn_polling_listener(
-            provider,
-            Arc::clone(&discovery),
-            factories,
-            12, // poll every 12s (~1 block)
-            shutdown_rx.clone(),
-        )
-    });
+    let listener_handles = spawn_factory_listener(
+        rpc_provider,
+        Arc::clone(&discovery),
+        config.factory_addresses(),
+        &config.discovery.listener_mode,
+        &config.discovery.ws_url,
+        config.discovery.poll_interval_secs,
+        config.discovery.ws_fallback_poll,
+        Some(discovery_metrics),
+        shutdown_rx.clone(),
+    );
 
     // Combined hot-cache refresh + engine sync loop.
     let engine_sync = Arc::clone(engine);
@@ -161,8 +166,7 @@ pub async fn maybe_start_discovery(
     Some(DiscoveryRuntime {
         discovery,
         hot_cache,
-        _discovery_prune: tokio::spawn(async {}),
-        _discovery_listener: listener_handle,
+        _discovery_listeners: listener_handles,
         _hot_cache_updater: hot_cache_handle,
     })
 }

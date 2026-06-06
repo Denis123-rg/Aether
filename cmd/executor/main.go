@@ -62,6 +62,8 @@ var (
 	builderSelector *strategy.Selector
 	metricsStore    db.MetricsStore = db.NoopMetricsStore{}
 	eventPublisher  *events.Publisher
+	// routingMode is "fanout" or "select", set from builders.yaml in main().
+	routingMode = "fanout"
 )
 
 // Config holds executor service configuration.
@@ -73,6 +75,8 @@ type Config struct {
 	BuilderConfigs []BuilderConfig
 	MaxGasGwei     float64
 	Strategy       StrategyConfig
+	// RoutingMode is "fanout" (all builders) or "select" (A/B Best()).
+	RoutingMode string
 }
 
 // StrategyConfig holds the A/B builder selector tuning, sourced from the
@@ -118,7 +122,9 @@ func loadConfig() Config {
 			ExplorationFloor: bc.Strategy.ExplorationFloor,
 			PriorAttempts:    bc.Strategy.PriorAttempts,
 		}
-		slog.Info("builders loaded", "count", len(builders), "path", buildersPath)
+		cfg.RoutingMode = resolveRoutingMode(bc.Submission.RoutingMode, bc.Submission.FanOut)
+		routingMode = cfg.RoutingMode
+		slog.Info("builders loaded", "count", len(builders), "path", buildersPath, "routing_mode", cfg.RoutingMode)
 	}
 
 	// Override gRPC address from environment if set.
@@ -128,6 +134,24 @@ func loadConfig() Config {
 	}
 
 	return cfg
+}
+
+// resolveRoutingMode maps builders.yaml submission settings to "fanout" or "select".
+func resolveRoutingMode(mode string, fanOut bool) string {
+	switch strings.ToLower(strings.TrimSpace(mode)) {
+	case "select", "single", "best":
+		return "select"
+	case "fanout", "fan_out", "all":
+		return "fanout"
+	case "":
+		if fanOut {
+			return "fanout"
+		}
+		return "select"
+	default:
+		slog.Warn("unknown routing_mode, defaulting to fanout", "routing_mode", mode)
+		return "fanout"
+	}
 }
 
 // loadRiskConfig attempts to load risk parameters from config/risk.yaml,
@@ -236,8 +260,9 @@ func main() {
 	// fall back to the in-process SEARCHER_KEY so dev / shadow / demo runs (and
 	// the test suite) keep working unchanged.
 	var (
-		txSigner  TxSigner
-		submitter *Submitter
+		txSigner       TxSigner
+		submitter      *Submitter
+		remoteSigner   *RemoteSigner
 	)
 	if signerSocket := resolveSignerSocket(); signerSocket != "" {
 		rs, rsErr := NewRemoteSigner(signerSocket, chainID.Int64())
@@ -251,6 +276,7 @@ func main() {
 			os.Exit(1)
 		}
 		txSigner = rs
+		remoteSigner = rs
 		// No key in-process — the submitter authenticates via the remote signer.
 		submitter, err = NewSubmitter(cfg.BuilderConfigs, "")
 		if err != nil {
@@ -279,7 +305,7 @@ func main() {
 			txSigner = local
 			slog.Info("searcher signer loaded (in-process key)", "addr", local.Address().Hex())
 		} else {
-			slog.Warn("no signer configured (AETHER_SIGNER_SOCKET unset, SEARCHER_KEY empty); transactions will not be signed")
+			slog.Warn("AETHER_SIGNER_SOCKET unset — using in-process SEARCHER_KEY or unsigned txs; not recommended for production")
 		}
 		os.Unsetenv("SEARCHER_KEY")
 	}
@@ -287,6 +313,17 @@ func main() {
 	// Setup graceful shutdown
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+
+	// Auto-apply pending SQL migrations when DATABASE_URL is set. Fatal on
+	// failure to avoid running against an inconsistent schema.
+	if dbURL := os.Getenv("DATABASE_URL"); dbURL != "" {
+		migrationsPath := config.MigrationsDir()
+		if err := db.RunMigrations(dbURL, migrationsPath); err != nil {
+			slog.Error("database migration failed", "err", err)
+			os.Exit(1)
+		}
+		slog.Info("database migrations applied", "path", migrationsPath)
+	}
 
 	// Trade ledger: graceful no-op when DATABASE_URL is unset, so dev /
 	// shadow runs against a fork keep working without Postgres. Connect
@@ -307,10 +344,8 @@ func main() {
 	metricsStore = db.MetricsStoreFromEnv(ctx, os.Getenv("DATABASE_URL"))
 	defer metricsStore.Close()
 
-	// A/B builder selector over the enabled builders. Pure policy object: the
-	// executor still fans every bundle out to ALL enabled builders; the
-	// selector only tracks per-builder outcomes, ranks them, and feeds the
-	// once-a-minute snapshot log (see processArb and logSelectorSnapshotLoop).
+	// A/B builder selector over the enabled builders. When routing_mode=select
+	// processArb submits to selector.Best() only; fanout mode sends to all.
 	enabledBuilders := make([]string, 0, len(cfg.BuilderConfigs))
 	for _, b := range cfg.BuilderConfigs {
 		if b.Enabled {
@@ -375,6 +410,14 @@ func main() {
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 
 	var wg sync.WaitGroup
+
+	if remoteSigner != nil {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			signerHealthLoop(ctx, remoteSigner.Ping, 15*time.Second)
+		}()
+	}
 
 	// Start nonce sync loop
 	wg.Add(1)
@@ -685,7 +728,14 @@ func processArb(
 	// Submit to all builders
 	recordEndToEndLatency(receivedAt)
 	recordBundleSubmitted(sourceLbl)
-	results := submitter.SubmitToAll(ctx, bundle)
+	var results []SubmissionResult
+	if routingMode == "select" && builderSelector != nil {
+		builder := builderSelector.Best()
+		results = submitter.SubmitToBuilder(ctx, bundle, builder)
+		slog.InfoContext(ctx, "bundle routed to selected builder", "builder", builder, "routing_mode", "select")
+	} else {
+		results = submitter.SubmitToAll(ctx, bundle)
+	}
 	recordSubmissionReverts(rm, results)
 	successes := SuccessCount(results)
 

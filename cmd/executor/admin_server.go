@@ -21,12 +21,12 @@ type adminDeps struct {
 	riskMgr       *risk.RiskManager
 	snapshotStore *metrics.Store
 	discoveryURL  string
-	eventPub      eventPublisher
+	eventPub      adminEventPublisher
 }
 
-// eventPublisher is the minimal surface the admin server needs from the
+// adminEventPublisher is the minimal surface the admin server needs from the
 // events package (avoids import cycles in tests).
-type eventPublisher interface {
+type adminEventPublisher interface {
 	PublishBreakerStatus(open bool, reason string)
 	PublishSignerHealth(healthy bool)
 }
@@ -39,7 +39,7 @@ var (
 
 // startAdminServer starts the executor admin/metrics HTTP server on the
 // configured port (default 8080). Idempotent — only the first call binds.
-func startAdminServer(rm *risk.RiskManager, discoveryURL string, port int, pub eventPublisher) {
+func startAdminServer(rm *risk.RiskManager, discoveryURL string, port int, pub adminEventPublisher) {
 	adminServerOnce.Do(func() {
 		globalAdminDeps = adminDeps{
 			riskMgr:       rm,
@@ -209,14 +209,18 @@ func refreshSnapshotLoop(ctx context.Context, rm *risk.RiskManager, store *metri
 }
 
 func metricsStoreHealthy() bool {
-	// When DATABASE_URL is unset the store is a no-op — still "healthy".
 	if os.Getenv("DATABASE_URL") == "" {
 		return true
 	}
-	// Any non-noop MetricsStore means we connected at startup.
-	_, isNoop := metricsStore.(interface{ Record(m interface{}) })
-	_ = isNoop
-	return true
+	type pinger interface {
+		Ping(context.Context) error
+	}
+	if p, ok := metricsStore.(pinger); ok {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		return p.Ping(ctx) == nil
+	}
+	return false
 }
 
 func pollTopPoolsLoop(ctx context.Context, url string, store *metrics.Store, interval time.Duration) {
@@ -290,4 +294,23 @@ func setRPCHealthy(healthy bool) {
 	globalSnapshotStore.Update(func(s *metrics.Snapshot) {
 		s.RPCHealthy = healthy
 	})
+}
+
+// signerHealthLoop periodically probes the remote signer and updates /health.
+func signerHealthLoop(ctx context.Context, ping func() error, interval time.Duration) {
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			if err := ping(); err != nil {
+				setSignerHealthy(false)
+				slog.Warn("signer health probe failed", "err", err)
+			} else {
+				setSignerHealthy(true)
+			}
+		}
+	}
 }

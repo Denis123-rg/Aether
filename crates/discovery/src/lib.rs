@@ -7,6 +7,7 @@
 pub mod cache;
 pub mod config;
 pub mod events;
+pub mod metrics;
 pub mod scorer;
 pub mod service;
 pub mod types;

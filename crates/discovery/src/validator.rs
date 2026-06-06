@@ -1,18 +1,44 @@
-//! Pool integrity validation via analytical swap simulation.
+//! Pool integrity validation via analytical swap simulation and revm fork probes.
 //!
 //! For V2-family pools we verify that a small ETH→token→ETH round-trip
-//! produces positive output. When an RPC provider is available, reserves are
-//! fetched on-chain; otherwise callers supply reserve data directly.
+//! produces positive output. Analytical math is the fast pre-filter; when an RPC
+//! provider is available a revm fork executes the same round-trip on-chain.
+
+use std::time::Instant;
 
 use aether_common::types::{addresses::WETH, ProtocolType};
 use aether_pools::uniswap_v2::UniswapV2Pool;
 use aether_pools::Pool;
+use aether_simulator::fork::{RpcDB, RpcForkedState};
 use alloy::network::Ethereum;
-use alloy::primitives::{Address, U256};
+use alloy::primitives::{address, Address, U256};
 use alloy::providers::{DynProvider, Provider};
 use alloy::sol_types::SolCall;
+use revm::context::result::ExecutionResult;
+use revm::context::{BlockEnv, TxEnv};
+use revm::handler::{ExecuteEvm, MainBuilder};
+use revm::primitives::hardfork::SpecId;
+use revm::primitives::{Bytes, TxKind};
+use revm::Context;
 
+use crate::metrics::DiscoveryMetrics;
 use crate::types::ValidationResult;
+
+/// Test EOA used for revm swap probes (no real funds — balance is injected).
+const REVM_PROBE_CALLER: Address = address!("0x000000000000000000000000000000000000bEEF");
+
+alloy::sol! {
+    #[sol(rpc)]
+    interface IUniswapV2Router02 {
+        function swapExactETHForTokens(uint256 amountOutMin, address[] path, address to, uint256 deadline) external payable returns (uint256[] amounts);
+        function swapExactTokensForETH(uint256 amountIn, uint256 amountOutMin, address[] path, address to, uint256 deadline) external returns (uint256[] amounts);
+    }
+    #[sol(rpc)]
+    interface IERC20 {
+        function approve(address spender, uint256 amount) external returns (bool);
+        function balanceOf(address account) external view returns (uint256);
+    }
+}
 
 /// Minimum WETH-side reserve (human units) for a pool to pass validation.
 pub const MIN_WETH_RESERVE_ETH: f64 = 0.1;
@@ -78,6 +104,293 @@ pub async fn validate_v2_pool_rpc(
     let r1 = U256::from_be_slice(&reserves_out[32..64]);
 
     validate_v2_reserves(token0, token1, protocol, fee_bps, r0, r1, swap_eth)
+}
+
+/// Full validation pipeline: analytical pre-filter then optional revm fork probe.
+pub async fn validate_v2_pool_full(
+    provider: &DynProvider<Ethereum>,
+    pool_addr: Address,
+    token0: Address,
+    token1: Address,
+    protocol: ProtocolType,
+    fee_bps: u32,
+    swap_eth: f64,
+    validation_mode: &str,
+    metrics: Option<std::sync::Arc<DiscoveryMetrics>>,
+) -> ValidationResult {
+    let start = Instant::now();
+    let mode = validation_mode.to_ascii_lowercase();
+
+    let result = match mode.as_str() {
+        "analytical" => {
+            validate_v2_pool_rpc(
+                provider, pool_addr, token0, token1, protocol, fee_bps, swap_eth,
+            )
+            .await
+        }
+        "revm" => {
+            if let ValidationResult::Invalid(reason) =
+                validate_v2_pool_rpc(
+                    provider, pool_addr, token0, token1, protocol, fee_bps, swap_eth,
+                )
+                .await
+            {
+                if reason.contains("token") || reason.contains("getReserves") {
+                    return ValidationResult::Invalid(reason);
+                }
+            }
+            validate_v2_pool_revm(
+                provider, pool_addr, token0, token1, protocol, swap_eth, metrics.clone(),
+            )
+            .await
+        }
+        _ => {
+            // "both" — analytical pre-filter, then revm fork confirmation.
+            let analytical = validate_v2_pool_rpc(
+                provider, pool_addr, token0, token1, protocol, fee_bps, swap_eth,
+            )
+            .await;
+            if analytical != ValidationResult::Valid {
+                return analytical;
+            }
+            validate_v2_pool_revm(
+                provider, pool_addr, token0, token1, protocol, swap_eth, metrics.clone(),
+            )
+            .await
+        }
+    };
+
+    if let Some(m) = metrics {
+        m.validation_latency_ms
+            .observe(start.elapsed().as_secs_f64() * 1000.0);
+    }
+    result
+}
+
+/// revm fork probe: 0.001 ETH → token → ETH via the protocol router.
+pub async fn validate_v2_pool_revm(
+    provider: &DynProvider<Ethereum>,
+    _pool_addr: Address,
+    token0: Address,
+    token1: Address,
+    protocol: ProtocolType,
+    swap_eth: f64,
+    _metrics: Option<std::sync::Arc<DiscoveryMetrics>>,
+) -> ValidationResult {
+    let router = v2_router_for(protocol);
+    if router == Address::ZERO {
+        return ValidationResult::Invalid(format!("no router for protocol: {protocol:?}"));
+    }
+
+    let (weth_token, other_token) = if token0 == WETH {
+        (token0, token1)
+    } else if token1 == WETH {
+        (token1, token0)
+    } else {
+        // Non-WETH pairs: analytical validation is sufficient.
+        return ValidationResult::Valid;
+    };
+
+    let swap_wei = eth_to_u256(swap_eth);
+    if swap_wei.is_zero() {
+        return ValidationResult::Invalid("swap amount too small".into());
+    }
+
+    let block = match provider.get_block_by_number(alloy::eips::BlockNumberOrTag::Latest).await {
+        Ok(Some(b)) => b,
+        _ => return ValidationResult::Invalid("failed to fetch latest block".into()),
+    };
+    let block_number = block.header.number;
+    let block_timestamp = block.header.timestamp;
+    let base_fee = block.header.base_fee_per_gas.unwrap_or(0);
+
+    let mut state = match RpcForkedState::new_at_latest(
+        provider.clone(),
+        block_number,
+        block_timestamp,
+        base_fee,
+    ) {
+        Some(s) => s,
+        None => return ValidationResult::Invalid("revm fork init failed".into()),
+    };
+
+    // Fund the probe caller with 1 ETH for gas + swap value.
+    state.insert_account_balance(REVM_PROBE_CALLER, U256::from(1_000_000_000_000_000_000u64));
+
+    let deadline = U256::from(block_timestamp + 3600);
+    let path_in = vec![weth_token, other_token];
+    let buy_data = IUniswapV2Router02::swapExactETHForTokensCall {
+        amountOutMin: U256::ZERO,
+        path: path_in,
+        to: REVM_PROBE_CALLER,
+        deadline,
+    }
+    .abi_encode();
+
+    run_revm_round_trip(
+        state,
+        router,
+        other_token,
+        weth_token,
+        swap_wei,
+        deadline,
+        buy_data,
+    )
+}
+
+fn v2_router_for(protocol: ProtocolType) -> Address {
+    match protocol {
+        ProtocolType::UniswapV2 => address!("0x7a250d5630B4cF539739dF2C5dAcb4c659F2488D"),
+        ProtocolType::SushiSwap => address!("0xd9e1cE17f2641f24aE83637ab66a2cca9C378B9F"),
+        _ => Address::ZERO,
+    }
+}
+
+/// Execute ETH→token→ETH on a single revm Context (state carries across transacts).
+fn run_revm_round_trip(
+    state: RpcForkedState,
+    router: Address,
+    other_token: Address,
+    weth_token: Address,
+    swap_wei: U256,
+    deadline: U256,
+    buy_data: Vec<u8>,
+) -> ValidationResult {
+    let RpcForkedState {
+        db,
+        block_number,
+        block_timestamp,
+        base_fee,
+        chain_id,
+    } = state;
+
+    let block = BlockEnv {
+        number: U256::from(block_number),
+        timestamp: U256::from(block_timestamp),
+        basefee: base_fee,
+        ..Default::default()
+    };
+
+    let ctx = Context::<BlockEnv, TxEnv, _, RpcDB, revm::context::Journal<RpcDB>, ()>::new(
+        db,
+        SpecId::CANCUN,
+    )
+    .with_block(block.clone())
+    .modify_cfg_chained(|c| {
+        c.chain_id = chain_id;
+        c.disable_nonce_check = true;
+        c.disable_balance_check = true;
+        c.disable_base_fee = true;
+    });
+    let mut evm = ctx.build_mainnet();
+
+    let buy_tx = TxEnv::builder()
+        .caller(REVM_PROBE_CALLER)
+        .kind(TxKind::Call(router))
+        .data(Bytes::copy_from_slice(&buy_data))
+        .value(swap_wei)
+        .gas_limit(500_000)
+        .gas_price(base_fee as u128)
+        .nonce(0)
+        .chain_id(Some(chain_id))
+        .build_fill();
+
+    if !revm_transact_success(&mut evm, buy_tx) {
+        return ValidationResult::Invalid("revm ETH→token swap reverted".into());
+    }
+
+    let balance_data = IERC20::balanceOfCall {
+        account: REVM_PROBE_CALLER,
+    }
+    .abi_encode();
+    let bal_tx = TxEnv::builder()
+        .caller(REVM_PROBE_CALLER)
+        .kind(TxKind::Call(other_token))
+        .data(Bytes::copy_from_slice(&balance_data))
+        .value(U256::ZERO)
+        .gas_limit(200_000)
+        .gas_price(base_fee as u128)
+        .nonce(1)
+        .chain_id(Some(chain_id))
+        .build_fill();
+
+    let token_balance = match revm_transact_output(&mut evm, bal_tx) {
+        Some(b) if !b.is_zero() => b,
+        _ => return ValidationResult::Invalid("revm probe received zero tokens".into()),
+    };
+
+    let approve_data = IERC20::approveCall {
+        spender: router,
+        amount: token_balance,
+    }
+    .abi_encode();
+    let approve_tx = TxEnv::builder()
+        .caller(REVM_PROBE_CALLER)
+        .kind(TxKind::Call(other_token))
+        .data(Bytes::copy_from_slice(&approve_data))
+        .value(U256::ZERO)
+        .gas_limit(200_000)
+        .gas_price(base_fee as u128)
+        .nonce(2)
+        .chain_id(Some(chain_id))
+        .build_fill();
+    if !revm_transact_success(&mut evm, approve_tx) {
+        return ValidationResult::Invalid("revm token approve reverted".into());
+    }
+
+    let path_out = vec![other_token, weth_token];
+    let sell_data = IUniswapV2Router02::swapExactTokensForETHCall {
+        amountIn: token_balance,
+        amountOutMin: U256::ZERO,
+        path: path_out,
+        to: REVM_PROBE_CALLER,
+        deadline,
+    }
+    .abi_encode();
+    let sell_tx = TxEnv::builder()
+        .caller(REVM_PROBE_CALLER)
+        .kind(TxKind::Call(router))
+        .data(Bytes::copy_from_slice(&sell_data))
+        .value(U256::ZERO)
+        .gas_limit(500_000)
+        .gas_price(base_fee as u128)
+        .nonce(3)
+        .chain_id(Some(chain_id))
+        .build_fill();
+
+    if revm_transact_success(&mut evm, sell_tx) {
+        ValidationResult::Valid
+    } else {
+        ValidationResult::Invalid("revm token→ETH swap reverted".into())
+    }
+}
+
+fn revm_transact_success<EVM>(evm: &mut EVM, tx: TxEnv) -> bool
+where
+    EVM: ExecuteEvm<Tx = TxEnv>,
+{
+    matches!(
+        evm.transact(tx),
+        Ok(rs) if matches!(rs.result, ExecutionResult::Success { .. })
+    )
+}
+
+fn revm_transact_output<EVM>(evm: &mut EVM, tx: TxEnv) -> Option<U256>
+where
+    EVM: ExecuteEvm<Tx = TxEnv>,
+{
+    let rs = evm.transact(tx).ok()?;
+    match rs.result {
+        ExecutionResult::Success { output, .. } => {
+            let out = output.data();
+            if out.len() >= 32 {
+                Some(U256::from_be_slice(&out[out.len() - 32..]))
+            } else {
+                None
+            }
+        }
+        _ => None,
+    }
 }
 
 /// Validate using known reserves (no RPC). Used in unit tests and offline paths.
@@ -307,6 +620,30 @@ mod tests {
     #[test]
     fn min_weth_reserve_constant() {
         assert!(MIN_WETH_RESERVE_ETH > 0.0);
+    }
+
+    /// Fork test — requires ETH_RPC_URL pointing at a mainnet fork (anvil).
+    #[tokio::test]
+    #[ignore = "requires ETH_RPC_URL mainnet fork"]
+    async fn revm_validates_real_weth_usdc_pool() {
+        let rpc = std::env::var("ETH_RPC_URL").expect("ETH_RPC_URL");
+        let provider: alloy::providers::DynProvider<alloy::network::Ethereum> =
+            aether_discovery::service::connect_rpc_provider(&rpc)
+                .await
+                .expect("provider");
+        let pool = address!("B4e16d0168e52d35CaCD2c6185b44281Ec28C9Dc");
+        let usdc = address!("A0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48");
+        let result = validate_v2_pool_revm(
+            &provider,
+            pool,
+            usdc,
+            WETH,
+            ProtocolType::UniswapV2,
+            0.001,
+            None,
+        )
+        .await;
+        assert_eq!(result, ValidationResult::Valid);
     }
 
     #[test]
