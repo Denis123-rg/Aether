@@ -1,0 +1,53 @@
+[package]
+name = "aether-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+aether-detector = { path = "../crates/detector" }
+aether-state = { path = "../crates/state" }
+aether-common = { path = "../crates/common" }
+aether-pools = { path = "../crates/pools" }
+aether-simulator = { path = "../crates/simulator" }
+aether-discovery = { path = "../crates/discovery" }
+alloy = { version = "1", features = ["full"] }
+
+[[bin]]
+name = "bellman_ford"
+path = "fuzz_targets/bellman_ford.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "pool_adapter"
+path = "fuzz_targets/pool_adapter.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "cp_math"
+path = "fuzz_targets/cp_math.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "swap_calldata"
+path = "fuzz_targets/swap_calldata.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "discovery_validator"
+path = "fuzz_targets/discovery_validator.rs"
+test = false
+doc = false
+bench = false

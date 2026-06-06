@@ -31,3 +31,4 @@ out/
 /reports/
 contracts/crytic-export/
 contracts/lcov.info
+cmd/executor/reports/
