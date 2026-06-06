@@ -161,4 +161,36 @@ mod tests {
         let eth_in = pool.get_amount_in(pool.token0, pool.reserve0 + U256::from(1));
         assert!(eth_in.is_none());
     }
+
+    #[test]
+    fn test_amount_out_in_inverse_round_trip_token1_to_token0() {
+        let pool = setup_pool();
+        let amount_in = U256::from(1_000_000_000_000_000_000u64);
+        let amount_out = pool.get_amount_out(pool.token1, amount_in).unwrap();
+        let amount_in_back = pool.get_amount_in(pool.token0, amount_out).unwrap();
+        assert!(
+            amount_in_back <= amount_in,
+            "inverse input must not exceed forward input (fee + rounding)"
+        );
+        assert!(
+            amount_in_back >= amount_in * U256::from(99u64) / U256::from(100u64),
+            "inverse should recover input within 1% fee slack"
+        );
+    }
+
+    #[test]
+    fn test_amount_out_in_inverse_round_trip_token0_to_token1() {
+        let pool = setup_pool();
+        let amount_in = U256::from(1_000_000_000u64);
+        let amount_out = pool.get_amount_out(pool.token0, amount_in).unwrap();
+        let amount_in_back = pool.get_amount_in(pool.token1, amount_out).unwrap();
+        assert!(
+            amount_in_back <= amount_in,
+            "inverse input must not exceed forward input (fee + rounding)"
+        );
+        assert!(
+            amount_in_back >= amount_in * U256::from(99u64) / U256::from(100u64),
+            "inverse should recover input within 1% fee slack"
+        );
+    }
 }

@@ -116,7 +116,7 @@ func TestConsumeArbStream(t *testing.T) {
 	lb := NewLiveBalance()
 	lb.Set(0.5)
 	consumeArbStream(ctx, client, bundler, submitter, rm, db.NewNoopLedger(),
-		"0x0000000000000000000000000000000000000000", lb)
+		"0x0000000000000000000000000000000000000000", lb, 50*time.Millisecond)
 
 	// Verify bundle tracking was updated
 	missRate := rm.BundleMissRate()
@@ -224,7 +224,7 @@ func TestGracefulShutdown(t *testing.T) {
 		lb := NewLiveBalance()
 		lb.Set(0.5)
 		consumeArbStream(ctx, client, bundler, submitter, rm, db.NewNoopLedger(),
-			"0x0000000000000000000000000000000000000000", lb)
+			"0x0000000000000000000000000000000000000000", lb, 50*time.Millisecond)
 		close(done)
 	}()
 

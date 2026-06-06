@@ -318,6 +318,27 @@ mod tests {
         assert_eq!(pool.protocol(), ProtocolType::BancorV3);
     }
 
+    #[test]
+    fn test_bancor_inverse_round_trip() {
+        let mut pool = BancorPool::new(
+            Address::ZERO,
+            address!("C02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2"),
+            address!("1F573D6Fb3F13d689FF844B4cE37794d79a7FF1C"),
+            30,
+        );
+        pool.update_state(
+            U256::from(1_000_000_000_000_000_000_000u128),
+            U256::from(2_000_000_000_000_000_000_000u128),
+        );
+        let amount_in = U256::from(1_000_000_000_000_000_000u64);
+        let amount_out = pool.get_amount_out(pool.token, amount_in).unwrap();
+        let amount_in_back = pool.get_amount_in(pool.bnt, amount_out).unwrap();
+        assert!(
+            amount_in_back >= amount_in * U256::from(95u64) / U256::from(100u64),
+            "bancor inverse should recover input within 5%"
+        );
+    }
+
     // ----- predict_post_state -----
 
     fn seeded_pool() -> BancorPool {

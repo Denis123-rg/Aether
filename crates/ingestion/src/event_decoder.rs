@@ -747,6 +747,36 @@ mod tests {
     }
 
     #[test]
+    fn test_decode_pool_created_v3_insufficient_topics() {
+        let topics = vec![
+            EventSignatures::pool_created_v3_topic(),
+            B256::ZERO,
+            B256::ZERO,
+            // missing indexed fee topic
+        ];
+        let data = vec![0u8; 64];
+        assert_eq!(
+            decode_log(&topics, &data, Address::ZERO, None).unwrap_err(),
+            DecodeReason::InsufficientTopics
+        );
+    }
+
+    #[test]
+    fn test_decode_pool_created_v3_insufficient_data() {
+        let topics = vec![
+            EventSignatures::pool_created_v3_topic(),
+            B256::ZERO,
+            B256::ZERO,
+            B256::ZERO,
+        ];
+        let data = vec![0u8; 32];
+        assert_eq!(
+            decode_log(&topics, &data, Address::ZERO, None).unwrap_err(),
+            DecodeReason::MalformedPayload
+        );
+    }
+
+    #[test]
     fn test_decode_pair_created_insufficient_topics() {
         let topics = vec![
             EventSignatures::pair_created_topic(),

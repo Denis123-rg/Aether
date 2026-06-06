@@ -250,6 +250,19 @@ mod tests {
         assert_eq!(pool.protocol(), ProtocolType::BalancerV2);
     }
 
+    #[test]
+    fn test_balancer_inverse_round_trip_equal_weight() {
+        let pool = setup_balancer_pool();
+        let amount_in = U256::from(1_000_000_000_000_000_000u64);
+        let amount_out = pool.get_amount_out(pool.token0, amount_in).unwrap();
+        let amount_in_back = pool.get_amount_in(pool.token1, amount_out).unwrap();
+        assert!(amount_in_back <= amount_in);
+        assert!(
+            amount_in_back >= amount_in * U256::from(95u64) / U256::from(100u64),
+            "equal-weight inverse should be within 5% (fee + approximation)"
+        );
+    }
+
     fn setup_balancer_80_20_pool() -> BalancerPool {
         let mut pool = BalancerPool::new(
             Address::ZERO,

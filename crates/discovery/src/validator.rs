@@ -1189,6 +1189,69 @@ mod tests {
     }
 
     #[test]
+    fn validation_mode_routing_analytical_revm_both() {
+        for (input, expected) in [
+            ("analytical", "analytical"),
+            ("ANALYTICAL", "analytical"),
+            ("revm", "revm"),
+            ("REVM", "revm"),
+            ("both", "both"),
+            ("BoTh", "both"),
+            ("", "both"),
+            ("unknown", "both"),
+        ] {
+            let mode = input.to_ascii_lowercase();
+            let branch = match mode.as_str() {
+                "analytical" => "analytical",
+                "revm" => "revm",
+                _ => "both",
+            };
+            assert_eq!(branch, expected, "input={input}");
+        }
+    }
+
+    #[test]
+    fn validate_v2_reserves_both_reserves_zero() {
+        let result = validate_v2_reserves(
+            usdc(),
+            WETH,
+            ProtocolType::UniswapV2,
+            30,
+            U256::ZERO,
+            U256::ZERO,
+            0.001,
+        );
+        assert_eq!(result, ValidationResult::LowLiquidity);
+    }
+
+    #[test]
+    fn simulate_round_trip_rejects_zero_eth_back() {
+        let token_a = address!("6B175474E89094C44Da98b954EedeAC495271d0F");
+        let mut pool = UniswapV2Pool::new(Address::ZERO, WETH, token_a, 30);
+        pool.update_state(
+            U256::from(1_000_000_000_000_000_000u64),
+            U256::from(1u64),
+        );
+        let swap_wei = U256::from(1_000_000_000_000_000_000u64);
+        let result = simulate_round_trip(&pool, WETH, token_a, swap_wei);
+        assert!(matches!(result, ValidationResult::Invalid(_)));
+    }
+
+    #[test]
+    fn simulate_round_trip_accepts_healthy_pool() {
+        let mut pool = UniswapV2Pool::new(Address::ZERO, WETH, usdc(), 30);
+        pool.update_state(
+            U256::from(1_000_000_000_000_000_000u64),
+            U256::from(3_000_000_000_000u64),
+        );
+        let swap_wei = U256::from(1_000_000_000_000_000u64);
+        assert_eq!(
+            simulate_round_trip(&pool, WETH, usdc(), swap_wei),
+            ValidationResult::Valid
+        );
+    }
+
+    #[test]
     fn simulate_round_trip_rejects_near_zero_output() {
         let token_a = address!("6B175474E89094C44Da98b954EedeAC495271d0F");
         let mut pool = UniswapV2Pool::new(Address::ZERO, WETH, token_a, 30);

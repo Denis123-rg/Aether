@@ -190,4 +190,35 @@ min_healthy_nodes: 2
         std::fs::remove_file(&path).ok();
         std::fs::remove_dir(&dir).ok();
     }
+
+    #[test]
+    fn test_load_nodes_config_invalid_yaml() {
+        use std::io::Write;
+        let dir = std::env::temp_dir().join("aether_test_config_invalid");
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let path = dir.join("bad_nodes.yaml");
+        let mut f = std::fs::File::create(&path).expect("create");
+        f.write_all(b"nodes: [\n  - name: broken\n    url: \"unclosed")
+            .expect("write");
+        let err = load_nodes_config(path.to_str().expect("path")).unwrap_err();
+        let msg = err.to_string().to_lowercase();
+        assert!(
+            msg.contains("yaml")
+                || msg.contains("parse")
+                || msg.contains("node content")
+                || msg.contains("expected"),
+            "expected YAML parse error, got: {err}"
+        );
+        std::fs::remove_file(&path).ok();
+        std::fs::remove_dir(&dir).ok();
+    }
+
+    #[test]
+    fn test_load_nodes_config_missing_file() {
+        let err = load_nodes_config("/nonexistent/aether_nodes_test.yaml").unwrap_err();
+        assert!(
+            err.to_string().contains("No such file") || err.to_string().contains("os error"),
+            "expected file-not-found error, got: {err}"
+        );
+    }
 }

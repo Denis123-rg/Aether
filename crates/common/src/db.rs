@@ -326,6 +326,14 @@ impl PgLedger {
     }
 }
 
+#[cfg(test)]
+impl PgLedger {
+    /// Test-only constructor wiring a bounded channel without Postgres.
+    fn from_sender_for_test(tx: mpsc::Sender<LedgerOp>, metrics: Arc<LedgerMetrics>) -> Self {
+        Self { tx, metrics }
+    }
+}
+
 impl Ledger for PgLedger {
     fn insert_arb(&self, arb: &NewArb) {
         self.enqueue(LedgerOp::InsertArb(Box::new(arb.clone())));
@@ -674,6 +682,58 @@ mod tests {
     fn inclusion_update_default_is_constructible() {
         let u = InclusionUpdate::default();
         assert!(!u.included);
+    }
+
+    #[test]
+    fn noop_ledger_new_can_be_called_repeatedly() {
+        let a = NoopLedger::new();
+        let b = NoopLedger::new();
+        a.insert_arb(&NewArb::default());
+        b.insert_pool(&NewPool::default());
+    }
+
+    #[test]
+    fn noop_ledger_default_equals_new() {
+        let ledger = NoopLedger::new();
+        ledger.update_inclusion(&InclusionUpdate::default());
+        let _: NoopLedger = NoopLedger::default();
+    }
+
+    #[tokio::test]
+    async fn ledger_from_env_empty_url_returns_noop() {
+        let registry = Registry::new();
+        let metrics = LedgerMetrics::register(&registry);
+        std::env::remove_var("DATABASE_URL");
+        std::env::set_var("DATABASE_URL", "");
+        let ledger = ledger_from_env(metrics).await;
+        ledger.insert_arb(&NewArb::default());
+        std::env::remove_var("DATABASE_URL");
+    }
+
+    #[tokio::test]
+    async fn ledger_from_env_unset_returns_noop() {
+        let registry = Registry::new();
+        let metrics = LedgerMetrics::register(&registry);
+        std::env::remove_var("DATABASE_URL");
+        let ledger = ledger_from_env(metrics).await;
+        ledger.insert_pool(&NewPool::default());
+    }
+
+    #[tokio::test]
+    async fn enqueue_drops_increment_metric_when_channel_full() {
+        let registry = Registry::new();
+        let metrics = LedgerMetrics::register(&registry);
+        let (tx, _rx) = mpsc::channel::<LedgerOp>(1);
+        let ledger = PgLedger::from_sender_for_test(tx, Arc::clone(&metrics));
+
+        ledger.insert_arb(&NewArb::default());
+        ledger.insert_arb(&NewArb::default());
+
+        let drops = metrics
+            .drops_total
+            .with_label_values(&["insert_arb"])
+            .get();
+        assert_eq!(drops, 1, "second enqueue must drop and bump metric");
     }
 
     #[test]

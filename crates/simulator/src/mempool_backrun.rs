@@ -1092,6 +1092,60 @@ mod tests {
     }
 
     #[test]
+    fn decode_revert_reason_empty_payload() {
+        assert_eq!(decode_revert_reason(&[]), "empty");
+    }
+
+    #[test]
+    fn decode_revert_reason_short_payload() {
+        let reason = decode_revert_reason(&[0xde, 0xad]);
+        assert!(reason.starts_with("short(0x"));
+    }
+
+    #[test]
+    fn decode_revert_reason_error_string() {
+        // Error(string): selector 0x08c379a0 + ABI (offset=32, len=5, "hello")
+        let mut payload = vec![0x08, 0xc3, 0x79, 0xa0];
+        payload.extend_from_slice(&[0u8; 32]); // offset word
+        payload.extend_from_slice(&(U256::from(5u64).to_be_bytes::<32>())); // len=5
+        payload.extend_from_slice(b"hello");
+        payload.extend_from_slice(&[0u8; 27]); // pad to 32-byte boundary
+        assert_eq!(
+            decode_revert_reason(&payload),
+            r#"Error("hello")"#
+        );
+    }
+
+    #[test]
+    fn decode_revert_reason_panic_overflow() {
+        let mut payload = vec![0x4e, 0x48, 0x7b, 0x71];
+        payload.extend_from_slice(&U256::from(0x11u64).to_be_bytes::<32>());
+        let reason = decode_revert_reason(&payload);
+        assert!(reason.contains("Panic(0x11"));
+        assert!(reason.contains("arithmetic over/underflow"));
+    }
+
+    #[test]
+    fn decode_revert_reason_panic_assert_false() {
+        let mut payload = vec![0x4e, 0x48, 0x7b, 0x71];
+        payload.extend_from_slice(&U256::from(0x01u64).to_be_bytes::<32>());
+        let reason = decode_revert_reason(&payload);
+        assert!(reason.contains("assert(false)"));
+    }
+
+    #[test]
+    fn decode_revert_reason_custom_selector() {
+        let payload = [0x12, 0x34, 0x56, 0x78, 0x00, 0x00];
+        assert_eq!(decode_revert_reason(&payload), "custom(0x12345678)");
+    }
+
+    #[test]
+    fn decode_revert_reason_malformed_error_string() {
+        let payload = [0x08, 0xc3, 0x79, 0xa0, 0x00, 0x00];
+        assert_eq!(decode_revert_reason(&payload), "Error(<malformed>)");
+    }
+
+    #[test]
     fn executor_bytecode_none_preserves_pre_existing_arb_to_state() {
         // When `executor_bytecode = None`, the injection branch is skipped
         // and any bytecode already at ARB_TO on the forked DB is left

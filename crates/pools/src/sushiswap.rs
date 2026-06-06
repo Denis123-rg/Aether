@@ -76,4 +76,25 @@ mod tests {
         );
         assert_eq!(pool.protocol(), ProtocolType::SushiSwap);
     }
+
+    #[test]
+    fn test_sushi_inverse_round_trip_matches_univ2() {
+        let mut sushi = SushiSwapPool::new(
+            Address::ZERO,
+            address!("A0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"),
+            address!("C02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2"),
+            30,
+        );
+        sushi.update_state(
+            U256::from(10_000_000_000_000u64),
+            U256::from(5_000_000_000_000_000_000_000u128),
+        );
+        let amount_in = U256::from(1_000_000_000_000_000_000u64);
+        let token = address!("C02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2");
+        let usdc = address!("A0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48");
+        let out = sushi.get_amount_out(token, amount_in).unwrap();
+        let back = sushi.get_amount_in(usdc, out).unwrap();
+        assert!(back <= amount_in);
+        assert!(back >= amount_in * U256::from(99u64) / U256::from(100u64));
+    }
 }

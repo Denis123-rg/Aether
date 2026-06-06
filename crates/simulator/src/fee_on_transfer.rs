@@ -751,6 +751,30 @@ mod tests {
     }
 
     #[test]
+    fn expected_amount_out_zero_fee_matches_no_fee_formula() {
+        // fee_bps=0 => amount_in_with_fee = amount_in; dy = dx*y / (x + dx).
+        let out = expected_amount_out(
+            U256::from(100u64),
+            U256::from(1000u64),
+            U256::from(1000u64),
+            0,
+        );
+        assert_eq!(out, U256::from(90u64));
+    }
+
+    #[test]
+    fn expected_amount_out_hundred_percent_fee_returns_zero() {
+        assert_eq!(
+            expected_amount_out(U256::from(100u64), U256::from(1000u64), U256::from(1000u64), 10_000),
+            U256::ZERO
+        );
+        assert_eq!(
+            expected_amount_out(U256::from(100u64), U256::from(1000u64), U256::from(1000u64), 10_001),
+            U256::ZERO
+        );
+    }
+
+    #[test]
     fn expected_amount_out_zero_reserve_returns_zero() {
         assert_eq!(
             expected_amount_out(U256::from(100u64), U256::ZERO, U256::from(1000u64), 30),

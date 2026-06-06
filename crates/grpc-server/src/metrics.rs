@@ -1246,4 +1246,72 @@ mod tests {
             assert!(output.contains(name), "missing or wrong: {name}");
         }
     }
+
+    /// Loopback HTTP smoke: bind ephemeral port, serve one /metrics request,
+    /// assert Prometheus text is returned.
+    #[tokio::test]
+    async fn loopback_http_metrics_smoke() {
+        let metrics = Arc::new(EngineMetrics::new());
+        metrics.inc_blocks_processed();
+        metrics.inc_decode_errors("unknown_topic");
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let addr = listener.local_addr().expect("local addr");
+
+        let server_metrics = Arc::clone(&metrics);
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.expect("accept");
+            handle_connection(&mut socket, server_metrics)
+                .await
+                .expect("handle connection");
+        });
+
+        let mut stream = tokio::net::TcpStream::connect(addr).await.expect("connect");
+        stream
+            .write_all(b"GET /metrics HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
+            .await
+            .expect("write request");
+
+        let mut response = Vec::new();
+        stream.read_to_end(&mut response).await.expect("read response");
+        server.await.expect("server task");
+
+        let body = String::from_utf8_lossy(&response);
+        assert!(body.contains("200 OK"), "expected HTTP 200, got: {body}");
+        assert!(
+            body.contains("aether_blocks_processed_total"),
+            "metrics body missing blocks counter"
+        );
+        assert!(
+            body.contains(r#"aether_decode_errors_total{reason="unknown_topic"}"#),
+            "metrics body missing decode_errors label"
+        );
+    }
+
+    #[tokio::test]
+    async fn loopback_http_unknown_path_returns_404() {
+        let metrics = Arc::new(EngineMetrics::new());
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let addr = listener.local_addr().expect("local addr");
+
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.expect("accept");
+            handle_connection(&mut socket, metrics)
+                .await
+                .expect("handle connection");
+        });
+
+        let mut stream = tokio::net::TcpStream::connect(addr).await.expect("connect");
+        stream
+            .write_all(b"GET /nope HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
+            .await
+            .expect("write request");
+
+        let mut response = Vec::new();
+        stream.read_to_end(&mut response).await.expect("read response");
+        server.await.expect("server task");
+
+        let body = String::from_utf8_lossy(&response);
+        assert!(body.contains("404 Not Found"));
+    }
 }

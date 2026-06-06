@@ -10,12 +10,10 @@ import (
 	"math/big"
 	"math/rand"
 	"os"
-	"os/signal"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 
 	"github.com/ethereum/go-ethereum/common"
@@ -313,25 +311,9 @@ func main() {
 		os.Unsetenv("SEARCHER_KEY")
 	}
 
-	// Setup graceful shutdown
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	// Auto-apply pending SQL migrations when DATABASE_URL is set. Fatal on
-	// failure to avoid running against an inconsistent schema.
-	if dbURL := os.Getenv("DATABASE_URL"); dbURL != "" {
-		migrationsPath := config.MigrationsDir()
-		if err := db.RunMigrations(dbURL, migrationsPath); err != nil {
-			slog.Error("database migration failed", "err", err)
-			os.Exit(1)
-		}
-		slog.Info("database migrations applied", "path", migrationsPath)
-	}
-
-	// Trade ledger: graceful no-op when DATABASE_URL is unset, so dev /
-	// shadow runs against a fork keep working without Postgres. Connect
-	// failure also degrades to NoopLedger so a misconfigured URL does not
-	// stall executor boot.
 	ledgerMetrics := db.NewLedgerMetrics()
 	ledger := db.LedgerFromEnv(ctx, os.Getenv("DATABASE_URL"), ledgerMetrics)
 	defer func() {
@@ -340,179 +322,30 @@ func main() {
 		}
 	}()
 
-	// TimescaleDB metrics writer. Shares DATABASE_URL with the ledger and
-	// degrades to a no-op store when unset / unreachable, so a metrics outage
-	// can never stall or crash the executor. Assigned before SetMetricsObserver
-	// below so risk-breaker callbacks land in Timescale from the first trip.
 	metricsStore = db.MetricsStoreFromEnv(ctx, os.Getenv("DATABASE_URL"))
 	defer metricsStore.Close()
 
-	// A/B builder selector over the enabled builders. When routing_mode=select
-	// processArb submits to selector.Best() only; fanout mode sends to all.
-	enabledBuilders := make([]string, 0, len(cfg.BuilderConfigs))
-	for _, b := range cfg.BuilderConfigs {
-		if b.Enabled {
-			enabledBuilders = append(enabledBuilders, b.Name)
-		}
-	}
-	builderSelector = strategy.New(enabledBuilders, strategy.Config{
-		ExplorationFloor: cfg.Strategy.ExplorationFloor,
-		PriorAttempts:    cfg.Strategy.PriorAttempts,
-	})
-	slog.Info("a/b builder selector initialised",
-		"builders", enabledBuilders,
-		"exploration_floor", cfg.Strategy.ExplorationFloor,
-		"prior_attempts", cfg.Strategy.PriorAttempts,
-	)
-
-	// Initialize components
-	nonceManager := NewNonceManager(0)
-	if txSigner != nil {
-		nonceManager.SetSyncSource(txSigner.Address(), ethClient)
-		if err := nonceManager.SyncFromChain(ctx); err != nil {
-			slog.Warn("failed to sync nonce", "addr", txSigner.Address().Hex(), "err", err)
-		}
-	} else {
-		slog.Warn("SEARCHER_KEY not set, nonce manager will use initial nonce 0")
-	}
-
-	gasOracle := NewGasOracle(cfg.MaxGasGwei)
-	gasOracle.SetClient(ethClient)
-	// Fetch real gas prices before first arb evaluation.
-	if _, err := gasOracle.FetchOnce(ctx); err != nil {
-		slog.Warn("initial gas oracle fetch failed", "err", err)
-	}
-	bundler := NewBundleConstructor(nonceManager, gasOracle, txSigner, chainID.Int64())
-	riskMgr := risk.NewRiskManager(loadRiskConfig())
-	riskMgr.SetMetricsObserver(executorMetricsObserver{})
-
-	// Mempool-backrun gate state. The risk config snapshots env at boot;
-	// the inflight tracker spans the executor process lifetime so per-
-	// target-block dedup survives across the candidate burst from a hot
-	// block.
-	mempoolRiskCfg = LoadMempoolRiskConfig()
-	mempoolInflight = NewMempoolInflightTracker()
-	slog.Info("mempool-backrun risk gates configured",
-		"min_profit_wei", mempoolRiskCfg.MinProfitWei.String(),
-		"max_tip_bps", mempoolRiskCfg.MaxTipShareBps,
-		"victim_freshness_ms", mempoolRiskCfg.MaxVictimFreshnessMs,
-		"max_inflight_per_block", mempoolRiskCfg.MaxInflightPerTargetBlock,
-	)
-	if isShadowMode() {
-		slog.Warn("SHADOW MODE ENABLED — eth_sendBundle calls will be blocked for both block-driven and mempool-backrun bundles")
-	}
-
-	// Live searcher ETH balance, written by balanceWatchLoop and read by
-	// consumeArbStream → processArb → risk.PreflightCheck. When no searcher
-	// key is configured there is no address to query, so the live balance
-	// stays at zero and preflight will reject every arb — correct behaviour
-	// for a misconfigured deployment.
-	liveBalance := NewLiveBalance()
-
-	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
-
-	var wg sync.WaitGroup
-
-	if remoteSigner != nil {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			signerHealthLoop(ctx, remoteSigner.Ping, 15*time.Second)
-		}()
-	}
-
-	// Start nonce sync loop
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		nonceManager.SyncLoop(ctx, 30*time.Second)
-	}()
-
-	// Start gas oracle update loop
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		gasOracle.UpdateLoop(ctx, 12*time.Second)
-	}()
-
-	// Start A/B selector snapshot logger (debug visibility into routing).
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		logSelectorSnapshotLoop(ctx, time.Minute)
-	}()
-
-	// Start ETH balance watcher. The initial fetch is synchronous and fatal
-	// on failure: LiveBalance starts at zero, and risk.PreflightCheck rejects
-	// anything below MinETHBalance, so a transient startup blip would
-	// silently kill every arb for up to 30s until balanceWatchLoop's first
-	// tick. This matches the fatal-on-startup pattern of the dial, chain-ID,
-	// and bytecode checks.
-	if txSigner != nil {
-		if err := fetchAndStoreBalance(ctx, ethClient, txSigner.Address(), liveBalance); err != nil {
-			slog.Error("initial eth_getBalance failed", "addr", txSigner.Address().Hex(), "err", redactRPCError(err, rpcURL))
-			os.Exit(1)
-		}
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			balanceWatchLoop(ctx, ethClient, txSigner.Address(), 30*time.Second, liveBalance, rpcURL)
-		}()
-	}
-
-	startMetricsServer()
-
-	// Redis event publisher (no-op when REDIS_URL unset).
 	eventPublisher = events.NewPublisherFromEnv()
 	defer eventPublisher.Close()
-	setRedisHealthy(eventPublisher.Enabled())
 
-	adminPort, discoveryURL := loadAdminPort()
-	startAdminServer(riskMgr, discoveryURL, adminPort, eventPublisher)
-
-	// Inclusion poll loop reconciles on-chain bundle outcomes.
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		inclusionPollLoop(ctx, submitter, ledger, riskMgr, 12*time.Second)
-	}()
-
-	transport := "TCP"
-	if strings.HasPrefix(cfg.GRPCAddress, "unix:") {
-		transport = "UDS"
-	}
-	slog.Info("executor service started", "grpc_target", cfg.GRPCAddress, "transport", transport)
-	slog.Info("builders configured", "count", len(cfg.BuilderConfigs))
-
-	// Connect to Rust engine gRPC server.
-	// grpc.NewClient is lazy — the connection is established on first RPC,
-	// so this call returns immediately even if the Rust server is not running.
-	grpcClient, err := aethergrpc.Dial(cfg.GRPCAddress)
-	if err != nil {
-		slog.Warn("could not create gRPC client, executor will start without arb stream", "addr", cfg.GRPCAddress, "err", err)
-	} else {
-		defer grpcClient.Close()
-
-		// Start arb stream consumer goroutine
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			consumeArbStream(ctx, grpcClient, bundler, submitter, riskMgr, ledger, execCfg.ExecutorAddress, liveBalance)
-		}()
+	deps := &Dependencies{
+		EthClient:      ethClient,
+		TxSigner:       txSigner,
+		Submitter:      submitter,
+		RemoteSigner:   remoteSigner,
+		Ledger:         ledger,
+		MetricsStore:   metricsStore,
+		EventPublisher: eventPublisher,
+		ExecutorAddr:   execCfg.ExecutorAddress,
+		ChainID:        chainID.Int64(),
+		RPCURL:         rpcURL,
+		RequireBalance: true,
 	}
 
-	// Wait for shutdown signal
-	select {
-	case sig := <-sigCh:
-		slog.Info("received signal, shutting down", "signal", sig.String())
-		cancel()
-	case <-ctx.Done():
+	if err := run(ctx, &cfg, deps); err != nil {
+		slog.Error("executor run failed", "err", err)
+		os.Exit(1)
 	}
-
-	// Wait for goroutines
-	wg.Wait()
-	slog.Info("executor service stopped")
 }
 
 // arbSourceLabel maps the proto enum onto the canonical metric label.
@@ -966,8 +799,10 @@ func looksLikeRevert(errMsg string) bool {
 // processes validated arbitrage opportunities as they arrive. On stream
 // errors it reconnects with a backoff delay. The function exits when ctx
 // is cancelled.
-func consumeArbStream(ctx context.Context, client *aethergrpc.Client, bundler *BundleConstructor, submitter *Submitter, rm *risk.RiskManager, ledger db.Ledger, executorAddr string, liveBalance *LiveBalance) {
-	const reconnectDelay = 5 * time.Second
+func consumeArbStream(ctx context.Context, client *aethergrpc.Client, bundler *BundleConstructor, submitter *Submitter, rm *risk.RiskManager, ledger db.Ledger, executorAddr string, liveBalance *LiveBalance, reconnectDelay time.Duration) {
+	if reconnectDelay <= 0 {
+		reconnectDelay = 5 * time.Second
+	}
 
 	for {
 		select {

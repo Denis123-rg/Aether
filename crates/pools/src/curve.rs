@@ -324,6 +324,18 @@ mod tests {
         assert!(pool.get_amount_out(pool.tokens[0], U256::ZERO).is_none());
     }
 
+    #[test]
+    fn test_curve_inverse_round_trip_stableswap() {
+        let pool = setup_curve_pool();
+        let amount_in = U256::from(1_000_000_000u64);
+        let amount_out = pool.get_amount_out(pool.tokens[0], amount_in).unwrap();
+        let amount_in_back = pool.get_amount_in(pool.tokens[1], amount_out).unwrap();
+        assert!(
+            amount_in_back >= amount_in * U256::from(99u64) / U256::from(100u64),
+            "stableswap inverse should recover input within 1%"
+        );
+    }
+
     // ----- predict_post_state -----
 
     #[test]

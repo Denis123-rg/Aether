@@ -14,7 +14,6 @@ import (
 	"time"
 
 	"github.com/ethereum/go-ethereum/common"
-	"github.com/ethereum/go-ethereum/ethclient"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
@@ -374,11 +373,17 @@ func (b *LiveBalance) Set(v float64) {
 	b.bits.Store(math.Float64bits(v))
 }
 
+// balanceReader is the minimal eth_getBalance surface used by the balance
+// watcher. *ethclient.Client satisfies it; tests inject mocks.
+type balanceReader interface {
+	BalanceAt(ctx context.Context, addr common.Address, blockNumber *big.Int) (*big.Int, error)
+}
+
 // fetchAndStoreBalance does a single eth_getBalance call, updates both the
 // Prometheus gauge and the shared LiveBalance, and returns any error from
 // the RPC. Used at startup to seed the balance before the first arb and
 // inside balanceWatchLoop to refresh it periodically.
-func fetchAndStoreBalance(ctx context.Context, client *ethclient.Client, addr common.Address, live *LiveBalance) error {
+func fetchAndStoreBalance(ctx context.Context, client balanceReader, addr common.Address, live *LiveBalance) error {
 	fetchCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 	bal, err := client.BalanceAt(fetchCtx, addr, nil)
@@ -399,7 +404,7 @@ func fetchAndStoreBalance(ctx context.Context, client *ethclient.Client, addr co
 // balanceWatchLoop periodically refreshes the searcher's ETH balance. rpcURL
 // is used only to strip the embedded API key from logged errors (Alchemy /
 // QuickNode / Infura all put the key in the URL path).
-func balanceWatchLoop(ctx context.Context, client *ethclient.Client, addr common.Address, interval time.Duration, live *LiveBalance, rpcURL string) {
+func balanceWatchLoop(ctx context.Context, client balanceReader, addr common.Address, interval time.Duration, live *LiveBalance, rpcURL string) {
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 	for {

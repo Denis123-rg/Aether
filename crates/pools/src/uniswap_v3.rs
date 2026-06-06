@@ -461,6 +461,18 @@ mod tests {
     }
 
     #[test]
+    fn test_v3_inverse_round_trip_mid_bucket() {
+        let pool = setup_v3_pool_mid_bucket();
+        let amount_in = U256::from(100_000_000u64);
+        let amount_out = pool.get_amount_out(pool.token0, amount_in).unwrap();
+        let amount_in_back = pool.get_amount_in(pool.token1, amount_out).unwrap();
+        assert!(
+            amount_in_back >= amount_in * U256::from(95u64) / U256::from(100u64),
+            "V3 inverse should recover input within 5% (fee + single-tick approx)"
+        );
+    }
+
+    #[test]
     fn test_v3_zero_liquidity() {
         let pool = UniswapV3Pool::new(
             Address::ZERO,

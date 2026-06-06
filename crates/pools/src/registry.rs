@@ -170,7 +170,7 @@ mod tests {
     use aether_common::types::ProtocolType;
     use crate::sushiswap::SushiSwapPool;
     use crate::uniswap_v2::UniswapV2Pool;
-    use alloy::primitives::address;
+    use alloy::primitives::{address, U256};
 
     fn usdc() -> Address {
         address!("A0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48")
@@ -235,6 +235,30 @@ mod tests {
         );
         registry.register(Box::new(pool), PoolTier::Hot);
         assert_eq!(registry.hot_pools().len(), 1);
+    }
+
+    #[test]
+    fn test_registry_pools_round_trip_amount_math() {
+        let mut registry = PoolRegistry::with_defaults();
+        let mut pool = UniswapV2Pool::new(
+            address!("B4e16d0168e52d35CaCD2c6185b44281Ec28C9Dc"),
+            usdc(),
+            weth(),
+            30,
+        );
+        pool.update_state(
+            U256::from(10_000_000_000_000u64),
+            U256::from(5_000_000_000_000_000_000_000u128),
+        );
+        registry.register(Box::new(pool), PoolTier::Hot);
+
+        let pools = registry.pools_for_pair(usdc(), weth());
+        let p = pools[0];
+        let amount_in = U256::from(1_000_000_000_000_000_000u64);
+        let out = p.get_amount_out(weth(), amount_in).unwrap();
+        let back = p.get_amount_in(usdc(), out).unwrap();
+        assert!(back <= amount_in);
+        assert!(back >= amount_in * U256::from(99u64) / U256::from(100u64));
     }
 
     #[test]
