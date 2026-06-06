@@ -648,6 +648,15 @@ mod tests {
     /// The loader must splice the real Aave V3 Pool address into every
     /// `aavePool` immutable placeholder. Loads the real forge artifact; if it
     /// is absent (contracts not built), the test skips rather than failing.
+    ///
+    /// The splice offsets are read straight from the artifact's
+    /// `deployedBytecode.immutableReferences` table — the exact same source
+    /// the production splicer (`splice_immutable_aave_pool`) consults — rather
+    /// than being hardcoded. Hardcoded offsets (the old 587 / 969 literals)
+    /// silently drift whenever the contract is recompiled with a different
+    /// solc version or optimizer setting, which is precisely what made this
+    /// test flap. Deriving them dynamically keeps the assertion pinned to the
+    /// real bytecode regardless of compiler changes.
     #[test]
     fn splices_aavepool_immutable() {
         let artifact_path = concat!(
@@ -663,16 +672,42 @@ mod tests {
             }
         };
 
+        // Pull the actual immutable-reference offsets out of the artifact.
+        let artifact: serde_json::Value =
+            serde_json::from_str(&artifact_json).expect("artifact is valid JSON");
+        let refs = artifact
+            .get("deployedBytecode")
+            .and_then(|d| d.get("immutableReferences"))
+            .and_then(|r| r.as_object());
+        let offsets: Vec<usize> = match refs {
+            Some(map) if !map.is_empty() => map
+                .values()
+                .filter_map(serde_json::Value::as_array)
+                .flatten()
+                .filter_map(|loc| loc.get("start").and_then(serde_json::Value::as_u64))
+                .map(|s| s as usize)
+                .collect(),
+            // No immutables means the loader has nothing to splice. The
+            // contract is expected to carry exactly one (`aavePool`); its
+            // disappearance is itself a regression worth failing on.
+            _ => panic!("artifact has no immutableReferences; expected the aavePool immutable"),
+        };
+        assert!(
+            !offsets.is_empty(),
+            "expected at least one aavePool immutable reference in the artifact"
+        );
+
         let bytecode = load_executor_runtime_bytecode(&artifact_json)
             .expect("loader should succeed on the real artifact");
 
         let aave_pool = aether_common::types::addresses::AAVE_V3_POOL;
         let aave_slice = aave_pool.as_slice();
 
-        // Offset 587 is the first immutableReference for the aavePool AST id.
-        // Verify the address landed in [start+12 .. start+32) at two distinct
-        // references and that the spliced word is no longer all-zero.
-        for start in [587usize, 969usize] {
+        // The contract has a single immutable (`aavePool`) that may be
+        // referenced at multiple offsets; the loader writes the left-padded
+        // address into every one. Verify each lands in [start+12 .. start+32)
+        // and that the spliced word is no longer all-zero.
+        for start in offsets {
             let word = &bytecode[start..start + 32];
             assert_eq!(
                 &word[12..32],

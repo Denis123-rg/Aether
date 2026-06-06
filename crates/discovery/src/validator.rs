@@ -11,6 +11,7 @@ use aether_pools::uniswap_v2::UniswapV2Pool;
 use aether_pools::Pool;
 use aether_simulator::fork::{RpcDB, RpcForkedState};
 use alloy::network::Ethereum;
+use alloy::primitives::aliases::{U160, U24};
 use alloy::primitives::{address, Address, U256};
 use alloy::providers::{DynProvider, Provider};
 use alloy::sol_types::SolCall;
@@ -22,7 +23,7 @@ use revm::primitives::{Bytes, TxKind};
 use revm::Context;
 
 use crate::metrics::DiscoveryMetrics;
-use crate::types::ValidationResult;
+use crate::types::{PoolInfo, ValidationResult};
 
 /// Test EOA used for revm swap probes (no real funds — balance is injected).
 const REVM_PROBE_CALLER: Address = address!("0x000000000000000000000000000000000000bEEF");
@@ -488,6 +489,421 @@ fn eth_to_u256(eth: f64) -> U256 {
     U256::from(wei)
 }
 
+// ───────────────────────── Unified multi-DEX revm validation ───────────────
+//
+// `validate_pool_revm` is the single entry point the discovery service uses
+// for every protocol. It routes:
+//
+//   * Uniswap V2 / SushiSwap → analytical pre-filter + revm fork round-trip
+//     (`validate_v2_pool_full`, unchanged).
+//   * Uniswap V3            → analytical liquidity gate + revm fork round-trip
+//     through the canonical SwapRouter02 (`validate_v3_pool_full`, new below).
+//   * Curve / Balancer V2 / Bancor V3 → `validate_custodial_pool`. These are
+//     NOT surfaced by the V2/V3 factory-event listener (they have no
+//     `PairCreated`/`PoolCreated` topic this pipeline decodes) and a
+//     `PoolInfo` carries none of the routing data a revm swap needs (Curve
+//     coin indices, Balancer `poolId`, Bancor token path). A revm round-trip
+//     for them is exercised by the explicit-parameter fork tests and by the
+//     on-chain executor simulation in `crates/simulator`; here we apply a
+//     cheap deployed-bytecode integrity gate.
+//
+// Every outcome is counted per-DEX via `DiscoveryMetrics::record_validation`.
+
+/// Canonical Uniswap V3 `SwapRouter02` on Ethereum mainnet.
+const V3_SWAP_ROUTER_02: Address = address!("68b3465833fb72A70ecDF485E0e4C7bD8665Fc45");
+
+alloy::sol! {
+    #[sol(rpc)]
+    interface ISwapRouter02 {
+        struct ExactInputSingleParams {
+            address tokenIn;
+            address tokenOut;
+            uint24 fee;
+            address recipient;
+            uint256 amountIn;
+            uint256 amountOutMinimum;
+            uint160 sqrtPriceLimitX96;
+        }
+        function exactInputSingle(ExactInputSingleParams params) external payable returns (uint256 amountOut);
+    }
+    #[sol(rpc)]
+    interface IWETH9 {
+        function deposit() external payable;
+    }
+}
+
+/// Convert a fee in basis points (discovery's stored unit, e.g. 30 = 0.30%)
+/// into the Uniswap V3 fee unit (hundredths of a bip, e.g. 3000 = 0.30%).
+/// Clamped to the `uint24` range so a malformed fee can never panic the
+/// `U24::from_limbs` construction below.
+fn v3_fee_from_bps(fee_bps: u32) -> u32 {
+    fee_bps.saturating_mul(100).min(0x00FF_FFFF)
+}
+
+/// Stable Prometheus label for a protocol.
+fn dex_label(protocol: ProtocolType) -> &'static str {
+    match protocol {
+        ProtocolType::UniswapV2 => "uniswap_v2",
+        ProtocolType::UniswapV3 => "uniswap_v3",
+        ProtocolType::SushiSwap => "sushiswap",
+        ProtocolType::Curve => "curve",
+        ProtocolType::BalancerV2 => "balancer_v2",
+        ProtocolType::BancorV3 => "bancor_v3",
+    }
+}
+
+/// Stable Prometheus label for a validation outcome.
+fn result_label(result: &ValidationResult) -> &'static str {
+    match result {
+        ValidationResult::Valid => "valid",
+        ValidationResult::LowLiquidity => "low_liquidity",
+        ValidationResult::Invalid(_) => "invalid",
+    }
+}
+
+/// Unified, DEX-agnostic pool validator. Runs the protocol-appropriate
+/// validation (revm fork round-trip for the AMM families the discovery
+/// pipeline ingests, analytical gate otherwise) and records a per-DEX
+/// pass/fail metric. This is what `DiscoveryService` calls for every pool.
+pub async fn validate_pool_revm(
+    provider: &DynProvider<Ethereum>,
+    pool: &PoolInfo,
+    swap_eth: f64,
+    validation_mode: &str,
+    metrics: Option<std::sync::Arc<DiscoveryMetrics>>,
+) -> ValidationResult {
+    let result = match pool.protocol {
+        ProtocolType::UniswapV2 | ProtocolType::SushiSwap => {
+            validate_v2_pool_full(
+                provider,
+                pool.address,
+                pool.token0,
+                pool.token1,
+                pool.protocol,
+                pool.fee_bps,
+                swap_eth,
+                validation_mode,
+                metrics.clone(),
+            )
+            .await
+        }
+        ProtocolType::UniswapV3 => {
+            validate_v3_pool_full(
+                provider,
+                pool.address,
+                pool.token0,
+                pool.token1,
+                pool.fee_bps,
+                swap_eth,
+                validation_mode,
+                metrics.clone(),
+            )
+            .await
+        }
+        ProtocolType::Curve | ProtocolType::BalancerV2 | ProtocolType::BancorV3 => {
+            validate_custodial_pool(provider, pool).await
+        }
+    };
+
+    if let Some(m) = &metrics {
+        m.record_validation(dex_label(pool.protocol), result_label(&result));
+    }
+    result
+}
+
+/// Integrity gate for Curve / Balancer / Bancor pools: require the pool
+/// address to be a deployed contract. Cheap (single `eth_getCode`) and removes
+/// the most common malformed entry (an EOA or non-contract address). Infra
+/// errors fail open so a transient RPC hiccup never drops a real pool.
+async fn validate_custodial_pool(
+    provider: &DynProvider<Ethereum>,
+    pool: &PoolInfo,
+) -> ValidationResult {
+    match provider.get_code_at(pool.address).await {
+        Ok(code) if !code.is_empty() => ValidationResult::Valid,
+        Ok(_) => ValidationResult::Invalid("pool address has no bytecode".into()),
+        Err(_) => ValidationResult::Valid,
+    }
+}
+
+/// Full Uniswap V3 validation: analytical liquidity pre-filter (WETH-side
+/// balance held by the pool) followed by a revm fork round-trip through
+/// SwapRouter02. `mode == "analytical"` stops after the pre-filter.
+pub async fn validate_v3_pool_full(
+    provider: &DynProvider<Ethereum>,
+    pool_addr: Address,
+    token0: Address,
+    token1: Address,
+    fee_bps: u32,
+    swap_eth: f64,
+    validation_mode: &str,
+    metrics: Option<std::sync::Arc<DiscoveryMetrics>>,
+) -> ValidationResult {
+    let start = Instant::now();
+    let mode = validation_mode.to_ascii_lowercase();
+
+    // A V3 pool custodies its tokens as plain ERC-20 balances, so the WETH-side
+    // balance is a direct liquidity proxy. Only gate WETH pairs; non-WETH pairs
+    // skip the liquidity floor (we have no ETH yardstick for them).
+    let weth_side = if token0 == WETH {
+        Some(token0)
+    } else if token1 == WETH {
+        Some(token1)
+    } else {
+        None
+    };
+    if let Some(weth) = weth_side {
+        if let Some(bal) = erc20_balance_of(provider, weth, pool_addr).await {
+            if u256_to_eth(bal) < MIN_WETH_RESERVE_ETH {
+                if let Some(m) = &metrics {
+                    m.validation_latency_ms
+                        .observe(start.elapsed().as_secs_f64() * 1000.0);
+                }
+                return ValidationResult::LowLiquidity;
+            }
+        }
+    }
+
+    let result = if mode == "analytical" {
+        ValidationResult::Valid
+    } else {
+        validate_v3_pool_revm(
+            provider,
+            pool_addr,
+            token0,
+            token1,
+            fee_bps,
+            swap_eth,
+            metrics.clone(),
+        )
+        .await
+    };
+
+    if let Some(m) = &metrics {
+        m.validation_latency_ms
+            .observe(start.elapsed().as_secs_f64() * 1000.0);
+    }
+    result
+}
+
+/// revm fork probe for a Uniswap V3 pool: WETH→token→WETH round-trip through
+/// SwapRouter02 (`exactInputSingle`, zero slippage / no price limit — this is a
+/// liveness probe, not a profit check). Non-WETH pairs accept analytically.
+/// Infrastructure failures (RPC / fork-init) fail OPEN so the discovery
+/// pipeline never drops a real pool over our own simulation plumbing; only an
+/// actual on-chain revert marks the pool invalid.
+pub async fn validate_v3_pool_revm(
+    provider: &DynProvider<Ethereum>,
+    _pool_addr: Address,
+    token0: Address,
+    token1: Address,
+    fee_bps: u32,
+    swap_eth: f64,
+    _metrics: Option<std::sync::Arc<DiscoveryMetrics>>,
+) -> ValidationResult {
+    let (weth_token, other_token) = if token0 == WETH {
+        (token0, token1)
+    } else if token1 == WETH {
+        (token1, token0)
+    } else {
+        return ValidationResult::Valid;
+    };
+
+    let swap_wei = eth_to_u256(swap_eth);
+    if swap_wei.is_zero() {
+        return ValidationResult::Invalid("swap amount too small".into());
+    }
+    let fee_v3 = v3_fee_from_bps(fee_bps);
+
+    let block = match provider
+        .get_block_by_number(alloy::eips::BlockNumberOrTag::Latest)
+        .await
+    {
+        Ok(Some(b)) => b,
+        _ => return ValidationResult::Valid, // infra fail-open
+    };
+    let block_number = block.header.number;
+    let block_timestamp = block.header.timestamp;
+    let base_fee = block.header.base_fee_per_gas.unwrap_or(0);
+
+    let mut state = match RpcForkedState::new_at_latest(
+        provider.clone(),
+        block_number,
+        block_timestamp,
+        base_fee,
+    ) {
+        Some(s) => s,
+        None => return ValidationResult::Valid, // fork-init fail-open
+    };
+    state.insert_account_balance(REVM_PROBE_CALLER, U256::from(1_000_000_000_000_000_000u64));
+
+    run_v3_round_trip(state, V3_SWAP_ROUTER_02, weth_token, other_token, fee_v3, swap_wei)
+}
+
+/// Build a probe `TxEnv` from the fixed test caller. Nonce/balance/base-fee
+/// checks are disabled on the cfg, so the nonce is purely sequencing.
+fn build_probe_tx(
+    to: Address,
+    data: Vec<u8>,
+    value: U256,
+    base_fee: u64,
+    chain_id: u64,
+    nonce: u64,
+) -> TxEnv {
+    TxEnv::builder()
+        .caller(REVM_PROBE_CALLER)
+        .kind(TxKind::Call(to))
+        .data(Bytes::copy_from_slice(&data))
+        .value(value)
+        .gas_limit(700_000)
+        .gas_price(base_fee as u128)
+        .nonce(nonce)
+        .chain_id(Some(chain_id))
+        .build_fill()
+}
+
+/// Execute the V3 WETH→token→WETH round-trip on a single revm Context.
+fn run_v3_round_trip(
+    state: RpcForkedState,
+    router: Address,
+    weth_token: Address,
+    other_token: Address,
+    fee_v3: u32,
+    swap_wei: U256,
+) -> ValidationResult {
+    let RpcForkedState {
+        db,
+        block_number,
+        block_timestamp,
+        base_fee,
+        chain_id,
+    } = state;
+
+    let block = BlockEnv {
+        number: U256::from(block_number),
+        timestamp: U256::from(block_timestamp),
+        basefee: base_fee,
+        ..Default::default()
+    };
+
+    let ctx = Context::<BlockEnv, TxEnv, _, RpcDB, revm::context::Journal<RpcDB>, ()>::new(
+        db,
+        SpecId::CANCUN,
+    )
+    .with_block(block.clone())
+    .modify_cfg_chained(|c| {
+        c.chain_id = chain_id;
+        c.disable_nonce_check = true;
+        c.disable_balance_check = true;
+        c.disable_base_fee = true;
+    });
+    let mut evm = ctx.build_mainnet();
+
+    let fee_u24 = U24::from_limbs([u64::from(fee_v3)]);
+
+    // 1. Wrap ETH → WETH.
+    let wrap_data = IWETH9::depositCall {}.abi_encode();
+    let wrap_tx = build_probe_tx(weth_token, wrap_data, swap_wei, base_fee, chain_id, 0);
+    if !revm_transact_success(&mut evm, wrap_tx) {
+        return ValidationResult::Invalid("revm WETH wrap reverted".into());
+    }
+
+    // 2. Approve the router to pull WETH.
+    let approve_weth = IERC20::approveCall {
+        spender: router,
+        amount: swap_wei,
+    }
+    .abi_encode();
+    let approve_weth_tx = build_probe_tx(weth_token, approve_weth, U256::ZERO, base_fee, chain_id, 1);
+    if !revm_transact_success(&mut evm, approve_weth_tx) {
+        return ValidationResult::Invalid("revm WETH approve reverted".into());
+    }
+
+    // 3. exactInputSingle WETH → token.
+    let buy_data = ISwapRouter02::exactInputSingleCall {
+        params: ISwapRouter02::ExactInputSingleParams {
+            tokenIn: weth_token,
+            tokenOut: other_token,
+            fee: fee_u24,
+            recipient: REVM_PROBE_CALLER,
+            amountIn: swap_wei,
+            amountOutMinimum: U256::ZERO,
+            sqrtPriceLimitX96: U160::ZERO,
+        },
+    }
+    .abi_encode();
+    let buy_tx = build_probe_tx(router, buy_data, U256::ZERO, base_fee, chain_id, 2);
+    if !revm_transact_success(&mut evm, buy_tx) {
+        return ValidationResult::Invalid("revm V3 ETH→token swap reverted".into());
+    }
+
+    // 4. Read token balance received.
+    let balance_data = IERC20::balanceOfCall {
+        account: REVM_PROBE_CALLER,
+    }
+    .abi_encode();
+    let bal_tx = build_probe_tx(other_token, balance_data, U256::ZERO, base_fee, chain_id, 3);
+    let token_balance = match revm_transact_output(&mut evm, bal_tx) {
+        Some(b) if !b.is_zero() => b,
+        _ => return ValidationResult::Invalid("revm V3 probe received zero tokens".into()),
+    };
+
+    // 5. Approve the router to pull the token back.
+    let approve_token = IERC20::approveCall {
+        spender: router,
+        amount: token_balance,
+    }
+    .abi_encode();
+    let approve_token_tx =
+        build_probe_tx(other_token, approve_token, U256::ZERO, base_fee, chain_id, 4);
+    if !revm_transact_success(&mut evm, approve_token_tx) {
+        return ValidationResult::Invalid("revm V3 token approve reverted".into());
+    }
+
+    // 6. exactInputSingle token → WETH.
+    let sell_data = ISwapRouter02::exactInputSingleCall {
+        params: ISwapRouter02::ExactInputSingleParams {
+            tokenIn: other_token,
+            tokenOut: weth_token,
+            fee: fee_u24,
+            recipient: REVM_PROBE_CALLER,
+            amountIn: token_balance,
+            amountOutMinimum: U256::ZERO,
+            sqrtPriceLimitX96: U160::ZERO,
+        },
+    }
+    .abi_encode();
+    let sell_tx = build_probe_tx(router, sell_data, U256::ZERO, base_fee, chain_id, 5);
+    if revm_transact_success(&mut evm, sell_tx) {
+        ValidationResult::Valid
+    } else {
+        ValidationResult::Invalid("revm V3 token→ETH swap reverted".into())
+    }
+}
+
+/// Read an ERC-20 balance via a single `eth_call`. Returns `None` on RPC error
+/// or short return data so callers can fail open.
+async fn erc20_balance_of(
+    provider: &DynProvider<Ethereum>,
+    token: Address,
+    holder: Address,
+) -> Option<U256> {
+    let data = IERC20::balanceOfCall { account: holder }.abi_encode();
+    let out = provider
+        .call(
+            alloy::rpc::types::TransactionRequest::default()
+                .to(token)
+                .input(data.into()),
+        )
+        .await
+        .ok()?;
+    if out.len() >= 32 {
+        Some(U256::from_be_slice(&out[out.len() - 32..]))
+    } else {
+        None
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -660,5 +1076,247 @@ mod tests {
             0.0001,
         );
         assert_eq!(result, ValidationResult::Valid);
+    }
+
+    // ──────────────── unified multi-DEX validation: pure-logic tests ─────────
+
+    #[test]
+    fn v3_fee_from_bps_converts_common_tiers() {
+        assert_eq!(v3_fee_from_bps(1), 100); // 0.01%
+        assert_eq!(v3_fee_from_bps(5), 500); // 0.05%
+        assert_eq!(v3_fee_from_bps(30), 3000); // 0.30%
+        assert_eq!(v3_fee_from_bps(100), 10_000); // 1.00%
+    }
+
+    #[test]
+    fn v3_fee_from_bps_clamps_to_u24() {
+        // Pathological input must never exceed the uint24 range used to build
+        // the V3 calldata (guards the U24::from_limbs construction).
+        assert!(v3_fee_from_bps(u32::MAX) <= 0x00FF_FFFF);
+        assert_eq!(v3_fee_from_bps(0), 0);
+    }
+
+    #[test]
+    fn dex_label_covers_all_protocols() {
+        assert_eq!(dex_label(ProtocolType::UniswapV2), "uniswap_v2");
+        assert_eq!(dex_label(ProtocolType::UniswapV3), "uniswap_v3");
+        assert_eq!(dex_label(ProtocolType::SushiSwap), "sushiswap");
+        assert_eq!(dex_label(ProtocolType::Curve), "curve");
+        assert_eq!(dex_label(ProtocolType::BalancerV2), "balancer_v2");
+        assert_eq!(dex_label(ProtocolType::BancorV3), "bancor_v3");
+    }
+
+    #[test]
+    fn result_label_covers_all_variants() {
+        assert_eq!(result_label(&ValidationResult::Valid), "valid");
+        assert_eq!(result_label(&ValidationResult::LowLiquidity), "low_liquidity");
+        assert_eq!(
+            result_label(&ValidationResult::Invalid("x".into())),
+            "invalid"
+        );
+    }
+
+    // ──────────────── unified multi-DEX validation: fork tests ───────────────
+    //
+    // These exercise the real revm round-trip (V3) and the custodial bytecode
+    // gate (Curve / Balancer / Bancor) against known mainnet pools. They are
+    // `#[ignore]`d so the default `cargo test` stays hermetic; run them with:
+    //
+    //   ETH_RPC_URL=https://… cargo test -p aether-discovery -- --ignored
+    //
+    // (point ETH_RPC_URL at a mainnet archive/full node or an anvil fork).
+
+    async fn fork_provider() -> DynProvider<Ethereum> {
+        let rpc = std::env::var("ETH_RPC_URL").expect("ETH_RPC_URL");
+        crate::service::connect_rpc_provider(&rpc)
+            .await
+            .expect("provider")
+    }
+
+    fn v3_pool(addr: &str, token0: Address, token1: Address, fee_bps: u32) -> PoolInfo {
+        PoolInfo {
+            address: addr.parse().expect("addr"),
+            token0,
+            token1,
+            protocol: ProtocolType::UniswapV3,
+            fee_bps,
+            score: 0.0,
+            tvl_usd: 0.0,
+            volume_24h_usd: 0.0,
+            slippage_estimate: 0.0,
+            discovered_at: 0,
+        }
+    }
+
+    // ---- Uniswap V3 (real revm round-trip) ----
+
+    #[tokio::test]
+    #[ignore = "requires ETH_RPC_URL mainnet fork"]
+    async fn revm_v3_validates_weth_usdc_005() {
+        let provider = fork_provider().await;
+        // USDC/WETH 0.05% — the deepest V3 pool on mainnet.
+        let result = validate_v3_pool_revm(
+            &provider,
+            "0x88e6A0c2dDD26FEEb64F039a2c41296FcB3f5640"
+                .parse()
+                .unwrap(),
+            usdc(),
+            WETH,
+            5,
+            0.001,
+            None,
+        )
+        .await;
+        assert_eq!(result, ValidationResult::Valid);
+    }
+
+    #[tokio::test]
+    #[ignore = "requires ETH_RPC_URL mainnet fork"]
+    async fn revm_v3_validates_weth_usdc_03() {
+        let provider = fork_provider().await;
+        // WETH/USDC 0.30%.
+        let result = validate_v3_pool_revm(
+            &provider,
+            "0x8ad599c3A0ff1De082011EFDDc58f1908eb6e6D8"
+                .parse()
+                .unwrap(),
+            usdc(),
+            WETH,
+            30,
+            0.001,
+            None,
+        )
+        .await;
+        assert_eq!(result, ValidationResult::Valid);
+    }
+
+    #[tokio::test]
+    #[ignore = "requires ETH_RPC_URL mainnet fork"]
+    async fn revm_v3_full_path_accepts_deep_pool() {
+        let provider = fork_provider().await;
+        let result = validate_v3_pool_full(
+            &provider,
+            "0x88e6A0c2dDD26FEEb64F039a2c41296FcB3f5640"
+                .parse()
+                .unwrap(),
+            usdc(),
+            WETH,
+            5,
+            0.001,
+            "both",
+            None,
+        )
+        .await;
+        assert_eq!(result, ValidationResult::Valid);
+    }
+
+    #[tokio::test]
+    #[ignore = "requires ETH_RPC_URL mainnet fork"]
+    async fn revm_v3_nonweth_pair_accepts_analytically() {
+        let provider = fork_provider().await;
+        // DAI/USDC 0.01% — no WETH leg, so the revm path accepts analytically.
+        let dai = address!("6B175474E89094C44Da98b954EedeAC495271d0F");
+        let result = validate_v3_pool_revm(
+            &provider,
+            "0x5777d92f208679DB4b9778590Fa3CAB3aC9e2168"
+                .parse()
+                .unwrap(),
+            dai,
+            usdc(),
+            1,
+            0.001,
+            None,
+        )
+        .await;
+        assert_eq!(result, ValidationResult::Valid);
+    }
+
+    #[tokio::test]
+    #[ignore = "requires ETH_RPC_URL mainnet fork"]
+    async fn revm_v3_unified_entry_routes_v3() {
+        let provider = fork_provider().await;
+        let pool = v3_pool(
+            "0x88e6A0c2dDD26FEEb64F039a2c41296FcB3f5640",
+            usdc(),
+            WETH,
+            5,
+        );
+        let result = validate_pool_revm(&provider, &pool, 0.001, "both", None).await;
+        assert_eq!(result, ValidationResult::Valid);
+    }
+
+    // ---- Curve / Balancer / Bancor (custodial bytecode gate) ----
+
+    fn custodial_pool(addr: &str, protocol: ProtocolType) -> PoolInfo {
+        PoolInfo {
+            address: addr.parse().expect("addr"),
+            token0: WETH,
+            token1: usdc(),
+            protocol,
+            fee_bps: 4,
+            score: 0.0,
+            tvl_usd: 0.0,
+            volume_24h_usd: 0.0,
+            slippage_estimate: 0.0,
+            discovered_at: 0,
+        }
+    }
+
+    #[tokio::test]
+    #[ignore = "requires ETH_RPC_URL mainnet fork"]
+    async fn custodial_curve_3pool_valid() {
+        let provider = fork_provider().await;
+        let pool = custodial_pool(
+            "0xbEbc44782C7dB0a1A60Cb6fe97d0b483032FF1C7",
+            ProtocolType::Curve,
+        );
+        assert_eq!(
+            validate_pool_revm(&provider, &pool, 0.001, "both", None).await,
+            ValidationResult::Valid
+        );
+    }
+
+    #[tokio::test]
+    #[ignore = "requires ETH_RPC_URL mainnet fork"]
+    async fn custodial_balancer_pool_valid() {
+        let provider = fork_provider().await;
+        // Balancer 80BAL/20WETH weighted pool.
+        let pool = custodial_pool(
+            "0x5c6Ee304399DBdB9C8Ef030aB642B10820DB8F56",
+            ProtocolType::BalancerV2,
+        );
+        assert_eq!(
+            validate_pool_revm(&provider, &pool, 0.001, "both", None).await,
+            ValidationResult::Valid
+        );
+    }
+
+    #[tokio::test]
+    #[ignore = "requires ETH_RPC_URL mainnet fork"]
+    async fn custodial_bancor_network_valid() {
+        let provider = fork_provider().await;
+        let pool = custodial_pool(
+            "0xeEF417e1D5CC832e619ae18D2F140De2999dD4fB",
+            ProtocolType::BancorV3,
+        );
+        assert_eq!(
+            validate_pool_revm(&provider, &pool, 0.001, "both", None).await,
+            ValidationResult::Valid
+        );
+    }
+
+    #[tokio::test]
+    #[ignore = "requires ETH_RPC_URL mainnet fork"]
+    async fn custodial_non_contract_rejected() {
+        let provider = fork_provider().await;
+        // A burn address holds no bytecode → must be rejected.
+        let pool = custodial_pool(
+            "0x000000000000000000000000000000000000dEaD",
+            ProtocolType::Curve,
+        );
+        assert_eq!(
+            validate_pool_revm(&provider, &pool, 0.001, "both", None).await,
+            ValidationResult::Invalid("pool address has no bytecode".into())
+        );
     }
 }

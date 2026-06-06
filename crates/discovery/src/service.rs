@@ -16,7 +16,7 @@ use crate::events::FactoryPoolCreated;
 use crate::scorer::{default_slippage_estimate, estimate_v2_slippage};
 use crate::types::{PoolInfo, PoolScoreInputs, ValidationResult};
 use crate::metrics::DiscoveryMetrics;
-use crate::validator::{validate_v2_pool_full, validate_v2_reserves};
+use crate::validator::{validate_pool_revm, validate_v2_reserves};
 
 /// TVL / volume data source for scoring enrichment.
 pub trait PoolMetricsSource: Send + Sync {
@@ -143,6 +143,33 @@ fn estimate_tvl_usd(token0: Address, token1: Address, r0: f64, r1: f64) -> f64 {
         return (r0 + r1) * 2.0;
     }
     (r0 + r1).max(1.0)
+}
+
+/// Validation used when no RPC provider is configured (unit tests, offline
+/// scoring mode). Without a fork we cannot run revm, so V2/Sushi pools are
+/// checked against assumed-healthy reserves and the remaining protocols are
+/// accepted subject to a sane fee bound. The live path
+/// (`validator::validate_pool_revm`) supersedes this whenever a provider
+/// exists.
+fn offline_validate(event: &FactoryPoolCreated, swap_eth: f64) -> ValidationResult {
+    match event.protocol {
+        ProtocolType::UniswapV2 | ProtocolType::SushiSwap => validate_v2_reserves(
+            event.token0,
+            event.token1,
+            event.protocol,
+            event.fee_bps,
+            U256::from(1_000_000_000_000_000_000u64),
+            U256::from(1_000_000_000_000_000_000u64),
+            swap_eth,
+        ),
+        _ => {
+            if event.fee_bps <= 10_000 {
+                ValidationResult::Valid
+            } else {
+                ValidationResult::Invalid("invalid fee".into())
+            }
+        }
+    }
 }
 
 /// Main discovery service API.
@@ -283,43 +310,27 @@ impl DiscoveryService {
     async fn validate_pool(&self, event: &FactoryPoolCreated) -> ValidationResult {
         let swap_eth = self.config.discovery.validation_swap_eth;
         let validation_mode = self.config.discovery.validation_mode.clone();
-        match event.protocol {
-            ProtocolType::UniswapV2 | ProtocolType::SushiSwap => {
-                if let Some(provider) = &self.provider {
-                    validate_v2_pool_full(
-                        provider,
-                        event.pool,
-                        event.token0,
-                        event.token1,
-                        event.protocol,
-                        event.fee_bps,
-                        swap_eth,
-                        &validation_mode,
-                        self.metrics.clone(),
-                    )
-                    .await
-                } else {
-                    // Offline path: accept pools with assumed healthy reserves for tests.
-                    validate_v2_reserves(
-                        event.token0,
-                        event.token1,
-                        event.protocol,
-                        event.fee_bps,
-                        U256::from(1_000_000_000_000_000_000u64),
-                        U256::from(1_000_000_000_000_000_000u64),
-                        swap_eth,
-                    )
-                }
-            }
-            _ => {
-                // V3/Curve: defer full revm validation; accept with liquidity floor.
-                if event.fee_bps <= 10_000 {
-                    ValidationResult::Valid
-                } else {
-                    ValidationResult::Invalid("invalid fee".into())
-                }
-            }
-        }
+
+        // Offline path (unit tests / no RPC configured): no fork available, so
+        // fall back to analytical acceptance. With a provider, every protocol
+        // goes through the unified revm/analytical validator.
+        let Some(provider) = &self.provider else {
+            return offline_validate(event, swap_eth);
+        };
+
+        let pool = PoolInfo {
+            address: event.pool,
+            token0: event.token0,
+            token1: event.token1,
+            protocol: event.protocol,
+            fee_bps: event.fee_bps,
+            score: 0.0,
+            tvl_usd: 0.0,
+            volume_24h_usd: 0.0,
+            slippage_estimate: 0.0,
+            discovered_at: 0,
+        };
+        validate_pool_revm(provider, &pool, swap_eth, &validation_mode, self.metrics.clone()).await
     }
 
     /// Prune stale / low-score pools. Returns number removed.

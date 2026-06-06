@@ -97,10 +97,41 @@ The Go executor polls this endpoint and exposes top-5 pools via `GET /metrics/js
 
 ## Validation Pipeline
 
-New pools pass through:
+Every discovered pool is validated through the single entry point
+`validator::validate_pool_revm`, which routes per protocol and records a
+per-DEX outcome metric (`aether_discovery_revm_validations_total{dex,result}`).
+`validation_mode` (`both` | `revm` | `analytical`) selects how far the AMM
+paths go.
 
-1. **Bytecode check** — must be a contract with swap interface
-2. **Liquidity probe** — simulated 0.001 ETH swap via `revm` fork
-3. **Low liquidity filter** — pools below minimum TVL are discarded (`ValidationResult::LowLiquidity`)
+| Protocol | Validation |
+|---|---|
+| Uniswap V2 / SushiSwap | analytical reserve check **+ `revm` fork round-trip** (ETH→token→ETH via the V2 router) |
+| Uniswap V3 | WETH-side liquidity gate **+ `revm` fork round-trip** (WETH→token→WETH via `SwapRouter02.exactInputSingle`, fee tier derived from `fee_bps × 100`) |
+| Curve / Balancer V2 / Bancor V3 | deployed-bytecode integrity gate (`eth_getCode`) |
+
+Notes:
+
+- **`revm` now covers every AMM family the factory-event listener ingests**
+  (Uniswap V2, SushiSwap, and Uniswap V3). The V3 round-trip wraps ETH→WETH,
+  approves `SwapRouter02`, and swaps both directions on a forked block; any
+  on-chain revert marks the pool `Invalid`, while RPC/fork-init failures fail
+  **open** so a transient infra blip never drops a real pool.
+- **Curve, Balancer V2, and Bancor V3 are not surfaced by the
+  `PairCreated`/`PoolCreated` factory listener**, and a `PoolInfo` carries none
+  of the routing data a `revm` swap for them needs (Curve coin indices,
+  Balancer `poolId`, Bancor token path). They are validated with a cheap
+  deployed-bytecode gate here; a full `revm` swap for these protocols is
+  exercised by the explicit-parameter fork tests and by the on-chain executor
+  simulation in `crates/simulator`. They normally enter the system through the
+  static `config/pools.toml` registry rather than dynamic discovery.
+- Pools below the minimum WETH-side liquidity floor are discarded
+  (`ValidationResult::LowLiquidity`).
 
 Invalid pools never enter the ranked cache.
+
+### Validation order
+
+1. **Liquidity / bytecode pre-filter** — fast, RPC-only (analytical reserves
+   for V2, WETH balance for V3, `eth_getCode` for custodial pools).
+2. **`revm` fork round-trip** — only for AMM pools that pass the pre-filter, so
+   obviously-bad pools never pay the simulation cost.
