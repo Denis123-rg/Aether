@@ -1,3 +1,5 @@
+[workspace]
+
 [package]
 name = "aether-fuzz"
 version = "0.0.0"
@@ -48,6 +50,20 @@ bench = false
 [[bin]]
 name = "discovery_validator"
 path = "fuzz_targets/discovery_validator.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fee_on_transfer"
+path = "fuzz_targets/fee_on_transfer.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "mempool_backrun"
+path = "fuzz_targets/mempool_backrun.rs"
 test = false
 doc = false
 bench = false

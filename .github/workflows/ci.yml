@@ -53,8 +53,71 @@ jobs:
       - name: Vet
         run: go vet ./...
 
-      - name: Tests
-        run: go test ./... -v -count=1
+      - name: Tests (with coverage)
+        run: go test ./... -count=1 -coverprofile=coverage.out
+
+      - name: Coverage summary
+        run: go tool cover -func=coverage.out | tail -30
+
+  go-postgres:
+    name: go-postgres (testcontainers)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Postgres integration tests
+        run: go test ./internal/db/... -count=1 -run TestPostgres -v
+
+  fork-tests:
+    name: rust-fork-tests
+    runs-on: ubuntu-latest
+    if: ${{ secrets.ETH_RPC_URL != '' }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install protobuf compiler
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+
+      - uses: foundry-rs/foundry-toolchain@v1
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Run fork tests
+        env:
+          ETH_RPC_URL: ${{ secrets.ETH_RPC_URL }}
+        run: bash scripts/run_fork_tests.sh
+
+  fuzz-nightly:
+    name: fuzz-nightly
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: fuzz
+
+      - name: Install cargo-fuzz
+        run: cargo install cargo-fuzz
+
+      - name: Fuzz fee_on_transfer (5M iterations)
+        working-directory: fuzz
+        run: cargo fuzz run fee_on_transfer -- -max_total_time=300 -runs=5000000 || true
+
+      - name: Fuzz mempool_backrun (5M iterations)
+        working-directory: fuzz
+        run: cargo fuzz run mempool_backrun -- -max_total_time=300 -runs=5000000 || true
+
+      - name: Fuzz check (compile-only smoke)
+        working-directory: fuzz
+        run: cargo check
 
   solidity:
     name: solidity

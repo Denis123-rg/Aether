@@ -23,6 +23,7 @@ dashmap = { workspace = true }
 criterion = { workspace = true }
 tempfile = "3"
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+url = "2"
 
 [[bench]]
 name = "simulation"
