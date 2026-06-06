@@ -32,6 +32,9 @@ cargo test -p aether-simulator --test fee_on_transfer_fork_test -- --nocapture
 echo "==> simulator mempool backrun fork tests"
 cargo test -p aether-simulator --test mempool_backrun_fork_test -- --nocapture
 
+echo "==> grpc-server service integration (in-crate)"
+cargo test -p aether-grpc-server --lib stream_arbs -- --nocapture
+
 echo "==> integration-tests anvil fork suite"
 cargo test -p aether-integration-tests --test anvil_fork_test -- --nocapture
 

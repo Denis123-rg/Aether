@@ -11,6 +11,8 @@ import (
 
 	pb "github.com/aether-arb/aether/internal/pb"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/test/bufconn"
 )
 
 // MockArbServer implements all three proto services for integration tests.
@@ -35,6 +37,7 @@ type MockArbServer struct {
 
 	grpcServer *grpc.Server
 	listener   net.Listener
+	bufListener *bufconn.Listener
 }
 
 // NewMockArbServer creates a mock server with default healthy state.
@@ -70,6 +73,41 @@ func (m *MockArbServer) Start() (string, error) {
 	}()
 
 	return lis.Addr().String(), nil
+}
+
+// StartBufconn starts the mock server on an in-memory bufconn listener.
+// Returns a dial function suitable for grpc.DialContext(..., grpc.WithContextDialer(dialer)).
+func (m *MockArbServer) StartBufconn(bufSize int) (dialer func(context.Context, string) (net.Conn, error), cleanup func(), err error) {
+	if bufSize <= 0 {
+		bufSize = 1024 * 1024
+	}
+	m.bufListener = bufconn.Listen(bufSize)
+	m.grpcServer = grpc.NewServer()
+	pb.RegisterArbServiceServer(m.grpcServer, m)
+	pb.RegisterHealthServiceServer(m.grpcServer, m)
+	pb.RegisterControlServiceServer(m.grpcServer, m)
+
+	go func() {
+		_ = m.grpcServer.Serve(m.bufListener)
+	}()
+
+	dialer = func(ctx context.Context, _ string) (net.Conn, error) {
+		return m.bufListener.DialContext(ctx)
+	}
+	cleanup = func() {
+		if m.grpcServer != nil {
+			m.grpcServer.GracefulStop()
+		}
+	}
+	return dialer, cleanup, nil
+}
+
+// DialBufconn connects a grpc.ClientConn to a bufconn-started mock server.
+func (m *MockArbServer) DialBufconn(ctx context.Context, dialer func(context.Context, string) (net.Conn, error)) (*grpc.ClientConn, error) {
+	return grpc.DialContext(ctx, "bufnet",
+		grpc.WithContextDialer(dialer),
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+	)
 }
 
 // Stop gracefully shuts down the gRPC server.

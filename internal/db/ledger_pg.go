@@ -33,14 +33,15 @@ const (
 	// the executor degrades to NoopLedger via LedgerFromEnv instead of
 	// stalling startup.
 	ledgerConnectTimeout = 2 * time.Second
-
-	// ledgerCloseDrainTimeout caps how long Close() will wait for in-flight
-	// writes to complete before tearing down the pool. A wedged Postgres
-	// must not be able to hang executor shutdown forever; rows still in the
-	// channel at deadline are dropped (counted via existing drops metric
-	// when Inc was already done; otherwise simply unrecorded).
-	ledgerCloseDrainTimeout = 5 * time.Second
 )
+
+// ledgerCloseDrainTimeout caps how long Close() will wait for in-flight
+// writes to complete before tearing down the pool. Var so tests can shorten it.
+var ledgerCloseDrainTimeout = 5 * time.Second
+
+// ledgerCloseSecondaryWait is the brief grace after dispatcherCancel during
+// a timed-out Close(). Var for test override.
+var ledgerCloseSecondaryWait = time.Second
 
 // PgLedger writes trade-ledger rows to Postgres via pgxpool. The hot path is
 // non-blocking: every Ledger interface method enqueues a ledgerOp onto a
@@ -135,7 +136,7 @@ func (l *PgLedger) Close() {
 		// is not racing with goroutines still touching the pool.
 		select {
 		case <-done:
-		case <-time.After(time.Second):
+		case <-time.After(ledgerCloseSecondaryWait):
 		}
 	}
 	l.pool.Close()

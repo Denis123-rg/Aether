@@ -51,10 +51,6 @@ const (
 	// no DB writes" instead of stalling startup.
 	reconConnectTimeout = 2 * time.Second
 
-	// reconCloseDrainTimeout caps how long Close() waits for in-flight
-	// writes. Mirrors PgLedger's policy.
-	reconCloseDrainTimeout = 5 * time.Second
-
 	// StaleConfirmationWindow is the number of blocks the reconciler waits
 	// past a prediction's predicted_target_block before declaring it
 	// dropped. 12 ≈ Flashbots' empirical "tx never landed" heuristic
@@ -63,6 +59,13 @@ const (
 	// inclusion.
 	StaleConfirmationWindow = 12
 )
+
+// reconCloseDrainTimeout caps how long Close() waits for in-flight writes.
+var reconCloseDrainTimeout = 5 * time.Second
+
+// reconCloseSecondaryWait is the brief grace after dispatcherCancel during
+// a timed-out Close(). Var for test override.
+var reconCloseSecondaryWait = time.Second
 
 // PendingPrediction is the subset of `mempool_predictions` columns the
 // reconciler needs to score an outcome. Returned by LookupPredictionByTxHash.
@@ -176,7 +179,7 @@ func (r *PgMempoolReconciliation) Close() {
 		r.dispatcherCancel()
 		select {
 		case <-done:
-		case <-time.After(time.Second):
+		case <-time.After(reconCloseSecondaryWait):
 		}
 	}
 	r.pool.Close()

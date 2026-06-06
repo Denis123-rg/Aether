@@ -53,9 +53,15 @@ const (
 	metricsFlushInterval = 1 * time.Second
 	metricsConnectTimeout = 2 * time.Second
 	metricsWriteTimeout   = 5 * time.Second
-	metricsPoolSize       = 4
-	metricsCloseDrain     = 5 * time.Second
+	metricsPoolSize = 4
 )
+
+// metricsCloseDrain caps how long Close() waits for in-flight writes. Var for tests.
+var metricsCloseDrain = 5 * time.Second
+
+// metricsCloseSecondaryWait is the brief grace after cancel during a timed-out
+// Close(). Var for test override.
+var metricsCloseSecondaryWait = time.Second
 
 // ---------------------------------------------------------------------------
 // No-op store (default when DATABASE_URL is unset)
@@ -177,7 +183,7 @@ func (s *PgMetricsStore) Close() {
 		s.cancel()
 		select {
 		case <-done:
-		case <-time.After(time.Second):
+		case <-time.After(metricsCloseSecondaryWait):
 		}
 	}
 	s.pool.Close()

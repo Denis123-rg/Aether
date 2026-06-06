@@ -1151,6 +1151,56 @@ mod tests {
         assert_eq!(result, ValidationResult::Valid);
     }
 
+    #[test]
+    fn validate_v2_reserves_extreme_fee_bps_still_evaluates() {
+        let r0 = U256::from(1_000_000_000_000_000_000u64);
+        let r1 = U256::from(1_000_000_000_000_000_000u64);
+        let result = validate_v2_reserves(
+            WETH,
+            usdc(),
+            ProtocolType::UniswapV2,
+            9999,
+            r0,
+            r1,
+            0.001,
+        );
+        // High fee may shrink round-trip but should not panic.
+        assert!(matches!(
+            result,
+            ValidationResult::Valid | ValidationResult::Invalid(_)
+        ));
+    }
+
+    #[test]
+    fn validate_v2_reserves_forward_swap_fails_on_tiny_reserve() {
+        let result = validate_v2_reserves(
+            usdc(),
+            address!("6B175474E89094C44Da98b954EedeAC495271d0F"),
+            ProtocolType::UniswapV2,
+            30,
+            U256::from(1u64),
+            U256::from(2u64),
+            0.001,
+        );
+        assert!(matches!(
+            result,
+            ValidationResult::LowLiquidity | ValidationResult::Invalid(_)
+        ));
+    }
+
+    #[test]
+    fn simulate_round_trip_rejects_near_zero_output() {
+        let token_a = address!("6B175474E89094C44Da98b954EedeAC495271d0F");
+        let mut pool = UniswapV2Pool::new(Address::ZERO, WETH, token_a, 30);
+        // Absurd imbalance: swap 1 ETH into a puddle of token.
+        pool.update_state(
+            U256::from(1_000_000_000_000_000_000u64),
+            U256::from(1u64),
+        );
+        let result = simulate_round_trip(&pool, WETH, token_a, U256::from(1_000_000_000_000_000u64));
+        assert!(matches!(result, ValidationResult::Invalid(_)));
+    }
+
     // ──────────────── unified multi-DEX validation: pure-logic tests ─────────
 
     #[test]

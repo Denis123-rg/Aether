@@ -57,6 +57,19 @@ func validateDialTarget(addr string) error {
 	return nil
 }
 
+// NewClientFromConn wraps an existing gRPC connection (e.g. bufconn in tests).
+func NewClientFromConn(conn *grpc.ClientConn) (*Client, error) {
+	if conn == nil {
+		return nil, fmt.Errorf("nil connection")
+	}
+	return &Client{
+		conn:    conn,
+		arb:     pb.NewArbServiceClient(conn),
+		health:  pb.NewHealthServiceClient(conn),
+		control: pb.NewControlServiceClient(conn),
+	}, nil
+}
+
 func Dial(addr string) (*Client, error) {
 	if err := validateDialTarget(addr); err != nil {
 		return nil, fmt.Errorf("invalid dial target: %w", err)

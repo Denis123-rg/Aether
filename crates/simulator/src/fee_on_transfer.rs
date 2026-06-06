@@ -743,6 +743,26 @@ mod tests {
     }
 
     #[test]
+    fn classify_transfer_hundred_percent_tax_is_honeypot_level() {
+        assert_eq!(
+            classify_transfer(U256::from(1000u64), U256::ZERO, 10),
+            FotVerdict::FeeOnTransfer { tax_bps: 10_000 }
+        );
+    }
+
+    #[test]
+    fn expected_amount_out_zero_reserve_returns_zero() {
+        assert_eq!(
+            expected_amount_out(U256::from(100u64), U256::ZERO, U256::from(1000u64), 30),
+            U256::ZERO
+        );
+        assert_eq!(
+            expected_amount_out(U256::from(100u64), U256::from(1000u64), U256::ZERO, 30),
+            U256::ZERO
+        );
+    }
+
+    #[test]
     fn classify_transfer_flags_fee_on_transfer() {
         // 5% tax: 10000 -> 9500 = 500 bps > tolerance.
         assert_eq!(

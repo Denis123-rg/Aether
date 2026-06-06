@@ -704,6 +704,49 @@ mod tests {
     }
 
     #[test]
+    fn test_decode_pool_created_v3_happy_path() {
+        let token0 = Address::from([0x11u8; 20]);
+        let token1 = Address::from([0x22u8; 20]);
+        let pool = Address::from([0x33u8; 20]);
+        let mut topic1 = [0u8; 32];
+        topic1[12..32].copy_from_slice(token0.as_slice());
+        let mut topic2 = [0u8; 32];
+        topic2[12..32].copy_from_slice(token1.as_slice());
+        let fee = B256::from(U256::from(3000u64).to_be_bytes::<32>());
+
+        let mut data = vec![0u8; 64];
+        data[32..52].copy_from_slice(pool.as_slice());
+
+        let topics = vec![
+            EventSignatures::pool_created_v3_topic(),
+            B256::from(topic1),
+            B256::from(topic2),
+            fee,
+        ];
+
+        let event = decode_log(&topics, &data, Address::ZERO, None).expect("decode");
+        let PoolEvent::PoolCreated {
+            token0: t0,
+            token1: t1,
+            pool: p,
+        } = event
+        else {
+            panic!("unexpected variant");
+        };
+        assert_eq!(t0, token0);
+        assert_eq!(t1, token1);
+        assert_eq!(p, pool);
+    }
+
+    #[test]
+    fn test_v3_fee_bps_from_topic_common_tiers() {
+        let fee_30 = B256::from(U256::from(3000u64).to_be_bytes::<32>());
+        assert_eq!(v3_fee_bps_from_topic(&fee_30), 30);
+        let fee_5 = B256::from(U256::from(500u64).to_be_bytes::<32>());
+        assert_eq!(v3_fee_bps_from_topic(&fee_5), 5);
+    }
+
+    #[test]
     fn test_decode_pair_created_insufficient_topics() {
         let topics = vec![
             EventSignatures::pair_created_topic(),
