@@ -127,6 +127,9 @@ func TestBreakerLabel(t *testing.T) {
 
 func TestFormatPoolsLimit20(t *testing.T) {
 	pools := make([]metrics.TopPool, 25)
+	for i := range pools {
+		pools[i] = metrics.TopPool{Address: "0xabc1234567890abcdef", Score: 0.5}
+	}
 	text := FormatPools(pools)
 	lines := strings.Count(text, "0xabc")
 	if lines != 20 {

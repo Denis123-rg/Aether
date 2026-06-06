@@ -55,7 +55,6 @@ func TestAdminPauseResume(t *testing.T) {
 		base = "http://localhost:8080"
 	}
 	client := &http.Client{Timeout: 3 * time.Second}
-	ctx := context.Background()
 
 	resp, err := client.Post(base+"/admin/pause", "application/json", nil)
 	if err != nil {

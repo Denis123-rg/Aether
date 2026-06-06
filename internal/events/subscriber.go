@@ -128,10 +128,19 @@ func (s *Subscriber) listen(ctx context.Context) error {
 	slog.Info("redis subscriber connected")
 
 	ch := pubsub.Channel()
+	pingTicker := time.NewTicker(500 * time.Millisecond)
+	defer pingTicker.Stop()
 	for {
 		select {
 		case <-ctx.Done():
 			return nil
+		case <-pingTicker.C:
+			pingCtx, cancel := context.WithTimeout(ctx, 500*time.Millisecond)
+			err := s.client.Ping(pingCtx).Err()
+			cancel()
+			if err != nil {
+				return err
+			}
 		case msg, ok := <-ch:
 			if !ok {
 				return context.Canceled

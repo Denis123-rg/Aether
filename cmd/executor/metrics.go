@@ -408,7 +408,10 @@ func balanceWatchLoop(ctx context.Context, client *ethclient.Client, addr common
 			return
 		case <-ticker.C:
 			if err := fetchAndStoreBalance(ctx, client, addr, live); err != nil {
+				setRPCHealthy(false)
 				log.Printf("WARNING: eth_getBalance failed: %v", redactRPCError(err, rpcURL))
+			} else {
+				setRPCHealthy(true)
 			}
 		}
 	}

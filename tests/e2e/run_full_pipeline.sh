@@ -3,13 +3,16 @@
 #
 # Starts: anvil fork, AetherExecutor deploy, remote signer, Rust grpc-server
 # (discovery enabled), Go executor (remote signer), telebot, Redis, mock builder.
-# Runs 10 end-to-end scenarios with assertions.
+# Runs 11 end-to-end scenarios with assertions.
 #
 # Usage:
 #   ./tests/e2e/setup_test_env.sh
 #   ETH_RPC_URL=https://... ./tests/e2e/run_full_pipeline.sh
 #   ./tests/e2e/cleanup.sh
 set -euo pipefail
+
+export PATH="${HOME}/.cargo/bin:${HOME}/.foundry/bin:${PATH}"
+unset AETHER_ADMIN_TOKEN
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
@@ -98,10 +101,14 @@ ANVIL_WS="ws://127.0.0.1:$ANVIL_PORT"
 EXECUTOR_ADDR="0x0000000000000000000000000000000000000001"
 if [[ -d "$PROJECT_ROOT/contracts" ]] && command -v forge &>/dev/null; then
   log "Deploying AetherExecutor..."
+  AAVE_POOL="0x87870Bca3F3fD6335C3F4ce8392D69350B4fA4E2"
+  BALANCER_VAULT="0xBA12222222228d8Ba445958a75a0704d566BF2C8"
+  BANCOR_NETWORK="0xeEF417e1D5CC832e619ae18D2F140De2999dD4fB"
   DEPLOY_OUT=$(cd "$PROJECT_ROOT/contracts" && \
     ETH_RPC_URL="$ANVIL_RPC" PRIVATE_KEY="$STAGING_KEY" \
     forge create src/AetherExecutor.sol:AetherExecutor \
-      --rpc-url "$ANVIL_RPC" --broadcast 2>&1) || warn "deploy: $DEPLOY_OUT"
+      --rpc-url "$ANVIL_RPC" --broadcast \
+      --constructor-args "$AAVE_POOL" "$BALANCER_VAULT" "$BANCOR_NETWORK" 2>&1) || warn "deploy: $DEPLOY_OUT"
   EXECUTOR_ADDR=$(echo "$DEPLOY_OUT" | grep -oP 'Deployed to: \K0x[a-fA-F0-9]+' || true)
   [[ -n "$EXECUTOR_ADDR" ]] && pass "contract deployed at $EXECUTOR_ADDR"
 fi
@@ -190,7 +197,8 @@ export GRPC_ADDRESS="[::1]:$GRPC_PORT"
 AETHER_CONFIG_DIR="$BUILD_DIR/config" \
   "$BUILD_DIR/aether-executor" >"$LOG_DIR/executor.log" 2>&1 &
 record_pid $! executor
-sleep 4
+sleep 6
+wait_http "http://127.0.0.1:$ADMIN_PORT/health" 30 || warn "executor health not ready"
 
 # ── Telebot (dashboard polling) ─────────────────────────────────────────
 if [[ -x "$BUILD_DIR/aether-telebot" ]]; then
@@ -285,9 +293,10 @@ scenario_routing_select() {
 scenario_dashboard_pnl() {
   curl -sf "http://127.0.0.1:$ADMIN_PORT/metrics/json" | \
     python3 -c "import sys,json; d=json.load(sys.stdin); assert 'pnl_total' in d and 'pnl_today' in d"
-  EXECUTOR_METRICS_URL="http://127.0.0.1:$ADMIN_PORT/metrics/json" \
-  EXECUTOR_ADMIN_URL="http://127.0.0.1:$ADMIN_PORT" \
-    (cd "$PROJECT_ROOT" && go test ./tests/e2e/... -count=1 -timeout 90s)
+  (cd "$PROJECT_ROOT" && \
+    EXECUTOR_METRICS_URL="http://127.0.0.1:$ADMIN_PORT/metrics/json" \
+    EXECUTOR_ADMIN_URL="http://127.0.0.1:$ADMIN_PORT" \
+    go test ./tests/e2e/... -count=1 -timeout 90s)
 }
 
 # 11. Full Go + Rust unit regression

@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/aether-arb/aether/internal/metrics"
 	"github.com/aether-arb/aether/internal/risk"
@@ -186,8 +187,9 @@ func TestRefreshSnapshotLoopOnce(t *testing.T) {
 		rm.RecordBundleResult(i%2 == 0)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	go refreshSnapshotLoop(ctx, rm, globalSnapshotStore, time.Millisecond)
-	cancel()
+	time.Sleep(5 * time.Millisecond)
 	snap := globalSnapshotStore.Get()
 	if snap.WinRate == 0 {
 		t.Fatal("winrate should be set")

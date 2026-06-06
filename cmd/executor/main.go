@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log/slog"
 	"math/big"
+	"math/rand"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -64,6 +65,8 @@ var (
 	eventPublisher  *events.Publisher
 	// routingMode is "fanout" or "select", set from builders.yaml in main().
 	routingMode = "fanout"
+	// builderRNG seeds allocation-weighted routing in select mode.
+	builderRNG = rand.New(rand.NewSource(time.Now().UnixNano()))
 )
 
 // Config holds executor service configuration.
@@ -463,9 +466,17 @@ func main() {
 	// Redis event publisher (no-op when REDIS_URL unset).
 	eventPublisher = events.NewPublisherFromEnv()
 	defer eventPublisher.Close()
+	setRedisHealthy(eventPublisher.Enabled())
 
 	adminPort, discoveryURL := loadAdminPort()
 	startAdminServer(riskMgr, discoveryURL, adminPort, eventPublisher)
+
+	// Inclusion poll loop reconciles on-chain bundle outcomes.
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		inclusionPollLoop(ctx, submitter, ledger, riskMgr, 12*time.Second)
+	}()
 
 	transport := "TCP"
 	if strings.HasPrefix(cfg.GRPCAddress, "unix:") {
@@ -730,7 +741,7 @@ func processArb(
 	recordBundleSubmitted(sourceLbl)
 	var results []SubmissionResult
 	if routingMode == "select" && builderSelector != nil {
-		builder := builderSelector.Best()
+		builder := builderSelector.Pick(builderRNG)
 		results = submitter.SubmitToBuilder(ctx, bundle, builder)
 		slog.InfoContext(ctx, "bundle routed to selected builder", "builder", builder, "routing_mode", "select")
 	} else {
@@ -790,17 +801,18 @@ func processArb(
 		})
 	}
 
-	// Record result for miss rate tracking
+	// Record result for miss rate tracking (builder ACK at submit time).
 	included := successes > 0
 	if included {
 		recordBundleIncluded(sourceLbl, profitWei, gasGwei, arb.TotalGas)
 	}
 	rm.RecordBundleResult(included)
 
-	// Fold the per-builder outcome into the A/B selector and TimescaleDB.
-	recordBundleMetrics(sourceLbl, profitWei, receivedAt, results, included)
+	// Track daily volume at submit time; realized PnL is reconciled by the
+	// inclusion poll loop once on-chain inclusion is confirmed.
+	rm.RecordTrade(tradeValueWei, big.NewInt(0))
 
-	// Update JSON metrics snapshot and publish Redis events for telebot.
+	// Resolve winning builder for metrics, Redis events, and inclusion poll.
 	profitEth := weiToEth(profitWei)
 	gasEth := gasGwei * float64(arb.TotalGas) / 1e9
 	winningBuilder := ""
@@ -815,6 +827,24 @@ func processArb(
 	if winningBuilder == "" && len(results) > 0 {
 		winningBuilder = results[0].Builder
 	}
+
+	// Fold the per-builder outcome into the A/B selector and TimescaleDB.
+	recordBundleMetrics(sourceLbl, profitWei, receivedAt, results, included)
+
+	// Enqueue for on-chain inclusion reconciliation.
+	if winningBuilder != "" && bundleHash != "" {
+		enqueuePendingBundle(pendingBundle{
+			bundleID:    bundleID,
+			bundleHash:  bundleHash,
+			targetBlock: targetBlock,
+			builder:     winningBuilder,
+			profitWei:   profitWei,
+			source:      sourceLbl,
+			submittedAt: now,
+		})
+	}
+
+	// Update JSON metrics snapshot and publish Redis events for telebot.
 	updateSnapshotFromBundle(profitEth, gasEth, winningBuilder, bundleHash)
 	if eventPublisher != nil && eventPublisher.Enabled() {
 		eventPublisher.PublishNewBundle(bundleHash, winningBuilder, profitEth, gasEth)
@@ -937,10 +967,7 @@ func looksLikeRevert(errMsg string) bool {
 // errors it reconnects with a backoff delay. The function exits when ctx
 // is cancelled.
 func consumeArbStream(ctx context.Context, client *aethergrpc.Client, bundler *BundleConstructor, submitter *Submitter, rm *risk.RiskManager, ledger db.Ledger, executorAddr string, liveBalance *LiveBalance) {
-	const (
-		minProfitETH   = 0.001 // Minimum profit threshold in ETH
-		reconnectDelay = 5 * time.Second
-	)
+	const reconnectDelay = 5 * time.Second
 
 	for {
 		select {
@@ -949,6 +976,7 @@ func consumeArbStream(ctx context.Context, client *aethergrpc.Client, bundler *B
 		default:
 		}
 
+		minProfitETH := rm.MinProfitETH()
 		stream, err := client.StreamArbs(ctx, minProfitETH)
 		if err != nil {
 			slog.WarnContext(ctx, "StreamArbs connect error, will retry", "err", err, "retry_in", reconnectDelay.String())
@@ -993,11 +1021,16 @@ func consumeArbStream(ctx context.Context, client *aethergrpc.Client, bundler *B
 // per-builder signal available and is good enough to rank relative performance.
 func recordBundleMetrics(source string, profitWei *big.Int, receivedAt time.Time, results []SubmissionResult, included bool) {
 	profitEth := weiToEth(profitWei)
+	profitCredited := false
 	for _, r := range results {
 		if builderSelector != nil {
 			out := strategy.Outcome{Included: r.Success}
-			if r.Success && included {
+			// In fanout mode only credit the first ACKing builder to avoid
+			// inflating per-builder scores; on-chain truth is reconciled by
+			// the inclusion poll loop.
+			if r.Success && included && !profitCredited {
 				out.ProfitWei = profitWei
+				profitCredited = true
 			}
 			builderSelector.Record(r.Builder, out)
 		}

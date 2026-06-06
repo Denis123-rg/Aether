@@ -18,6 +18,7 @@ package strategy
 
 import (
 	"math/big"
+	"math/rand"
 	"sort"
 	"sync"
 )
@@ -216,6 +217,31 @@ func (s *Selector) Best() string {
 		return ""
 	}
 	return r[0]
+}
+
+// Pick selects a builder using the current allocation weights. Each call
+// samples proportionally to Allocation() so exploration floor is honoured at
+// routing time, not just in dashboards. Falls back to Best() when the RNG is
+// nil (deterministic tests) or weights are degenerate.
+func (s *Selector) Pick(rng *rand.Rand) string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if len(s.order) == 0 {
+		return ""
+	}
+	alloc := s.allocationLocked()
+	if rng == nil {
+		return s.rankLocked()[0]
+	}
+	r := rng.Float64()
+	var cum float64
+	for _, b := range s.order {
+		cum += alloc[b]
+		if r <= cum {
+			return b
+		}
+	}
+	return s.order[len(s.order)-1]
 }
 
 // Allocation returns the fraction of next-window submission volume each builder

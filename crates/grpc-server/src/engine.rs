@@ -623,8 +623,18 @@ impl AetherEngine {
         }
 
         if !added.is_empty() && self.rpc_provider.is_some() {
-            self.fetch_initial_reserves().await;
+            let addrs: Vec<Address> = added.iter().map(|p| p.address).collect();
+            self.fetch_reserves_for_addresses(&addrs).await;
         }
+    }
+
+    /// Fetch on-chain reserves for a specific set of pool addresses only.
+    pub async fn fetch_reserves_for_addresses(&self, addresses: &[Address]) {
+        if addresses.is_empty() {
+            return;
+        }
+        let allowed: std::collections::HashSet<Address> = addresses.iter().copied().collect();
+        self.fetch_initial_reserves_filtered(Some(&allowed)).await;
     }
 
     /// Remove a pool from the registry and price graph.
@@ -1175,6 +1185,13 @@ impl AetherEngine {
     /// Updates the price graph with real exchange rates so detection works
     /// immediately after startup.
     pub async fn fetch_initial_reserves(&self) {
+        self.fetch_initial_reserves_filtered(None).await;
+    }
+
+    async fn fetch_initial_reserves_filtered(
+        &self,
+        only_addresses: Option<&std::collections::HashSet<Address>>,
+    ) {
         let provider = match &self.rpc_provider {
             Some(p) => p.clone(),
             None => {
@@ -1186,7 +1203,15 @@ impl AetherEngine {
         // Collect pool metadata snapshot to avoid holding the guard during RPC calls.
         let pools: Vec<(Address, PoolMetadata)> = {
             let registry = self.pool_registry.load();
-            registry.iter().map(|(a, m)| (*a, m.clone())).collect()
+            registry
+                .iter()
+                .filter(|(addr, _)| {
+                    only_addresses
+                        .map(|set| set.iter().any(|x| x == *addr))
+                        .unwrap_or(true)
+                })
+                .map(|(a, m)| (*a, m.clone()))
+                .collect()
         };
 
         if pools.is_empty() {

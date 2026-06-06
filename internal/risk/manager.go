@@ -353,6 +353,9 @@ func (rm *RiskManager) Resume() error {
 	rm.mu.Lock()
 	defer rm.mu.Unlock()
 	old := rm.state.Current()
+	if old == StateHalted {
+		return fmt.Errorf("cannot resume from Halted — manual reset required")
+	}
 	if err := rm.state.Transition(StateRunning); err != nil {
 		return err
 	}
@@ -438,6 +441,32 @@ func (rm *RiskManager) RecordBundleResult(included bool) {
 	if rm.bundleResultCount < windowSize {
 		rm.bundleResultCount++
 	}
+
+	// Bundle miss-rate alert: sustained misses above threshold emit a warning
+	// so operators can investigate builder connectivity or stale simulations.
+	if rm.bundleResultCount >= windowSize/2 {
+		missRate := rm.bundleMissRateLocked()
+		if missRate >= rm.config.BundleMissRateAlertPct {
+			slog.Warn("high bundle miss rate",
+				"miss_pct", missRate,
+				"threshold_pct", rm.config.BundleMissRateAlertPct,
+				"window", rm.bundleResultCount,
+			)
+		}
+	}
+}
+
+func (rm *RiskManager) bundleMissRateLocked() float64 {
+	if rm.bundleResultCount == 0 {
+		return 0
+	}
+	included := 0
+	for i := 0; i < rm.bundleResultCount; i++ {
+		if rm.bundleResults[i] {
+			included++
+		}
+	}
+	return float64(rm.bundleResultCount-included) / float64(rm.bundleResultCount) * 100
 }
 
 // BundleMissRate returns the current bundle miss rate as a percentage

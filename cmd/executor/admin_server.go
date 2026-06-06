@@ -54,9 +54,9 @@ func startAdminServer(rm *risk.RiskManager, discoveryURL string, port int, pub a
 
 		mux := http.NewServeMux()
 		mux.HandleFunc("/metrics/json", handleMetricsJSON)
-		mux.HandleFunc("/admin/pause", handleAdminPause)
-		mux.HandleFunc("/admin/resume", handleAdminResume)
-		mux.HandleFunc("/admin/set_min_profit", handleSetMinProfit)
+		mux.HandleFunc("/admin/pause", requireAdminAuth(handleAdminPause))
+		mux.HandleFunc("/admin/resume", requireAdminAuth(handleAdminResume))
+		mux.HandleFunc("/admin/set_min_profit", requireAdminAuth(handleSetMinProfit))
 		mux.HandleFunc("/health", handleHealthJSON)
 
 		go func() {
@@ -294,6 +294,33 @@ func setRPCHealthy(healthy bool) {
 	globalSnapshotStore.Update(func(s *metrics.Snapshot) {
 		s.RPCHealthy = healthy
 	})
+}
+
+func setRedisHealthy(healthy bool) {
+	globalSnapshotStore.Update(func(s *metrics.Snapshot) {
+		s.RedisHealthy = healthy
+	})
+}
+
+// requireAdminAuth wraps admin POST handlers with token auth when
+// AETHER_ADMIN_TOKEN is set. Unauthenticated requests receive 401.
+func requireAdminAuth(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		token := os.Getenv("AETHER_ADMIN_TOKEN")
+		if token == "" {
+			next(w, r)
+			return
+		}
+		got := r.Header.Get("X-Aether-Admin-Token")
+		if got == "" {
+			got = r.URL.Query().Get("token")
+		}
+		if got != token {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		next(w, r)
+	}
 }
 
 // signerHealthLoop periodically probes the remote signer and updates /health.

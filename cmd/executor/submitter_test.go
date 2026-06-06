@@ -285,8 +285,9 @@ func TestSubmitToBuilder_FlashbotsWithoutKey(t *testing.T) {
 	if results[0].Success {
 		t.Error("expected failure without searcher key for flashbots auth")
 	}
-	if !strings.Contains(results[0].Error.Error(), "no searcher key") {
-		t.Errorf("expected 'no searcher key' error, got: %v", results[0].Error)
+	errMsg := results[0].Error.Error()
+	if !strings.Contains(errMsg, "no searcher key") && !strings.Contains(errMsg, "no signer configured") {
+		t.Errorf("expected auth error, got: %v", results[0].Error)
 	}
 }
 

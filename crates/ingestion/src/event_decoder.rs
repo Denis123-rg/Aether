@@ -46,6 +46,15 @@ sol! {
         address pair,
         uint256 allPairsLength
     );
+
+    // Uniswap V3 PoolCreated (factory event for discovery)
+    event PoolCreated(
+        address indexed token0,
+        address indexed token1,
+        uint24 indexed fee,
+        int24 tickSpacing,
+        address pool
+    );
 }
 
 /// Decoded pool update event
@@ -108,6 +117,10 @@ impl EventSignatures {
     pub fn pair_created_topic() -> B256 {
         PairCreated::SIGNATURE_HASH
     }
+
+    pub fn pool_created_v3_topic() -> B256 {
+        PoolCreated::SIGNATURE_HASH
+    }
 }
 
 /// Reason a log failed to decode. Surfaced as the `reason` label on
@@ -163,6 +176,8 @@ pub fn decode_log(
         decode_token_exchange(topics, data, source_address)
     } else if topic0 == EventSignatures::pair_created_topic() {
         decode_pair_created(topics, data)
+    } else if topic0 == EventSignatures::pool_created_v3_topic() {
+        decode_pool_created_v3(topics, data)
     } else {
         Err(DecodeReason::UnknownTopic)
     }
@@ -302,6 +317,33 @@ fn decode_pair_created(topics: &[B256], data: &[u8]) -> Result<PoolEvent, Decode
         token1,
         pool,
     })
+}
+
+/// Decode Uniswap V3 `PoolCreated` factory event. Fee is in hundredths of a bip
+/// (e.g. 3000 = 0.30% = 30 bps).
+fn decode_pool_created_v3(topics: &[B256], data: &[u8]) -> Result<PoolEvent, DecodeReason> {
+    if topics.len() < 4 {
+        return Err(DecodeReason::InsufficientTopics);
+    }
+    if data.len() < 64 {
+        return Err(DecodeReason::MalformedPayload);
+    }
+    let token0 = Address::from_slice(&topics[1].as_slice()[12..]);
+    let token1 = Address::from_slice(&topics[2].as_slice()[12..]);
+    let pool = Address::from_slice(&data[32..52]);
+
+    Ok(PoolEvent::PoolCreated {
+        token0,
+        token1,
+        pool,
+    })
+}
+
+/// Returns the V3 pool fee in basis points from the indexed fee topic.
+pub fn v3_fee_bps_from_topic(fee_topic: &B256) -> u32 {
+    let fee = U256::from_be_slice(fee_topic.as_slice());
+    // fee is in hundredths of a bip: divide by 100 to get bps.
+    (fee / U256::from(100u64)).as_limbs()[0] as u32
 }
 
 #[cfg(test)]

@@ -367,7 +367,7 @@ fn run_revm_round_trip(
 
 fn revm_transact_success<EVM>(evm: &mut EVM, tx: TxEnv) -> bool
 where
-    EVM: ExecuteEvm<Tx = TxEnv>,
+    EVM: ExecuteEvm<Tx = TxEnv, ExecutionResult = ExecutionResult>,
 {
     matches!(
         evm.transact(tx),
@@ -377,7 +377,7 @@ where
 
 fn revm_transact_output<EVM>(evm: &mut EVM, tx: TxEnv) -> Option<U256>
 where
-    EVM: ExecuteEvm<Tx = TxEnv>,
+    EVM: ExecuteEvm<Tx = TxEnv, ExecutionResult = ExecutionResult>,
 {
     let rs = evm.transact(tx).ok()?;
     match rs.result {
@@ -628,7 +628,7 @@ mod tests {
     async fn revm_validates_real_weth_usdc_pool() {
         let rpc = std::env::var("ETH_RPC_URL").expect("ETH_RPC_URL");
         let provider: alloy::providers::DynProvider<alloy::network::Ethereum> =
-            aether_discovery::service::connect_rpc_provider(&rpc)
+            crate::service::connect_rpc_provider(&rpc)
                 .await
                 .expect("provider");
         let pool = address!("B4e16d0168e52d35CaCD2c6185b44281Ec28C9Dc");

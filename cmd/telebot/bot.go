@@ -242,7 +242,8 @@ func (b *TeleBot) updateDashboard(ctx context.Context, chatID int64, msgID int) 
 
 	edit := tgbotapi.NewEditMessageText(chatID, msgID, text)
 	edit.ParseMode = "Markdown"
-	edit.ReplyMarkup = &dashboardKeyboard()
+	kbd := dashboardKeyboard()
+	edit.ReplyMarkup = &kbd
 	if _, err := b.api.Send(edit); err != nil {
 		slog.Debug("edit dashboard failed", "err", err)
 	}

@@ -7,7 +7,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use aether_common::types::ProtocolType;
-use aether_ingestion::event_decoder::{decode_log, EventSignatures, PoolEvent};
+use aether_ingestion::event_decoder::{
+    decode_log, v3_fee_bps_from_topic, EventSignatures, PoolEvent,
+};
 use alloy::network::Ethereum;
 use alloy::primitives::{Address, B256};
 use alloy::providers::{DynProvider, Provider, ProviderBuilder, WsConnect};
@@ -30,7 +32,7 @@ pub struct FactoryPoolCreated {
 }
 
 /// Decode a raw log into a `FactoryPoolCreated` event when it matches a
-/// configured factory's `PairCreated` topic.
+/// configured factory's `PairCreated` or Uniswap V3 `PoolCreated` topic.
 pub fn decode_pair_created_log(
     factory: Address,
     protocol: ProtocolType,
@@ -38,9 +40,21 @@ pub fn decode_pair_created_log(
     topics: &[B256],
     data: &[u8],
 ) -> Option<FactoryPoolCreated> {
-    if topics.is_empty() || topics[0] != EventSignatures::pair_created_topic() {
+    if topics.is_empty() {
         return None;
     }
+    let topic0 = topics[0];
+    if topic0 != EventSignatures::pair_created_topic()
+        && topic0 != EventSignatures::pool_created_v3_topic()
+    {
+        return None;
+    }
+    let effective_fee = if topic0 == EventSignatures::pool_created_v3_topic() && topics.len() >= 4
+    {
+        v3_fee_bps_from_topic(&topics[3])
+    } else {
+        fee_bps
+    };
     match decode_log(topics, data, factory, Some(protocol)) {
         Ok(PoolEvent::PoolCreated {
             token0,
@@ -49,7 +63,7 @@ pub fn decode_pair_created_log(
         }) => Some(FactoryPoolCreated {
             factory,
             protocol,
-            fee_bps,
+            fee_bps: effective_fee,
             token0,
             token1,
             pool,
@@ -59,11 +73,13 @@ pub fn decode_pair_created_log(
 }
 
 /// Build an alloy log filter for all configured factory addresses.
+/// Subscribes to both V2 `PairCreated` and V3 `PoolCreated` topics.
 pub fn build_factory_filter(factories: &[(Address, ProtocolType, u32)]) -> Filter {
     let addresses: Vec<Address> = factories.iter().map(|(a, _, _)| *a).collect();
-    Filter::new()
-        .address(addresses)
-        .event_signature(EventSignatures::pair_created_topic())
+    Filter::new().address(addresses).events(vec![
+        EventSignatures::pair_created_topic(),
+        EventSignatures::pool_created_v3_topic(),
+    ])
 }
 
 /// Process a batch of logs from a subscription and ingest valid pools.
@@ -226,9 +242,7 @@ async fn spawn_ws_listener(
             }
             Err(e) => {
                 attempt = attempt.saturating_add(1);
-                let backoff = Duration::from_secs(1)
-                    .saturating_mul(1u64 << attempt.min(5))
-                    .min(max_backoff);
+                let backoff = Duration::from_secs(1u64 << attempt.min(5)).min(max_backoff);
                 warn!(
                     attempt,
                     backoff_ms = backoff.as_millis() as u64,
