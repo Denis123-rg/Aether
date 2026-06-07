@@ -193,4 +193,32 @@ mod tests {
             "inverse should recover input within 1% fee slack"
         );
     }
+
+    #[test]
+    fn test_zero_reserves_amount_out_none() {
+        let mut pool = setup_pool();
+        pool.update_state(U256::ZERO, U256::ZERO);
+        assert!(pool.get_amount_out(pool.token0, U256::from(1000u64)).is_none());
+        assert!(pool.get_amount_in(pool.token0, U256::from(1000u64)).is_none());
+    }
+
+    #[test]
+    fn test_amount_out_huge_input_still_computes() {
+        let pool = setup_pool();
+        let huge = U256::from(10u128.pow(30));
+        // V2 formula still returns a value bounded by reserve; it does not error.
+        let out = pool.get_amount_out(pool.token1, huge);
+        assert!(out.is_some());
+        assert!(out.unwrap() < pool.reserve0);
+    }
+
+    #[test]
+    fn test_bad_token_returns_none_extended() {
+        let pool = setup_pool();
+        for b in [0x01u8, 0x02, 0xff] {
+            let bad = Address::repeat_byte(b);
+            assert!(pool.get_amount_out(bad, U256::from(1000u64)).is_none());
+            assert!(pool.get_amount_in(bad, U256::from(1000u64)).is_none());
+        }
+    }
 }

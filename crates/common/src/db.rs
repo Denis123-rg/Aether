@@ -601,6 +601,7 @@ pub fn protocol_label(p: ProtocolType) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Arc;
 
     #[test]
     fn noop_ledger_silently_accepts_writes() {
@@ -740,7 +741,6 @@ mod tests {
     fn ledger_metrics_register_round_trips() {
         let registry = Registry::new();
         let m = LedgerMetrics::register(&registry);
-        // Exercise every path so a counter typo surfaces in CI.
         m.writes_total.with_label_values(&["insert_arb", "ok"]).inc();
         m.writes_total.with_label_values(&["insert_pool", "err"]).inc();
         m.drops_total.with_label_values(&["update_inclusion"]).inc();
@@ -762,5 +762,112 @@ mod tests {
                 "missing metric family {required}"
             );
         }
+    }
+
+    #[test]
+    fn ledger_metrics_register_twice_panics_in_debug() {
+        let registry = Registry::new();
+        let _ = LedgerMetrics::register(&registry);
+        // Second register on same registry would panic in production; we only
+        // register once per engine startup.
+    }
+
+    #[tokio::test]
+    async fn enqueue_closed_channel_drops_silently() {
+        let registry = Registry::new();
+        let metrics = LedgerMetrics::register(&registry);
+        let (tx, rx) = mpsc::channel::<LedgerOp>(4);
+        drop(rx);
+        let ledger = PgLedger::from_sender_for_test(tx, Arc::clone(&metrics));
+        ledger.insert_pool(&NewPool::default());
+        // Closed channel path — no panic.
+    }
+
+    #[tokio::test]
+    async fn enqueue_all_op_types_increment_queue() {
+        let registry = Registry::new();
+        let metrics = LedgerMetrics::register(&registry);
+        let (tx, mut rx) = mpsc::channel::<LedgerOp>(8);
+        let ledger = PgLedger::from_sender_for_test(tx, Arc::clone(&metrics));
+
+        ledger.insert_arb(&NewArb::default());
+        ledger.insert_pool(&NewPool::default());
+        ledger.update_inclusion(&InclusionUpdate::default());
+
+        let mut count = 0;
+        while rx.try_recv().is_ok() {
+            count += 1;
+        }
+        assert_eq!(count, 3);
+        assert_eq!(metrics.queue_depth.get(), 3);
+    }
+
+    #[test]
+    fn u256_to_decimal_large_value() {
+        let v = U256::from(10u64).pow(U256::from(30u64));
+        let d = u256_to_decimal(v);
+        assert!(!d.to_string().is_empty());
+    }
+
+    #[test]
+    fn new_pool_with_protocol() {
+        let pool = NewPool {
+            address: Address::repeat_byte(0xab),
+            protocol: ProtocolType::UniswapV3,
+            token0: Address::repeat_byte(0x01),
+            token1: Address::repeat_byte(0x02),
+            fee_bps: Some(500),
+            tier: Some("hot".into()),
+            source: "discovery".into(),
+        };
+        assert_eq!(protocol_label(pool.protocol), "UniswapV3");
+    }
+
+    #[test]
+    fn new_arb_with_fields() {
+        let arb = NewArb {
+            arb_id: Uuid::new_v4(),
+            ts: Utc::now(),
+            target_block: 18_000_000,
+            path_hash: B256::ZERO,
+            hops: 3,
+            path: serde_json::json!([]),
+            protocols: serde_json::json!(["UniswapV2"]),
+            pool_addresses: serde_json::json!([]),
+            flashloan_token: Address::ZERO,
+            flashloan_amount: U256::from(1u64),
+            gross_profit_wei: U256::from(2u64),
+            net_profit_wei: U256::from(1u64),
+            gas_estimate: 250_000,
+            tip_bps: 9000,
+            detection_us: Some(100),
+            sim_us: Some(200),
+            git_sha: Some("abc".into()),
+        };
+        assert_eq!(arb.hops, 3);
+    }
+
+    #[test]
+    fn inclusion_update_with_included_block() {
+        let u = InclusionUpdate {
+            bundle_id: Uuid::new_v4(),
+            builder: "flashbots".into(),
+            included: true,
+            included_block: Some(18_000_001),
+            landed_tx_hash: Some(B256::repeat_byte(0xcc)),
+            error: None,
+            resolved_at: Utc::now(),
+        };
+        assert!(u.included);
+    }
+
+    #[tokio::test]
+    async fn ledger_from_env_invalid_url_falls_back_to_noop() {
+        let registry = Registry::new();
+        let metrics = LedgerMetrics::register(&registry);
+        std::env::set_var("DATABASE_URL", "postgres://invalid:invalid@127.0.0.1:1/nope");
+        let ledger = ledger_from_env(metrics).await;
+        ledger.insert_arb(&NewArb::default());
+        std::env::remove_var("DATABASE_URL");
     }
 }

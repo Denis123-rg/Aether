@@ -102,5 +102,7 @@ func (a *Alerter) dispatch(channel AlertChannel, alert Alert) {
 
 // History returns recent alerts
 func (a *Alerter) History() []Alert {
-	return a.history
+	out := make([]Alert, len(a.history))
+	copy(out, a.history)
+	return out
 }

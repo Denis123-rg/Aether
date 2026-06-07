@@ -61,8 +61,28 @@ func main() {
 	}
 }
 
-// runServe loads the encrypted key and serves signing requests until a signal.
+// runServe loads the encrypted key and serves signing requests until ctx is
+// cancelled or a SIGINT/SIGTERM is received.
 func runServe(argv []string) error {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+	go func() {
+		select {
+		case s := <-sigCh:
+			slog.Info("signer received signal, shutting down", "signal", s.String())
+			cancel()
+		case <-ctx.Done():
+		}
+	}()
+
+	return runServeContext(ctx, argv)
+}
+
+// runServeContext is the testable core of runServe; it exits when ctx is cancelled.
+func runServeContext(ctx context.Context, argv []string) error {
 	fs := flag.NewFlagSet("serve", flag.ContinueOnError)
 	configPath := fs.String("config", config.ConfigPath("signer.yaml"), "path to signer.yaml")
 	if err := fs.Parse(argv); err != nil {
@@ -97,18 +117,7 @@ func runServe(argv []string) error {
 	}
 	slog.Info("signer listening", "socket", srv.Addr())
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
-	go func() {
-		s := <-sigCh
-		slog.Info("signer received signal, shutting down", "signal", s.String())
-		cancel()
-	}()
-
-	// Serve blocks until ctx is cancelled (signal) or the listener errors.
+	// Serve blocks until ctx is cancelled or the listener errors.
 	if err := srv.Serve(ctx); err != nil {
 		return fmt.Errorf("serve: %w", err)
 	}

@@ -584,6 +584,7 @@ pub fn empty_cache_db() -> CacheDB<EmptyDB> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alloy::primitives::{Address, Bytes};
     use alloy::primitives::address;
     #[allow(unused_imports)] // used only by the #[ignore] fork test
     use alloy::providers::Provider;
@@ -1162,5 +1163,162 @@ mod tests {
             Some(RejectReason::ArbHalted),
             "pre-existing INVALID at ARB_TO must drive the reject reason"
         );
+    }
+
+    // ── Coverage push: reject labels, decode branches, sim edges ─────────
+
+    #[test]
+    fn backrun_sim_result_rejected_helper() {
+        let r = BackrunSimResult::rejected(RejectReason::SimError, 21_000, 0);
+        assert!(!r.accepted);
+        assert_eq!(r.reject, Some(RejectReason::SimError));
+        assert_eq!(r.victim_gas_used, 21_000);
+    }
+
+    #[test]
+    fn reject_reason_equality() {
+        assert_eq!(RejectReason::ArbReverted, RejectReason::ArbReverted);
+        assert_ne!(RejectReason::ArbReverted, RejectReason::VictimReverted);
+    }
+
+    #[test]
+    fn decode_revert_panic_div_zero() {
+        let mut payload = vec![0x4e, 0x48, 0x7b, 0x71];
+        payload.extend_from_slice(&U256::from(0x12u64).to_be_bytes::<32>());
+        let reason = decode_revert_reason(&payload);
+        assert!(reason.contains("division/modulo by zero"));
+    }
+
+    #[test]
+    fn decode_revert_panic_oob() {
+        let mut payload = vec![0x4e, 0x48, 0x7b, 0x71];
+        payload.extend_from_slice(&U256::from(0x32u64).to_be_bytes::<32>());
+        let reason = decode_revert_reason(&payload);
+        assert!(reason.contains("out-of-bounds"));
+    }
+
+    #[test]
+    fn decode_revert_panic_malformed_body() {
+        let payload = vec![0x4e, 0x48, 0x7b, 0x71, 0x01];
+        assert_eq!(decode_revert_reason(&payload), "Panic(<malformed>)");
+    }
+
+    #[test]
+    fn decode_revert_three_byte_payload() {
+        let reason = decode_revert_reason(&[0x01, 0x02, 0x03]);
+        assert!(reason.starts_with("short(0x"));
+    }
+
+    macro_rules! reject_label {
+        ($name:ident, $r:expr, $want:expr) => {
+            #[test]
+            fn $name() {
+                assert_eq!($r.as_str(), $want);
+            }
+        };
+    }
+    reject_label!(lbl_victim_rev, RejectReason::VictimReverted, "victim_reverted");
+    reject_label!(lbl_victim_halt, RejectReason::VictimHalted, "victim_halted");
+    reject_label!(lbl_arb_rev, RejectReason::ArbReverted, "arb_reverted");
+    reject_label!(lbl_arb_halt, RejectReason::ArbHalted, "arb_halted");
+    reject_label!(lbl_neg_gas, RejectReason::NegativeAfterGas, "negative_after_gas");
+    reject_label!(lbl_sim_err, RejectReason::SimError, "sim_error");
+    reject_label!(lbl_rpc, RejectReason::RpcTransport, "rpc_transport");
+    reject_label!(lbl_timeout, RejectReason::SimTimeout, "sim_timeout");
+
+    macro_rules! classify_err {
+        ($name:ident, $msg:expr, $want:expr) => {
+            #[test]
+            fn $name() {
+                let err: EVMError<String> = EVMError::Database($msg.to_string());
+                assert_eq!(classify_transact_err(&err), $want);
+            }
+        };
+    }
+    classify_err!(cls_db_timeout, "timeout", RejectReason::RpcTransport);
+    classify_err!(cls_db_closed, "connection closed", RejectReason::RpcTransport);
+    classify_err!(cls_db_reset, "connection reset", RejectReason::RpcTransport);
+
+    #[test]
+    fn classify_custom_stays_sim_error() {
+        let err: EVMError<String> = EVMError::Custom("oops".into());
+        assert_eq!(classify_transact_err(&err), RejectReason::SimError);
+    }
+
+    #[test]
+    fn victim_tx_clone_debug() {
+        let v = default_victim();
+        let _ = format!("{:?}", v.clone());
+    }
+
+    #[test]
+    fn arb_tx_fields() {
+        let a = default_arb();
+        assert_eq!(a.gas_limit, 200_000);
+        assert!(a.data.is_empty());
+    }
+
+    #[test]
+    fn validator_params_defaults() {
+        let p = default_params();
+        assert_eq!(p.chain_id, 1);
+        assert_eq!(p.balance_slot, U256::from(3u64));
+    }
+
+    macro_rules! decode_custom {
+        ($name:ident, $($b:expr),+) => {
+            #[test]
+            fn $name() {
+                let payload = [$( $b ),+];
+                let reason = decode_revert_reason(&payload);
+                assert!(reason.starts_with("custom(0x") || reason.starts_with("short(0x"));
+            }
+        };
+    }
+    decode_custom!(dec_c0, 0xAA, 0xBB, 0xCC, 0xDD);
+    decode_custom!(dec_c1, 0x11, 0x22, 0x33, 0x44, 0x55);
+    decode_custom!(dec_c2, 0xDE, 0xAD, 0xBE, 0xEF);
+    decode_custom!(dec_c3, 0x00, 0x00, 0x00, 0x01);
+    decode_custom!(dec_c4, 0xFF, 0xEE, 0xDD, 0xCC);
+
+    macro_rules! panic_code {
+        ($name:ident, $code:expr, $frag:expr) => {
+            #[test]
+            fn $name() {
+                let mut payload = vec![0x4e, 0x48, 0x7b, 0x71];
+                payload.extend_from_slice(&U256::from($code).to_be_bytes::<32>());
+                let reason = decode_revert_reason(&payload);
+                assert!(reason.contains($frag));
+            }
+        };
+    }
+    panic_code!(panic_enum, 0x21, "invalid enum");
+    panic_code!(panic_pop, 0x31, "pop on empty");
+    panic_code!(panic_mem, 0x41, "out-of-memory");
+    panic_code!(panic_fn, 0x51, "invalid internal function");
+    panic_code!(panic_unknown, 0x99, "unknown panic");
+
+    #[test]
+    fn skip_victim_override_path_runs() {
+        let state = ForkedState::new_empty(18_000_000, 1_700_000_000, 0);
+        let mut params = default_params();
+        params.skip_victim_with_overrides = Some(vec![(
+            VICTIM_TO,
+            U256::from(8u64),
+            U256::from(1u64) << 112,
+        )]);
+        let result = validate_backrun_cache(state, &default_victim(), &default_arb(), &params);
+        assert!(!result.accepted);
+    }
+
+    #[test]
+    fn victim_value_transfer_succeeds() {
+        let mut state = ForkedState::new_empty(18_000_000, 1_700_000_000, 0);
+        state.insert_account(VICTIM_FROM, U256::from(1u64), Bytes::default());
+        let mut victim = default_victim();
+        victim.value = U256::from(1u64);
+        let result = validate_backrun_cache(state, &victim, &default_arb(), &default_params());
+        assert!(!result.accepted);
+        assert_eq!(result.reject, Some(RejectReason::NegativeAfterGas));
     }
 }

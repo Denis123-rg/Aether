@@ -170,14 +170,18 @@ func fmtAvg(v float64) string {
 	return fmt.Sprintf("%.2f", v)
 }
 
-// ServeDashboard starts the dashboard HTTP server.
-func (d *Dashboard) ServeDashboard(addr string) error {
+// Handler returns the HTTP handler for dashboard pages and stats API.
+func (d *Dashboard) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", d.handleDashboard)
 	mux.HandleFunc("/api/stats", d.handleStats)
+	return mux
+}
 
+// ServeDashboard starts the dashboard HTTP server.
+func (d *Dashboard) ServeDashboard(addr string) error {
 	slog.Info("dashboard server listening", "addr", addr)
-	return http.ListenAndServe(addr, mux)
+	return http.ListenAndServe(addr, d.Handler())
 }
 
 func (d *Dashboard) handleDashboard(w http.ResponseWriter, r *http.Request) {

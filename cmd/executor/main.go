@@ -16,8 +16,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/ethereum/go-ethereum/common"
-	"github.com/ethereum/go-ethereum/ethclient"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
@@ -210,49 +208,32 @@ func main() {
 	// ETH_RPC_URL is now required — the chain-ID check, bytecode check, and
 	// live balance polling all need a node connection.
 	rpcURL := os.Getenv("ETH_RPC_URL")
-	if rpcURL == "" {
-		slog.Error("ETH_RPC_URL not set — required for chain-id / bytecode / balance checks")
-		os.Exit(1)
-	}
 	dialCtx, dialCancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer dialCancel()
-	ethClient, err := ethclient.DialContext(dialCtx, rpcURL)
+	boot, err := bootstrap(dialCtx, execCfg, rpcURL, nil)
 	if err != nil {
-		slog.Error("failed to connect to ETH_RPC_URL", "url", redactRPCURL(rpcURL), "err", redactRPCError(err, rpcURL))
+		if rpcURL == "" {
+			slog.Error("ETH_RPC_URL not set — required for chain-id / bytecode / balance checks")
+		} else if strings.Contains(err.Error(), "dial eth rpc") {
+			slog.Error("failed to connect to ETH_RPC_URL", "url", redactRPCURL(rpcURL), "err", redactRPCError(err, rpcURL))
+		} else if strings.Contains(err.Error(), "chain id") {
+			slog.Error("eth_chainId failed", "err", redactRPCError(err, rpcURL))
+		} else if strings.Contains(err.Error(), "chain-id mismatch") {
+			slog.Error("chain-id mismatch", "err", err)
+		} else if strings.Contains(err.Error(), "get code") {
+			slog.Error("eth_getCode failed", "executor_address", execCfg.ExecutorAddress, "err", redactRPCError(err, rpcURL))
+		} else if strings.Contains(err.Error(), "no bytecode") {
+			slog.Error("executor address has no bytecode on chain", "executor_address", execCfg.ExecutorAddress)
+		} else {
+			slog.Error("bootstrap failed", "err", err)
+		}
 		os.Exit(1)
 	}
+	ethClient := boot.Client
+	chainID := boot.ChainID
 	slog.Info("connected to ethereum node")
-
-	// Cross-check chain ID: the node must agree with the expected chain in
-	// executor.yaml. A mismatch here typically means someone pointed a
-	// mainnet config at a testnet RPC (or vice versa) — refuse to start.
-	chainCtx, chainCancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer chainCancel()
-	chainID, err := ethClient.ChainID(chainCtx)
-	if err != nil {
-		slog.Error("eth_chainId failed", "err", redactRPCError(err, rpcURL))
-		os.Exit(1)
-	}
-	if chainID.Int64() != execCfg.ExpectedChainID {
-		slog.Error("chain-id mismatch", "node_chain_id", chainID.Int64(), "config_chain_id", execCfg.ExpectedChainID)
-		os.Exit(1)
-	}
-	slog.Info("chain ID verified", "chain_id", chainID.Int64())
-
-	// Verify the configured executor contract actually exists on-chain. A
-	// zero-bytecode result means we'd be sending bundles to a non-contract.
-	codeCtx, codeCancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer codeCancel()
-	code, err := ethClient.CodeAt(codeCtx, common.HexToAddress(execCfg.ExecutorAddress), nil)
-	if err != nil {
-		slog.Error("eth_getCode failed", "executor_address", execCfg.ExecutorAddress, "err", redactRPCError(err, rpcURL))
-		os.Exit(1)
-	}
-	if len(code) == 0 {
-		slog.Error("executor address has no bytecode on chain", "executor_address", execCfg.ExecutorAddress, "chain_id", chainID.Int64())
-		os.Exit(1)
-	}
-	slog.Info("executor contract verified on-chain", "executor_address", execCfg.ExecutorAddress, "code_bytes", len(code))
+	slog.Info("chain ID verified", "chain_id", chainID)
+	slog.Info("executor contract verified on-chain", "executor_address", execCfg.ExecutorAddress)
 
 	// Signer selection. The out-of-process remote signer is preferred whenever
 	// AETHER_SIGNER_SOCKET is set (production / systemd): the searcher key never
@@ -266,7 +247,7 @@ func main() {
 		remoteSigner   *RemoteSigner
 	)
 	if signerSocket := resolveSignerSocket(); signerSocket != "" {
-		rs, rsErr := NewRemoteSigner(signerSocket, chainID.Int64())
+		rs, rsErr := NewRemoteSigner(signerSocket, chainID)
 		if rsErr != nil {
 			slog.Error("remote signer connect failed", "socket", signerSocket, "err", rsErr)
 			os.Exit(1)
@@ -298,7 +279,7 @@ func main() {
 			os.Exit(1)
 		}
 		if searcherKey != "" {
-			local, signerErr := NewTransactionSigner(searcherKey, chainID.Int64())
+			local, signerErr := NewTransactionSigner(searcherKey, chainID)
 			if signerErr != nil {
 				slog.Error("failed to load SEARCHER_KEY", "err", signerErr)
 				os.Exit(1)
@@ -337,7 +318,7 @@ func main() {
 		MetricsStore:   metricsStore,
 		EventPublisher: eventPublisher,
 		ExecutorAddr:   execCfg.ExecutorAddress,
-		ChainID:        chainID.Int64(),
+		ChainID:        chainID,
 		RPCURL:         rpcURL,
 		RequireBalance: true,
 	}

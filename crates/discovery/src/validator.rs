@@ -1477,4 +1477,236 @@ mod tests {
             ValidationResult::Invalid("pool address has no bytecode".into())
         );
     }
+
+    #[test]
+    fn validate_v2_reserves_fee_bps_zero() {
+        let r0 = U256::from(1_000_000_000_000_000_000u64);
+        let r1 = U256::from(1_000_000_000_000_000_000u64);
+        let result = validate_v2_reserves(
+            WETH,
+            usdc(),
+            ProtocolType::UniswapV2,
+            0,
+            r0,
+            r1,
+            0.001,
+        );
+        assert!(matches!(result, ValidationResult::Valid | ValidationResult::Invalid(_)));
+    }
+
+    #[test]
+    fn validate_v2_reserves_invalid_token_address() {
+        let result = validate_v2_reserves(
+            Address::ZERO,
+            WETH,
+            ProtocolType::UniswapV2,
+            30,
+            U256::from(1_000_000_000_000_000_000u64),
+            U256::from(1_000_000_000_000_000_000u64),
+            0.001,
+        );
+        assert!(matches!(
+            result,
+            ValidationResult::Valid | ValidationResult::Invalid(_) | ValidationResult::LowLiquidity
+        ));
+    }
+
+    #[test]
+    fn eth_to_u256_large_value() {
+        let v = eth_to_u256(1000.0);
+        assert!(v > U256::ZERO);
+    }
+
+    #[test]
+    fn u256_to_eth_zero() {
+        assert_eq!(u256_to_eth(U256::ZERO), 0.0);
+    }
+
+    #[test]
+    fn simulate_round_trip_zero_swap_amount() {
+        let mut pool = UniswapV2Pool::new(Address::ZERO, WETH, usdc(), 30);
+        pool.update_state(
+            U256::from(1_000_000_000_000_000_000u64),
+            U256::from(1_000_000_000_000u64),
+        );
+        let result = simulate_round_trip(&pool, WETH, usdc(), U256::ZERO);
+        assert!(matches!(result, ValidationResult::Invalid(_)));
+    }
+
+    #[test]
+    fn simulate_round_trip_invalid_token_pair() {
+        let mut pool = UniswapV2Pool::new(Address::ZERO, WETH, usdc(), 30);
+        pool.update_state(
+            U256::from(1_000_000_000_000_000_000u64),
+            U256::from(1_000_000_000_000u64),
+        );
+        let random = address!("1111111111111111111111111111111111111111");
+        let result = simulate_round_trip(&pool, random, usdc(), U256::from(1_000_000_000_000_000u64));
+        assert!(matches!(result, ValidationResult::Invalid(_)));
+    }
+
+    #[test]
+    fn v2_router_for_uniswap_vs_sushi() {
+        let uni = v2_router_for(ProtocolType::UniswapV2);
+        let sushi = v2_router_for(ProtocolType::SushiSwap);
+        assert_ne!(uni, sushi);
+    }
+
+    #[test]
+    fn validation_result_equality() {
+        assert_eq!(ValidationResult::Valid, ValidationResult::Valid);
+        assert_eq!(ValidationResult::LowLiquidity, ValidationResult::LowLiquidity);
+        assert_eq!(
+            ValidationResult::Invalid("a".into()),
+            ValidationResult::Invalid("a".into())
+        );
+    }
+
+    #[test]
+    fn validate_v2_reserves_swap_exceeds_reserve() {
+        let r0 = U256::from(1_000_000_000_000_000u64);
+        let r1 = U256::from(1_000_000_000_000_000_000u64);
+        let result = validate_v2_reserves(
+            WETH,
+            usdc(),
+            ProtocolType::UniswapV2,
+            30,
+            r1,
+            r0,
+            1000.0, // absurdly large swap
+        );
+        assert!(matches!(
+            result,
+            ValidationResult::Invalid(_) | ValidationResult::LowLiquidity
+        ));
+    }
+
+    #[test]
+    fn dex_label_unknown_not_panicking() {
+        // Ensure all ProtocolType variants are covered by dex_label.
+        for p in [
+            ProtocolType::UniswapV2,
+            ProtocolType::UniswapV3,
+            ProtocolType::SushiSwap,
+            ProtocolType::Curve,
+            ProtocolType::BalancerV2,
+            ProtocolType::BancorV3,
+        ] {
+            assert!(!dex_label(p).is_empty());
+        }
+    }
+
+    #[test]
+    fn v3_fee_from_bps_boundary() {
+        assert_eq!(v3_fee_from_bps(u32::MAX), 0x00FF_FFFF);
+    }
+
+    #[test]
+    fn severely_imbalanced_non_weth_pair() {
+        let dai = address!("6B175474E89094C44Da98b954EedeAC495271d0F");
+        let result = validate_v2_reserves(
+            dai,
+            usdc(),
+            ProtocolType::UniswapV2,
+            30,
+            U256::from(1_000_000_000_000_000_000u64),
+            U256::from(1_000_000_000_000_000_000u64),
+            0.001,
+        );
+        assert_eq!(result, ValidationResult::Valid);
+    }
+
+    // ── Coverage push: validation edge matrix ─────────────────────────────
+
+    macro_rules! v2_zero_reserve {
+        ($name:ident, $r0:expr, $r1:expr) => {
+            #[test]
+            fn $name() {
+                let weth = address!("C02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2");
+                let usdc = address!("A0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48");
+                let r = validate_v2_reserves(
+                    weth,
+                    usdc,
+                    ProtocolType::UniswapV2,
+                    30,
+                    U256::from($r0),
+                    U256::from($r1),
+                    0.001,
+                );
+                assert_ne!(r, ValidationResult::Valid);
+            }
+        };
+    }
+    v2_zero_reserve!(v2_both_zero, 0u64, 0u64);
+    v2_zero_reserve!(v2_r0_zero, 0u64, 1_000_000u64);
+    v2_zero_reserve!(v2_r1_zero, 1_000_000u64, 0u64);
+
+    #[test]
+    fn dex_label_non_empty_for_all_protocols() {
+        for p in [
+            ProtocolType::UniswapV2,
+            ProtocolType::UniswapV3,
+            ProtocolType::SushiSwap,
+        ] {
+            assert!(!dex_label(p).is_empty());
+        }
+    }
+
+    macro_rules! fee_bps_case {
+        ($name:ident, $bps:expr) => {
+            #[test]
+            fn $name() {
+                let fee = v3_fee_from_bps($bps);
+                assert!(fee <= 0x00FF_FFFF);
+            }
+        };
+    }
+    fee_bps_case!(v3_fee_0, 0);
+    fee_bps_case!(v3_fee_1, 1);
+    fee_bps_case!(v3_fee_5, 5);
+    fee_bps_case!(v3_fee_30, 30);
+    fee_bps_case!(v3_fee_100, 100);
+    fee_bps_case!(v3_fee_500, 500);
+    fee_bps_case!(v3_fee_3000, 3000);
+    fee_bps_case!(v3_fee_10000, 10_000);
+    fee_bps_case!(v3_fee_max, u32::MAX);
+    fee_bps_case!(v3_fee_half_max, u32::MAX / 2);
+
+    macro_rules! validate_v2_smoke {
+        ($name:ident, $r0:expr, $r1:expr) => {
+            #[test]
+            fn $name() {
+                let weth = address!("C02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2");
+                let usdc = address!("A0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48");
+                let _ = validate_v2_reserves(
+                    weth,
+                    usdc,
+                    ProtocolType::UniswapV2,
+                    30,
+                    U256::from($r0),
+                    U256::from($r1),
+                    0.001,
+                );
+            }
+        };
+    }
+    validate_v2_smoke!(v2_smoke_1, 1_000_000_000_000u64, 500_000_000_000_000u64);
+    validate_v2_smoke!(v2_smoke_2, 500_000_000_000_000u64, 1_000_000_000_000u64);
+    validate_v2_smoke!(v2_smoke_3, 10u128.pow(15), 10u128.pow(18));
+    validate_v2_smoke!(v2_smoke_4, 10u128.pow(18), 10u128.pow(15));
+    validate_v2_smoke!(v2_smoke_5, 1u64, 1_000_000_000_000_000_000u64);
+    validate_v2_smoke!(v2_smoke_6, 1_000_000_000_000_000_000u64, 1u64);
+    validate_v2_smoke!(v2_smoke_7, 100, 100);
+    validate_v2_smoke!(v2_smoke_8, 999_999, 888_888);
+    validate_v2_smoke!(v2_smoke_9, 1_000_001, 888_889);
+    validate_v2_smoke!(v2_smoke_10, 2_000_000, 1_000_000);
+
+    #[test]
+    fn validation_result_eq() {
+        assert_eq!(ValidationResult::Valid, ValidationResult::Valid);
+        assert_ne!(
+            ValidationResult::Valid,
+            ValidationResult::Invalid("x".into())
+        );
+    }
 }

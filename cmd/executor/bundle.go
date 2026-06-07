@@ -223,10 +223,13 @@ func (bc *BundleConstructor) BuildMempoolBackrunBundle(
 	}, nil
 }
 
+// bundleIDRand is injectable in tests to cover the crypto/rand failure path.
+var bundleIDRand = rand.Read
+
 // GenerateBundleID creates a unique bundle identifier
 func GenerateBundleID() string {
 	b := make([]byte, 16)
-	if _, err := rand.Read(b); err != nil {
+	if _, err := bundleIDRand(b); err != nil {
 		slog.Error("crypto/rand failure", "err", err)
 		os.Exit(1)
 	}

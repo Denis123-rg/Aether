@@ -9,8 +9,6 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
-
-	"github.com/aether-arb/aether/internal/tracing"
 )
 
 // Metrics holds all Prometheus-style metrics
@@ -40,14 +38,18 @@ func NewMetrics() *Metrics {
 	return &Metrics{}
 }
 
-// ServeMetrics starts an HTTP server for Prometheus scraping
-func (m *Metrics) ServeMetrics(addr string) error {
+// Handler returns the HTTP handler for metrics and health endpoints.
+func (m *Metrics) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/metrics", m.handleMetrics)
 	mux.HandleFunc("/health", m.handleHealth)
+	return mux
+}
 
+// ServeMetrics starts an HTTP server for Prometheus scraping
+func (m *Metrics) ServeMetrics(addr string) error {
 	slog.Info("metrics server listening", "addr", addr)
-	return http.ListenAndServe(addr, mux)
+	return http.ListenAndServe(addr, m.Handler())
 }
 
 func (m *Metrics) handleMetrics(w http.ResponseWriter, r *http.Request) {
@@ -104,35 +106,18 @@ func main() {
 
 	fmt.Println("aether-monitor: metrics, dashboard, and alerting service")
 
-	shutdownTracer, err := tracing.Init(context.Background(), "aether-monitor")
-	if err != nil {
-		slog.Warn("otlp tracer init failed, continuing without traces", "err", err)
-		shutdownTracer = func(context.Context) error { return nil }
-	}
+	setup := runMonitorSetup()
 	defer func() {
 		flushCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		if err := shutdownTracer(flushCtx); err != nil {
+		if err := setup.ShutdownTracer(flushCtx); err != nil {
 			slog.Warn("tracer shutdown error", "err", err)
 		}
 	}()
 
-	metricsPort := os.Getenv("METRICS_PORT")
-	if metricsPort == "" {
-		metricsPort = "9090"
-	}
-	dashboardPort := os.Getenv("DASHBOARD_PORT")
-	if dashboardPort == "" {
-		dashboardPort = "8080"
-	}
-
-	metrics := NewMetrics()
-	dashboard := NewDashboard(metrics)
-	alerter := NewAlerter([]AlertChannel{ChannelPagerDuty, ChannelTelegram, ChannelDiscord})
-
 	// Start metrics server
 	go func() {
-		if err := metrics.ServeMetrics(":" + metricsPort); err != nil {
+		if err := setup.Metrics.ServeMetrics(":" + setup.MetricsPort); err != nil {
 			slog.Error("metrics server failed", "err", err)
 			os.Exit(1)
 		}
@@ -140,18 +125,18 @@ func main() {
 
 	// Start dashboard
 	go func() {
-		if err := dashboard.ServeDashboard(":" + dashboardPort); err != nil {
+		if err := setup.Dashboard.ServeDashboard(":" + setup.DashboardPort); err != nil {
 			slog.Error("dashboard server failed", "err", err)
 			os.Exit(1)
 		}
 	}()
 
 	slog.Info("monitor service started")
-	slog.Info("metrics endpoint", "url", fmt.Sprintf("http://localhost:%s/metrics", metricsPort))
-	slog.Info("dashboard endpoint", "url", fmt.Sprintf("http://localhost:%s/", dashboardPort))
+	slog.Info("metrics endpoint", "url", fmt.Sprintf("http://localhost:%s/metrics", setup.MetricsPort))
+	slog.Info("dashboard endpoint", "url", fmt.Sprintf("http://localhost:%s/", setup.DashboardPort))
 
 	// Send startup alert
-	alerter.Send(SeverityInfo, "System Started", "Aether monitor service started")
+	setup.Alerter.Send(SeverityInfo, "System Started", "Aether monitor service started")
 
 	// Block forever (in production, would have signal handling)
 	select {}

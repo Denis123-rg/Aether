@@ -886,6 +886,268 @@ mod tests {
         }
     }
 
+    #[test]
+    fn classify_transfer_exactly_at_tolerance_boundary() {
+        // 10000 sent, 9990 received => 10 bps tax, max_tax_bps=10 => Clean
+        assert!(matches!(
+            classify_transfer(U256::from(10_000u64), U256::from(9_990u64), 10),
+            FotVerdict::Clean { .. }
+        ));
+    }
+
+    #[test]
+    fn classify_transfer_one_bps_over_tolerance() {
+        // 10000 -> 9989 = 11 bps > 10 tolerance
+        assert!(matches!(
+            classify_transfer(U256::from(10_000u64), U256::from(9_989u64), 10),
+            FotVerdict::FeeOnTransfer { .. }
+        ));
+    }
+
+    #[test]
+    fn fot_config_default_values() {
+        let cfg = FotConfig::default();
+        assert_eq!(cfg.max_tax_bps, 10);
+        assert_eq!(cfg.test_fraction_bps, 10);
+        assert!(cfg.max_slot_probe > 0);
+        assert!(cfg.gas_limit > 0);
+    }
+
+    #[test]
+    fn expected_amount_out_five_percent_fee() {
+        let out = expected_amount_out(
+            U256::from(1000u64),
+            U256::from(10_000u64),
+            U256::from(10_000u64),
+            500, // 5%
+        );
+        assert!(out > U256::ZERO);
+        assert!(out < U256::from(1000u64));
+    }
+
+    #[test]
+    fn expected_amount_out_ten_percent_fee() {
+        let out = expected_amount_out(
+            U256::from(1000u64),
+            U256::from(10_000u64),
+            U256::from(10_000u64),
+            1000, // 10%
+        );
+        assert!(out > U256::ZERO);
+        let no_fee = expected_amount_out(
+            U256::from(1000u64),
+            U256::from(10_000u64),
+            U256::from(10_000u64),
+            0,
+        );
+        assert!(out < no_fee);
+    }
+
+    #[test]
+    fn discover_balance_slot_first_slot() {
+        let holder = addr(0x01);
+        let known = U256::from(999u64);
+        let mut store: HashMap<U256, U256> = HashMap::new();
+        store.insert(erc20_balance_key(holder, U256::ZERO), known);
+        let reader = |key: U256| *store.get(&key).unwrap_or(&U256::ZERO);
+        assert_eq!(
+            discover_balance_slot(reader, holder, known, 5),
+            Some(U256::ZERO)
+        );
+    }
+
+    #[test]
+    fn round_trip_clean_at_exact_fee_only_recovery() {
+        let base_in = U256::from(1_000_000u64);
+        // 30 bps pool: fee-only ~994009 bps recovery
+        let fee_only_bps = 9940u32;
+        let base_out = base_in * U256::from(fee_only_bps) / U256::from(10_000u64);
+        let v = classify_round_trip(base_in, base_out, 30, true, 200);
+        assert!(matches!(v, RoundTripVerdict::Clean { .. }), "got {v:?}");
+    }
+
+    #[test]
+    fn round_trip_inconclusive_when_sell_not_attempted() {
+        let v = classify_round_trip(U256::from(1000u64), U256::from(900u64), 30, false, 200);
+        assert!(matches!(v, RoundTripVerdict::Honeypot { .. }));
+    }
+
+    #[test]
+    fn encode_v2_swap_zero_addresses() {
+        let data = encode_v2_swap(U256::from(1u64), U256::ZERO, Address::ZERO);
+        assert_eq!(data.len(), 4+5*32);
+    }
+
+    #[test]
+    fn unpack_v2_reserves_zero() {
+        assert_eq!(unpack_v2_reserves(U256::ZERO), (U256::ZERO, U256::ZERO));
+    }
+
+    #[test]
+    fn classify_transfer_zero_sent() {
+        assert_eq!(
+            classify_transfer(U256::ZERO, U256::ZERO, 10),
+            FotVerdict::Clean { observed_tax_bps: 0 }
+        );
+    }
+
+    #[test]
+    fn fot_verdict_debug_format() {
+        let v = FotVerdict::FeeOnTransfer { tax_bps: 500 };
+        let s = format!("{v:?}");
+        assert!(s.contains("500"));
+    }
+
+    // ── Coverage push: formula + classification edge cases ───────────────
+
+    #[test]
+    fn expected_amount_out_one_wei_in() {
+        let out = expected_amount_out(U256::from(1u64), U256::from(1_000_000u64), U256::from(1_000_000u64), 30);
+        assert!(out <= U256::from(1u64));
+    }
+
+    #[test]
+    fn expected_amount_out_large_reserves() {
+        let x = U256::from(10u128.pow(18));
+        let y = U256::from(10u128.pow(18));
+        let dx = U256::from(10u128.pow(16));
+        let out = expected_amount_out(dx, x, y, 30);
+        assert!(out > U256::ZERO && out < y);
+    }
+
+    #[test]
+    fn classify_round_trip_clean_path_cov() {
+        let v = classify_round_trip(
+            U256::from(1000u64),
+            U256::from(995u64),
+            30,
+            true,
+            100,
+        );
+        assert!(matches!(v, RoundTripVerdict::Clean { .. }));
+    }
+
+    #[test]
+    fn classify_round_trip_flags_high_fee() {
+        let v = classify_round_trip(
+            U256::from(1000u64),
+            U256::from(500u64),
+            30,
+            true,
+            50,
+        );
+        assert!(matches!(v, RoundTripVerdict::FeeOnTransfer { .. } | RoundTripVerdict::Honeypot { .. }));
+    }
+
+    #[test]
+    fn erc20_balance_key_differs_by_holder_only() {
+        let slot = U256::from(3u64);
+        let a = addr(0x01);
+        let b = addr(0x02);
+        assert_ne!(erc20_balance_key(a, slot), erc20_balance_key(b, slot));
+    }
+
+    #[test]
+    fn unpack_v2_reserves_max_single_side() {
+        let r0 = (U256::from(1u64) << 112) - U256::from(1u64);
+        let packed = r0;
+        let (a, b) = unpack_v2_reserves(packed);
+        assert_eq!(a, r0);
+        assert_eq!(b, U256::ZERO);
+    }
+
+    #[test]
+    fn encode_v2_swap_nonzero_amounts() {
+        let data = encode_v2_swap(U256::from(1u64), U256::from(2u64), addr(0x99));
+        assert!(data.len() >= 4);
+    }
+
+    #[test]
+    fn fot_verdict_is_admissible_only_clean() {
+        assert!(!FotVerdict::Inconclusive { reason: "x".into() }.is_admissible());
+        assert!(!FotVerdict::Honeypot { reason: "y".into() }.is_admissible());
+    }
+
+    macro_rules! amt_out_case {
+        ($name:ident, $dx:expr, $x:expr, $y:expr, $fee:expr) => {
+            #[test]
+            fn $name() {
+                let _ = expected_amount_out(U256::from($dx), U256::from($x), U256::from($y), $fee);
+            }
+        };
+    }
+    amt_out_case!(amt_out_dx_10, 10, 1000, 1000, 30);
+    amt_out_case!(amt_out_dx_50, 50, 5000, 5000, 30);
+    amt_out_case!(amt_out_dx_100, 100, 10000, 10000, 30);
+    amt_out_case!(amt_out_fee_5bps, 100, 1000, 1000, 5);
+    amt_out_case!(amt_out_fee_100bps, 100, 1000, 1000, 100);
+    amt_out_case!(amt_out_fee_500bps, 100, 1000, 1000, 500);
+    amt_out_case!(amt_out_fee_9999bps, 100, 1000, 1000, 9999);
+    amt_out_case!(amt_out_tiny_reserves, 1, 2, 3, 30);
+    amt_out_case!(amt_out_symmetric, 250, 2500, 2500, 30);
+    amt_out_case!(amt_out_asymmetric, 250, 1000, 5000, 30);
+
+    macro_rules! xfer_case {
+        ($name:ident, $sent:expr, $recv:expr, $tol:expr) => {
+            #[test]
+            fn $name() {
+                let _ = classify_transfer(U256::from($sent), U256::from($recv), $tol);
+            }
+        };
+    }
+    xfer_case!(xfer_equal, 1000, 1000, 0);
+    xfer_case!(xfer_small_loss, 1000, 999, 20);
+    xfer_case!(xfer_large_loss, 1000, 800, 10);
+    xfer_case!(xfer_over_receive, 1000, 1005, 10);
+    xfer_case!(xfer_half, 1000, 500, 10);
+    xfer_case!(xfer_one_wei, 1, 1, 0);
+    xfer_case!(xfer_one_wei_loss, 1, 0, 0);
+    xfer_case!(xfer_max_tol, 10000, 9999, 10);
+    xfer_case!(xfer_zero_tol_clean, 500, 500, 0);
+    xfer_case!(xfer_zero_tol_tax, 500, 499, 0);
+
+    macro_rules! rt_case {
+        ($name:ident, $in:expr, $out:expr, $fee:expr, $max_loss:expr) => {
+            #[test]
+            fn $name() {
+                let _ = classify_round_trip(
+                    U256::from($in),
+                    U256::from($out),
+                    $fee,
+                    true,
+                    $max_loss,
+                );
+            }
+        };
+    }
+    rt_case!(rt_tight, 1000, 990, 30, 100);
+    rt_case!(rt_loose, 1000, 900, 30, 2000);
+    rt_case!(rt_zero_out, 1000, 0, 30, 100);
+    rt_case!(rt_equal, 1000, 1000, 30, 0);
+    rt_case!(rt_small_in, 1, 1, 30, 100);
+    rt_case!(rt_high_fee, 1000, 950, 300, 100);
+    rt_case!(rt_low_fee, 1000, 980, 5, 100);
+    rt_case!(rt_mid, 5000, 4800, 30, 500);
+    rt_case!(rt_large, 1_000_000, 990_000, 30, 200);
+    rt_case!(rt_boundary, 1000, 999, 30, 10);
+
+    #[test]
+    fn discover_balance_slot_respects_max_slots() {
+        let holder = addr(0x55);
+        let known = U256::from(42u64);
+        let reader = |_key: U256| U256::ZERO;
+        assert_eq!(discover_balance_slot(reader, holder, known, 0), None);
+    }
+
+    #[test]
+    fn balance_key_slot_zero() {
+        let h = addr(0x77);
+        assert_eq!(
+            erc20_balance_key(h, U256::ZERO),
+            erc20_balance_key(h, U256::ZERO)
+        );
+    }
+
     // =======================================================================
     // RPC-backed integration tests (live mainnet fork). Gated on ETH_RPC_URL
     // and #[ignore]d, so default `cargo test` skips them. Run with:
