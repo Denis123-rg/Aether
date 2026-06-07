@@ -205,123 +205,30 @@ func main() {
 	}
 	slog.Info("executor config loaded", "executor_address", execCfg.ExecutorAddress, "expected_chain_id", execCfg.ExpectedChainID)
 
-	// ETH_RPC_URL is now required — the chain-ID check, bytecode check, and
-	// live balance polling all need a node connection.
 	rpcURL := os.Getenv("ETH_RPC_URL")
-	dialCtx, dialCancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer dialCancel()
-	boot, err := bootstrap(dialCtx, execCfg, rpcURL, nil)
-	if err != nil {
-		if rpcURL == "" {
-			slog.Error("ETH_RPC_URL not set — required for chain-id / bytecode / balance checks")
-		} else if strings.Contains(err.Error(), "dial eth rpc") {
-			slog.Error("failed to connect to ETH_RPC_URL", "url", redactRPCURL(rpcURL), "err", redactRPCError(err, rpcURL))
-		} else if strings.Contains(err.Error(), "chain id") {
-			slog.Error("eth_chainId failed", "err", redactRPCError(err, rpcURL))
-		} else if strings.Contains(err.Error(), "chain-id mismatch") {
-			slog.Error("chain-id mismatch", "err", err)
-		} else if strings.Contains(err.Error(), "get code") {
-			slog.Error("eth_getCode failed", "executor_address", execCfg.ExecutorAddress, "err", redactRPCError(err, rpcURL))
-		} else if strings.Contains(err.Error(), "no bytecode") {
-			slog.Error("executor address has no bytecode on chain", "executor_address", execCfg.ExecutorAddress)
-		} else {
-			slog.Error("bootstrap failed", "err", err)
-		}
-		os.Exit(1)
-	}
-	ethClient := boot.Client
-	chainID := boot.ChainID
-	slog.Info("connected to ethereum node")
-	slog.Info("chain ID verified", "chain_id", chainID)
-	slog.Info("executor contract verified on-chain", "executor_address", execCfg.ExecutorAddress)
-
-	// Signer selection. The out-of-process remote signer is preferred whenever
-	// AETHER_SIGNER_SOCKET is set (production / systemd): the searcher key never
-	// enters this process and is used for BOTH bundle signing and the
-	// X-Flashbots-Signature auth header. When no signer socket is configured we
-	// fall back to the in-process SEARCHER_KEY so dev / shadow / demo runs (and
-	// the test suite) keep working unchanged.
-	var (
-		txSigner       TxSigner
-		submitter      *Submitter
-		remoteSigner   *RemoteSigner
-	)
-	if signerSocket := resolveSignerSocket(); signerSocket != "" {
-		rs, rsErr := NewRemoteSigner(signerSocket, chainID)
-		if rsErr != nil {
-			slog.Error("remote signer connect failed", "socket", signerSocket, "err", rsErr)
-			os.Exit(1)
-		}
-		// Explicit liveness sign of a known digest, per the integration brief.
-		if pingErr := rs.Ping(); pingErr != nil {
-			slog.Error("remote signer ping failed", "socket", signerSocket, "err", pingErr)
-			os.Exit(1)
-		}
-		txSigner = rs
-		remoteSigner = rs
-		// No key in-process — the submitter authenticates via the remote signer.
-		submitter, err = NewSubmitter(cfg.BuilderConfigs, "")
-		if err != nil {
-			slog.Error("failed to create submitter", "err", err)
-			os.Exit(1)
-		}
-		submitter.SetAuthSigner(remoteFlashbotsAuth{rs: rs})
-		// Defense in depth: with the remote signer in use, make sure a stray
-		// SEARCHER_KEY in the environment can never be read by anything later.
-		os.Unsetenv("SEARCHER_KEY")
-		slog.Info("remote signer connected", "addr", rs.Address().Hex(), "socket", signerSocket)
-	} else {
-		searcherKey := os.Getenv("SEARCHER_KEY")
-		// Create submitter BEFORE clearing the key - it needs the key for FlashbotsSigner.
-		submitter, err = NewSubmitter(cfg.BuilderConfigs, searcherKey)
-		if err != nil {
-			slog.Error("failed to create submitter", "err", err)
-			os.Exit(1)
-		}
-		if searcherKey != "" {
-			local, signerErr := NewTransactionSigner(searcherKey, chainID)
-			if signerErr != nil {
-				slog.Error("failed to load SEARCHER_KEY", "err", signerErr)
-				os.Exit(1)
-			}
-			txSigner = local
-			slog.Info("searcher signer loaded (in-process key)", "addr", local.Address().Hex())
-		} else {
-			slog.Warn("AETHER_SIGNER_SOCKET unset — using in-process SEARCHER_KEY or unsigned txs; not recommended for production")
-		}
-		os.Unsetenv("SEARCHER_KEY")
-	}
-
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	ledgerMetrics := db.NewLedgerMetrics()
-	ledger := db.LedgerFromEnv(ctx, os.Getenv("DATABASE_URL"), ledgerMetrics)
-	defer func() {
-		if pg, ok := ledger.(*db.PgLedger); ok {
-			pg.Close()
+	deps, cleanup, err := buildExecutorDeps(ctx, cfg, execCfg, rpcURL, nil)
+	if err != nil {
+		logBootstrapFailure(err, rpcURL, execCfg.ExecutorAddress)
+		if strings.Contains(err.Error(), "remote signer") {
+			slog.Error("remote signer setup failed", "err", err)
+		} else if strings.Contains(err.Error(), "create submitter") {
+			slog.Error("failed to create submitter", "err", err)
+		} else if strings.Contains(err.Error(), "SEARCHER_KEY") {
+			slog.Error("failed to load SEARCHER_KEY", "err", err)
 		}
-	}()
-
-	metricsStore = db.MetricsStoreFromEnv(ctx, os.Getenv("DATABASE_URL"))
-	defer metricsStore.Close()
-
-	eventPublisher = events.NewPublisherFromEnv()
-	defer eventPublisher.Close()
-
-	deps := &Dependencies{
-		EthClient:      ethClient,
-		TxSigner:       txSigner,
-		Submitter:      submitter,
-		RemoteSigner:   remoteSigner,
-		Ledger:         ledger,
-		MetricsStore:   metricsStore,
-		EventPublisher: eventPublisher,
-		ExecutorAddr:   execCfg.ExecutorAddress,
-		ChainID:        chainID,
-		RPCURL:         rpcURL,
-		RequireBalance: true,
+		os.Exit(1)
 	}
+	defer cleanup()
+
+	slog.Info("connected to ethereum node")
+	slog.Info("chain ID verified", "chain_id", deps.ChainID)
+	slog.Info("executor contract verified on-chain", "executor_address", execCfg.ExecutorAddress)
+
+	metricsStore = deps.MetricsStore
+	eventPublisher = deps.EventPublisher
 
 	if err := run(ctx, &cfg, deps); err != nil {
 		slog.Error("executor run failed", "err", err)
