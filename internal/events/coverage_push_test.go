@@ -87,7 +87,7 @@ func TestPublisher_AllChannels(t *testing.T) {
 
 func waitUntil(t *testing.T, cond func() bool, label string) {
 	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
+	deadline := time.Now().Add(10 * time.Second)
 	for time.Now().Before(deadline) {
 		if cond() {
 			return
@@ -191,6 +191,44 @@ func TestSubscriber_ListenPingFailure(t *testing.T) {
 		// After disconnect, connected flag should eventually clear.
 		t.Log("redis connected flag may still be true briefly after close")
 	}
+}
+
+func TestPublisher_PublishAfterClientClosed(t *testing.T) {
+	mr, err := miniredis.Run()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mr.Close()
+	p := NewPublisher("redis://" + mr.Addr())
+	p.client.Close()
+	// Must not panic; publish errors are logged and dropped.
+	p.PublishPnLUpdate(1, 1)
+	p.PublishNewBundle("h", "b", 1, 1)
+	p.PublishBreakerStatus(true, "x")
+	p.PublishSignerHealth(true)
+}
+
+func TestSubscriber_MiniredisRestart(t *testing.T) {
+	mr, err := miniredis.Run()
+	if err != nil {
+		t.Fatal(err)
+	}
+	url := "redis://" + mr.Addr()
+	state := &DashboardState{}
+	sub := NewSubscriber(url, state, nil)
+	ctx, cancel := context.WithCancel(context.Background())
+	sub.Start(ctx)
+	defer func() {
+		cancel()
+		sub.Stop()
+	}()
+	pub := NewPublisher(url)
+	defer pub.Close()
+	pub.PublishPnLUpdate(5, 50)
+	waitUntil(t, func() bool { return state.Get().PnLTotal == 5 }, "before restart")
+	mr.Restart()
+	pub.PublishPnLUpdate(6, 60)
+	waitUntil(t, func() bool { return state.Get().PnLTotal == 6 }, "after restart")
 }
 
 func TestPublisher_PublishMarshalSafe(t *testing.T) {

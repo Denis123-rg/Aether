@@ -138,6 +138,7 @@ func TestPgLedger_InsertBundleFullFields(t *testing.T) {
 	waitForLedgerWrite(t, ledger, 2*time.Second)
 }
 
+func TestPgLedger_UpsertPnLDailyWithValues(t *testing.T) {
 	url := startPostgres(t)
 	ctx := context.Background()
 	ledger, err := NewPgLedger(ctx, url, getTestLedgerMetrics())
