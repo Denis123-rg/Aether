@@ -32,3 +32,15 @@ out/
 contracts/crytic-export/
 contracts/lcov.info
 cmd/executor/reports/
+
+# Temporary coverage and test output files
+*.out.txt
+coverage.out
+coverage_report.txt
+.cargo_compile_report.txt
+db_postgres_out.txt
+fee_out.txt
+fuzz_out.txt
+mempool_out.txt
+validator_out.txt
+

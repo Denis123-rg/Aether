@@ -1148,6 +1148,115 @@ mod tests {
         );
     }
 
+    // ── Fee calculation matrix: 0%, 5%, 10%, 100%, amount=fee, amount<fee ─
+
+    #[test]
+    fn fee_calc_zero_percent_full_recovery() {
+        assert_eq!(
+            classify_transfer(U256::from(10_000u64), U256::from(10_000u64), 0),
+            FotVerdict::Clean { observed_tax_bps: 0 }
+        );
+        let out = expected_amount_out(
+            U256::from(100u64),
+            U256::from(1000u64),
+            U256::from(1000u64),
+            0,
+        );
+        assert_eq!(out, U256::from(90u64));
+    }
+
+    #[test]
+    fn fee_calc_five_percent_transfer_tax() {
+        assert_eq!(
+            classify_transfer(U256::from(10_000u64), U256::from(9_500u64), 10),
+            FotVerdict::FeeOnTransfer { tax_bps: 500 }
+        );
+        let out = expected_amount_out(
+            U256::from(1000u64),
+            U256::from(10_000u64),
+            U256::from(10_000u64),
+            500,
+        );
+        assert!(out > U256::ZERO && out < U256::from(1000u64));
+    }
+
+    #[test]
+    fn fee_calc_ten_percent_transfer_tax() {
+        assert_eq!(
+            classify_transfer(U256::from(10_000u64), U256::from(9_000u64), 10),
+            FotVerdict::FeeOnTransfer { tax_bps: 1000 }
+        );
+        let out = expected_amount_out(
+            U256::from(1000u64),
+            U256::from(10_000u64),
+            U256::from(10_000u64),
+            1000,
+        );
+        assert!(out < expected_amount_out(
+            U256::from(1000u64),
+            U256::from(10_000u64),
+            U256::from(10_000u64),
+            500,
+        ));
+    }
+
+    #[test]
+    fn fee_calc_hundred_percent_tax() {
+        assert_eq!(
+            classify_transfer(U256::from(1000u64), U256::ZERO, 0),
+            FotVerdict::FeeOnTransfer { tax_bps: 10_000 }
+        );
+        assert_eq!(
+            expected_amount_out(
+                U256::from(100u64),
+                U256::from(1000u64),
+                U256::from(1000u64),
+                10_000,
+            ),
+            U256::ZERO
+        );
+    }
+
+    #[test]
+    fn fee_calc_amount_equals_fee_deducted() {
+        // Shortfall of exactly 50 wei on 1000 sent => 500 bps tax.
+        assert_eq!(
+            classify_transfer(U256::from(1000u64), U256::from(950u64), 10),
+            FotVerdict::FeeOnTransfer { tax_bps: 500 }
+        );
+    }
+
+    #[test]
+    fn fee_calc_amount_less_than_fee_component() {
+        // Received less than the fee portion would allow — 100% confiscation.
+        assert_eq!(
+            classify_transfer(U256::from(100u64), U256::from(1u64), 10),
+            FotVerdict::FeeOnTransfer { tax_bps: 9900 }
+        );
+        assert_eq!(
+            classify_transfer(U256::from(50u64), U256::ZERO, 10),
+            FotVerdict::FeeOnTransfer { tax_bps: 10_000 }
+        );
+    }
+
+    #[test]
+    fn classify_round_trip_zero_base_in_inconclusive() {
+        assert!(matches!(
+            classify_round_trip(U256::ZERO, U256::from(1u64), 30, true, 100),
+            RoundTripVerdict::Inconclusive { .. }
+        ));
+    }
+
+    #[test]
+    fn round_trip_verdict_is_admissible_only_clean() {
+        assert!(RoundTripVerdict::Clean { recovery_bps: 9900 }.is_admissible());
+        assert!(!RoundTripVerdict::FeeOnTransfer { loss_bps: 100 }.is_admissible());
+        assert!(!RoundTripVerdict::Honeypot {
+            reason: "x".into()
+        }
+        .is_admissible());
+    }
+
     // =======================================================================
     // RPC-backed integration tests (live mainnet fork). Gated on ETH_RPC_URL
     // and #[ignore]d, so default `cargo test` skips them. Run with:

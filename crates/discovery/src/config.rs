@@ -5,7 +5,7 @@ use alloy::primitives::Address;
 use serde::Deserialize;
 
 /// Top-level discovery configuration loaded from `config/discovery.toml`.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Default)]
 pub struct DiscoveryConfig {
     #[serde(default)]
     pub discovery: DiscoverySettings,
@@ -17,18 +17,6 @@ pub struct DiscoveryConfig {
     pub factories: Vec<FactoryConfig>,
     #[serde(default)]
     pub the_graph: TheGraphSettings,
-}
-
-impl Default for DiscoveryConfig {
-    fn default() -> Self {
-        Self {
-            discovery: DiscoverySettings::default(),
-            scoring: ScoringSettings::default(),
-            hot_cache: HotCacheSettings::default(),
-            factories: Vec::new(),
-            the_graph: TheGraphSettings::default(),
-        }
-    }
 }
 
 #[derive(Debug, Clone, Deserialize)]

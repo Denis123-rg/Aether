@@ -688,4 +688,39 @@ mod tests {
         assert!(virtual_reserves(U256::ZERO, 1_000_000).is_none());
         assert!(virtual_reserves(U256::from(Q96), 0).is_none());
     }
+
+    #[test]
+    fn test_get_reserves_zero_sqrt_price_returns_none() {
+        let pool = UniswapV3Pool::new(
+            Address::ZERO,
+            address!("A0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"),
+            address!("C02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2"),
+            5,
+            10,
+        );
+        assert!(pool.get_amount_out(pool.token0, U256::from(1000u64)).is_none());
+    }
+
+    #[test]
+    fn test_get_reserves_zero_liquidity_returns_none() {
+        let mut pool = setup_v3_pool();
+        pool.update_sqrt_price(pool.sqrt_price_x96, 0, pool.tick);
+        assert!(pool.get_amount_out(pool.token0, U256::from(1000u64)).is_none());
+    }
+
+    #[test]
+    fn test_invalid_token_get_amount_in_returns_none() {
+        let pool = setup_v3_pool();
+        let bogus = address!("0000000000000000000000000000000000009999");
+        assert!(pool.get_amount_in(bogus, U256::from(1000u64)).is_none());
+    }
+
+    #[test]
+    fn test_huge_amount_in_still_bounded() {
+        let pool = setup_v3_pool();
+        let out = pool
+            .get_amount_out(pool.token1, U256::from(10u128.pow(30)))
+            .expect("single-tick math returns");
+        assert!(out > U256::ZERO);
+    }
 }

@@ -221,4 +221,39 @@ mod tests {
             assert!(pool.get_amount_in(bad, U256::from(1000u64)).is_none());
         }
     }
+
+    #[test]
+    fn test_get_reserves_zero_r0_only_returns_none() {
+        let mut pool = setup_pool();
+        pool.update_state(U256::ZERO, U256::from(1_000_000_000_000_000_000u64));
+        assert!(pool.get_amount_out(pool.token0, U256::from(1000u64)).is_none());
+        assert!(pool.get_amount_in(pool.token1, U256::from(1000u64)).is_none());
+    }
+
+    #[test]
+    fn test_get_reserves_zero_r1_only_returns_none() {
+        let mut pool = setup_pool();
+        pool.update_state(U256::from(1_000_000_000_000u64), U256::ZERO);
+        assert!(pool.get_amount_out(pool.token1, U256::from(1000u64)).is_none());
+    }
+
+    #[test]
+    fn test_get_amount_out_overflow_bounded_by_reserve() {
+        let pool = setup_pool();
+        let max_in = U256::MAX / U256::from(2u64);
+        let out = pool.get_amount_out(pool.token1, max_in).expect("computes");
+        assert!(out < pool.reserve0);
+    }
+
+    #[test]
+    fn test_get_amount_in_near_full_reserve_returns_none() {
+        let mut pool = setup_pool();
+        pool.update_state(
+            U256::from(1_000_000u64),
+            U256::from(1_000_000_000_000_000_000u64),
+        );
+        assert!(pool
+            .get_amount_in(pool.token0, pool.reserve0)
+            .is_none());
+    }
 }

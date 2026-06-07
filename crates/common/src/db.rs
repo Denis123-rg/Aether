@@ -870,4 +870,171 @@ mod tests {
         ledger.insert_arb(&NewArb::default());
         std::env::remove_var("DATABASE_URL");
     }
+
+    #[tokio::test]
+    async fn enqueue_drops_all_op_types_when_channel_full() {
+        let registry = Registry::new();
+        let metrics = LedgerMetrics::register(&registry);
+        let (tx, _rx) = mpsc::channel::<LedgerOp>(1);
+        let ledger = PgLedger::from_sender_for_test(tx, Arc::clone(&metrics));
+
+        ledger.insert_arb(&NewArb::default());
+        ledger.insert_pool(&NewPool::default());
+        ledger.update_inclusion(&InclusionUpdate::default());
+
+        assert_eq!(
+            metrics.drops_total.with_label_values(&["insert_arb"]).get(),
+            0
+        );
+        assert_eq!(
+            metrics.drops_total.with_label_values(&["insert_pool"]).get(),
+            1
+        );
+        assert_eq!(
+            metrics
+                .drops_total
+                .with_label_values(&["update_inclusion"])
+                .get(),
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn writer_task_processes_all_ledger_ops() {
+        use std::path::PathBuf;
+        use testcontainers::runners::AsyncRunner;
+        use testcontainers_modules::postgres::Postgres;
+
+        if std::env::var("AETHER_SKIP_TESTCONTAINERS").is_ok() {
+            return;
+        }
+        let container = match Postgres::default().start().await {
+            Ok(c) => c,
+            Err(e) => {
+                eprintln!("skipping writer_task test: docker unavailable ({e})");
+                return;
+            }
+        };
+        let host = container.get_host().await.expect("host");
+        let port = container.get_host_port_ipv4(5432).await.expect("port");
+        let url = format!("postgres://postgres:postgres@{host}:{port}/postgres?sslmode=disable");
+
+        let pool = PgPool::connect(&url).await.expect("connect");
+        let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+        sqlx::migrate::Migrator::new(dir.as_path())
+            .await
+            .expect("migrator")
+            .run(&pool)
+            .await
+            .expect("migrate");
+
+        let registry = Registry::new();
+        let metrics = LedgerMetrics::register(&registry);
+        let ledger = PgLedger::connect(&url, Arc::clone(&metrics))
+            .await
+            .expect("PgLedger");
+
+        let arb_id = Uuid::new_v4();
+        ledger.insert_arb(&NewArb {
+            arb_id,
+            ts: Utc::now(),
+            target_block: 1,
+            path_hash: B256::ZERO,
+            hops: 1,
+            path: serde_json::json!([]),
+            protocols: serde_json::json!([]),
+            pool_addresses: serde_json::json!([]),
+            flashloan_token: Address::ZERO,
+            flashloan_amount: U256::from(1u64),
+            gross_profit_wei: U256::from(1u64),
+            net_profit_wei: U256::from(1u64),
+            gas_estimate: 1,
+            tip_bps: 0,
+            detection_us: None,
+            sim_us: None,
+            git_sha: None,
+        });
+        ledger.insert_pool(&NewPool {
+            address: Address::repeat_byte(0xaa),
+            protocol: ProtocolType::SushiSwap,
+            token0: Address::repeat_byte(0xbb),
+            token1: Address::repeat_byte(0xcc),
+            fee_bps: Some(30),
+            tier: None,
+            source: "unit".into(),
+        });
+
+        let bundle_id = Uuid::new_v4();
+        sqlx::query(
+            r#"
+            INSERT INTO bundles (bundle_id, arb_id, submitted_at, target_block, signed_tx_hex, is_shadow, builders)
+            VALUES ($1, $2, now(), 1, '0x', false, '[]'::jsonb)
+            "#,
+        )
+        .bind(bundle_id)
+        .bind(arb_id)
+        .execute(&pool)
+        .await
+        .expect("seed bundle");
+
+        ledger.update_inclusion(&InclusionUpdate {
+            bundle_id,
+            builder: "titan".into(),
+            included: false,
+            included_block: None,
+            landed_tx_hash: None,
+            error: Some("miss".into()),
+            resolved_at: Utc::now(),
+        });
+
+        tokio::time::sleep(std::time::Duration::from_millis(800)).await;
+
+        for (op, result) in [
+            ("insert_arb", "ok"),
+            ("insert_pool", "ok"),
+            ("update_inclusion", "ok"),
+        ] {
+            let n = metrics.writes_total.with_label_values(&[op, result]).get();
+            assert!(n >= 1, "expected {op}/{result} write metric");
+        }
+        drop(ledger);
+    }
+
+    #[tokio::test]
+    async fn writer_task_records_err_on_unmigrated_schema() {
+        use testcontainers::runners::AsyncRunner;
+        use testcontainers_modules::postgres::Postgres;
+
+        if std::env::var("AETHER_SKIP_TESTCONTAINERS").is_ok() {
+            return;
+        }
+        let container = match Postgres::default().start().await {
+            Ok(c) => c,
+            Err(_) => return,
+        };
+        let host = container.get_host().await.expect("host");
+        let port = container.get_host_port_ipv4(5432).await.expect("port");
+        let url = format!("postgres://postgres:postgres@{host}:{port}/postgres?sslmode=disable");
+
+        let registry = Registry::new();
+        let metrics = LedgerMetrics::register(&registry);
+        let ledger = PgLedger::connect(&url, Arc::clone(&metrics))
+            .await
+            .expect("PgLedger");
+
+        ledger.insert_arb(&NewArb {
+            arb_id: Uuid::new_v4(),
+            ts: Utc::now(),
+            ..NewArb::default()
+        });
+
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+
+        let err_count = metrics
+            .writes_total
+            .with_label_values(&["insert_arb", "err"])
+            .get();
+        assert!(err_count >= 1, "unmigrated schema should record err metric");
+        drop(ledger);
+    }
 }

@@ -41,6 +41,10 @@ impl DiscoveryCache {
         self.pools.len()
     }
 
+    pub fn is_empty(&self) -> bool {
+        self.pools.is_empty()
+    }
+
     pub fn contains(&self, address: &Address) -> bool {
         self.pools.contains_key(address)
     }

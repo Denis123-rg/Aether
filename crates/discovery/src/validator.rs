@@ -108,6 +108,7 @@ pub async fn validate_v2_pool_rpc(
 }
 
 /// Full validation pipeline: analytical pre-filter then optional revm fork probe.
+#[allow(clippy::too_many_arguments)]
 pub async fn validate_v2_pool_full(
     provider: &DynProvider<Ethereum>,
     pool_addr: Address,
@@ -629,6 +630,7 @@ async fn validate_custodial_pool(
 /// Full Uniswap V3 validation: analytical liquidity pre-filter (WETH-side
 /// balance held by the pool) followed by a revm fork round-trip through
 /// SwapRouter02. `mode == "analytical"` stops after the pre-filter.
+#[allow(clippy::too_many_arguments)]
 pub async fn validate_v3_pool_full(
     provider: &DynProvider<Ethereum>,
     pool_addr: Address,
@@ -1708,5 +1710,415 @@ mod tests {
             ValidationResult::Valid,
             ValidationResult::Invalid("x".into())
         );
+    }
+
+    // ── Mock JSON-RPC (no anvil) for async validation paths ────────────────
+
+    mod mock_rpc {
+        use super::*;
+        use alloy::providers::{Provider, ProviderBuilder};
+        use alloy::sol_types::SolCall;
+        use mockito::{Matcher, Mock, Server, ServerGuard};
+
+        alloy::sol! {
+            #[sol(rpc)]
+            interface IPair {
+                function token0() external view returns (address);
+                function token1() external view returns (address);
+                function getReserves() external view returns (uint112 reserve0, uint112 reserve1, uint32 blockTimestampLast);
+            }
+        }
+
+        #[derive(Clone, Default)]
+        pub struct MockRpcConfig {
+            pub token0: Address,
+            pub token1: Address,
+            pub reserve0: U256,
+            pub reserve1: U256,
+            pub fail_token0: bool,
+            pub fail_token1: bool,
+            pub fail_get_reserves: bool,
+            pub token0_mismatch: bool,
+            pub pool_bytecode: Option<String>,
+            pub erc20_balance: Option<U256>,
+        }
+
+        fn pad_u256(v: U256) -> String {
+            format!("0x{}", alloy::hex::encode(v.to_be_bytes::<32>()))
+        }
+
+        fn pad_address(a: Address) -> String {
+            pad_u256(U256::from_be_slice(&{
+                let mut w = [0u8; 32];
+                w[12..32].copy_from_slice(a.as_slice());
+                w
+            }))
+        }
+
+        fn encode_get_reserves(r0: U256, r1: U256) -> String {
+            let mut out = [0u8; 96];
+            out[0..32].copy_from_slice(&r0.to_be_bytes::<32>());
+            out[32..64].copy_from_slice(&r1.to_be_bytes::<32>());
+            format!("0x{}", alloy::hex::encode(out))
+        }
+
+        fn rpc_ok(result_hex: &str) -> String {
+            format!(r#"{{"jsonrpc":"2.0","id":1,"result":"{result_hex}"}}"#)
+        }
+
+        fn mount_rpc(server: &mut ServerGuard, cfg: &MockRpcConfig) -> Vec<Mock> {
+            let t0_hex = alloy::hex::encode(IPair::token0Call {}.abi_encode());
+            let t1_hex = alloy::hex::encode(IPair::token1Call {}.abi_encode());
+            let gr_hex = alloy::hex::encode(IPair::getReservesCall {}.abi_encode());
+            let bal_hex = alloy::hex::encode(
+                IERC20::balanceOfCall {
+                    account: Address::ZERO,
+                }
+                .abi_encode(),
+            );
+            let t0_sel = &t0_hex[0..8];
+            let t1_sel = &t1_hex[0..8];
+            let gr_sel = &gr_hex[0..8];
+            let bal_sel = &bal_hex[0..8];
+
+            let t0_addr = if cfg.token0_mismatch {
+                Address::repeat_byte(0x99)
+            } else {
+                cfg.token0
+            };
+            let t0_body = if cfg.fail_token0 {
+                rpc_ok("0x")
+            } else {
+                rpc_ok(&pad_address(t0_addr))
+            };
+            let t1_body = if cfg.fail_token1 {
+                rpc_ok("0x")
+            } else {
+                rpc_ok(&pad_address(cfg.token1))
+            };
+            let gr_body = if cfg.fail_get_reserves {
+                rpc_ok("0x")
+            } else {
+                rpc_ok(&encode_get_reserves(cfg.reserve0, cfg.reserve1))
+            };
+            let bal_body = rpc_ok(&pad_u256(cfg.erc20_balance.unwrap_or(U256::ZERO)));
+            let code = cfg
+                .pool_bytecode
+                .clone()
+                .unwrap_or_else(|| "0x6000600055".into());
+
+            vec![
+                server
+                    .mock("POST", "/")
+                    .match_body(Matcher::Regex(format!("(?i){t0_sel}")))
+                    .with_body(t0_body)
+                    .create(),
+                server
+                    .mock("POST", "/")
+                    .match_body(Matcher::Regex(format!("(?i){t1_sel}")))
+                    .with_body(t1_body)
+                    .create(),
+                server
+                    .mock("POST", "/")
+                    .match_body(Matcher::Regex(format!("(?i){gr_sel}")))
+                    .with_body(gr_body)
+                    .create(),
+                server
+                    .mock("POST", "/")
+                    .match_body(Matcher::Regex(format!("(?i){bal_sel}")))
+                    .with_body(bal_body)
+                    .create(),
+                server
+                    .mock("POST", "/")
+                    .match_body(Matcher::Regex("eth_getCode".into()))
+                    .with_body(rpc_ok(&code))
+                    .create(),
+            ]
+        }
+
+        pub async fn provider_from_cfg(cfg: MockRpcConfig) -> (DynProvider<Ethereum>, ServerGuard) {
+            let mut server = Server::new_async().await;
+            let _mocks = mount_rpc(&mut server, &cfg);
+            let url: url::Url = server.url().parse().expect("url");
+            let provider = ProviderBuilder::new().connect_http(url).erased();
+            (provider, server)
+        }
+    }
+
+    #[tokio::test]
+    async fn validate_v2_pool_rpc_success_via_mock() {
+        use mock_rpc::{MockRpcConfig, provider_from_cfg};
+        let pool = address!("B4e16d0168e52d35CaCD2c6185b44281Ec28C9Dc");
+        let r0 = U256::from(3_000_000_000_000u64);
+        let r1 = U256::from(1_000_000_000_000_000_000u64);
+        let (provider, _server) = provider_from_cfg(MockRpcConfig {
+            token0: usdc(),
+            token1: WETH,
+            reserve0: r0,
+            reserve1: r1,
+            ..Default::default()
+        })
+        .await;
+        let result = validate_v2_pool_rpc(
+            &provider,
+            pool,
+            usdc(),
+            WETH,
+            ProtocolType::UniswapV2,
+            30,
+            0.001,
+        )
+        .await;
+        assert_eq!(result, ValidationResult::Valid);
+    }
+
+    #[tokio::test]
+    async fn validate_v2_pool_full_analytical_mode_via_mock() {
+        use mock_rpc::{MockRpcConfig, provider_from_cfg};
+        let pool = address!("B4e16d0168e52d35CaCD2c6185b44281Ec28C9Dc");
+        let (provider, _server) = provider_from_cfg(MockRpcConfig {
+            token0: usdc(),
+            token1: WETH,
+            reserve0: U256::from(3_000_000_000_000u64),
+            reserve1: U256::from(1_000_000_000_000_000_000u64),
+            ..Default::default()
+        })
+        .await;
+        let metrics = crate::metrics::DiscoveryMetrics::noop();
+        let result = validate_v2_pool_full(
+            &provider,
+            pool,
+            usdc(),
+            WETH,
+            ProtocolType::UniswapV2,
+            30,
+            0.001,
+            "analytical",
+            Some(metrics),
+        )
+        .await;
+        assert_eq!(result, ValidationResult::Valid);
+    }
+
+    #[tokio::test]
+    async fn validate_v2_pool_rpc_zero_reserves_low_liquidity() {
+        use mock_rpc::{MockRpcConfig, provider_from_cfg};
+        let pool = address!("B4e16d0168e52d35CaCD2c6185b44281Ec28C9Dc");
+        let (provider, _server) = provider_from_cfg(MockRpcConfig {
+            token0: usdc(),
+            token1: WETH,
+            reserve0: U256::ZERO,
+            reserve1: U256::from(1_000_000_000_000_000_000u64),
+            ..Default::default()
+        })
+        .await;
+        let result = validate_v2_pool_rpc(
+            &provider, pool, usdc(), WETH, ProtocolType::UniswapV2, 30, 0.001,
+        )
+        .await;
+        assert_eq!(result, ValidationResult::LowLiquidity);
+    }
+
+    #[tokio::test]
+    async fn validate_v2_pool_rpc_extreme_fee_bps_via_mock() {
+        use mock_rpc::{MockRpcConfig, provider_from_cfg};
+        let pool = address!("B4e16d0168e52d35CaCD2c6185b44281Ec28C9Dc");
+        let (provider, _server) = provider_from_cfg(MockRpcConfig {
+            token0: WETH,
+            token1: usdc(),
+            reserve0: U256::from(1_000_000_000_000_000_000u64),
+            reserve1: U256::from(1_000_000_000_000_000_000u64),
+            ..Default::default()
+        })
+        .await;
+        let result = validate_v2_pool_rpc(
+            &provider, pool, WETH, usdc(), ProtocolType::UniswapV2, 9999, 0.001,
+        )
+        .await;
+        assert!(matches!(
+            result,
+            ValidationResult::Valid | ValidationResult::Invalid(_)
+        ));
+    }
+
+    #[tokio::test]
+    async fn validate_v2_pool_rpc_token_order_mismatch() {
+        use mock_rpc::{MockRpcConfig, provider_from_cfg};
+        let pool = address!("B4e16d0168e52d35CaCD2c6185b44281Ec28C9Dc");
+        let (provider, _server) = provider_from_cfg(MockRpcConfig {
+            token0: usdc(),
+            token1: WETH,
+            token0_mismatch: true,
+            reserve0: U256::from(1u64),
+            reserve1: U256::from(1u64),
+            ..Default::default()
+        })
+        .await;
+        let result = validate_v2_pool_rpc(
+            &provider, pool, usdc(), WETH, ProtocolType::UniswapV2, 30, 0.001,
+        )
+        .await;
+        assert!(matches!(result, ValidationResult::Invalid(_)));
+    }
+
+    #[tokio::test]
+    async fn validate_v2_pool_rpc_get_reserves_failure() {
+        use mock_rpc::{MockRpcConfig, provider_from_cfg};
+        let pool = address!("B4e16d0168e52d35CaCD2c6185b44281Ec28C9Dc");
+        let (provider, _server) = provider_from_cfg(MockRpcConfig {
+            token0: usdc(),
+            token1: WETH,
+            fail_get_reserves: true,
+            ..Default::default()
+        })
+        .await;
+        let result = validate_v2_pool_rpc(
+            &provider, pool, usdc(), WETH, ProtocolType::UniswapV2, 30, 0.001,
+        )
+        .await;
+        assert!(matches!(result, ValidationResult::Invalid(_)));
+    }
+
+    #[tokio::test]
+    async fn validate_v2_pool_rpc_invalid_token_call_failure() {
+        use mock_rpc::{MockRpcConfig, provider_from_cfg};
+        let pool = address!("B4e16d0168e52d35CaCD2c6185b44281Ec28C9Dc");
+        let (provider, _server) = provider_from_cfg(MockRpcConfig {
+            token0: usdc(),
+            token1: WETH,
+            fail_token0: true,
+            ..Default::default()
+        })
+        .await;
+        let result = validate_v2_pool_rpc(
+            &provider, pool, usdc(), WETH, ProtocolType::UniswapV2, 30, 0.001,
+        )
+        .await;
+        assert!(matches!(result, ValidationResult::Invalid(_)));
+    }
+
+    #[tokio::test]
+    async fn validate_pool_revm_custodial_rejects_eoa_via_mock() {
+        use mock_rpc::{MockRpcConfig, provider_from_cfg};
+        let pool = address!("000000000000000000000000000000000000dEaD");
+        let (provider, _server) = provider_from_cfg(MockRpcConfig {
+            pool_bytecode: Some("0x".into()),
+            ..Default::default()
+        })
+        .await;
+        let info = PoolInfo {
+            address: pool,
+            token0: WETH,
+            token1: usdc(),
+            protocol: ProtocolType::Curve,
+            fee_bps: 4,
+            score: 0.0,
+            tvl_usd: 0.0,
+            volume_24h_usd: 0.0,
+            slippage_estimate: 0.0,
+            discovered_at: 0,
+        };
+        let result = validate_pool_revm(&provider, &info, 0.001, "both", None).await;
+        assert!(matches!(result, ValidationResult::Invalid(_)));
+    }
+
+    #[tokio::test]
+    async fn validate_pool_revm_custodial_accepts_deployed_contract() {
+        use mock_rpc::{MockRpcConfig, provider_from_cfg};
+        let pool = address!("bEbc44782C7dB0a1A60Cb6fe97d0b483032FF1C7");
+        let (provider, _server) = provider_from_cfg(MockRpcConfig {
+            pool_bytecode: Some("0x6000600055".into()),
+            ..Default::default()
+        })
+        .await;
+        let info = PoolInfo {
+            address: pool,
+            token0: WETH,
+            token1: usdc(),
+            protocol: ProtocolType::BalancerV2,
+            fee_bps: 4,
+            score: 0.0,
+            tvl_usd: 0.0,
+            volume_24h_usd: 0.0,
+            slippage_estimate: 0.0,
+            discovered_at: 0,
+        };
+        assert_eq!(
+            validate_pool_revm(&provider, &info, 0.001, "both", None).await,
+            ValidationResult::Valid
+        );
+    }
+
+    #[tokio::test]
+    async fn validate_v3_pool_full_analytical_skips_revm() {
+        use mock_rpc::{MockRpcConfig, provider_from_cfg};
+        let pool = address!("88e6A0c2dDD26FEEb64F039a2c41296FcB3f5640");
+        let weth_balance = U256::from(1_000_000_000_000_000_000u64);
+        let (provider, _server) = provider_from_cfg(MockRpcConfig {
+            token0: usdc(),
+            token1: WETH,
+            erc20_balance: Some(weth_balance),
+            ..Default::default()
+        })
+        .await;
+        let result = validate_v3_pool_full(
+            &provider,
+            pool,
+            usdc(),
+            WETH,
+            5,
+            0.001,
+            "analytical",
+            None,
+        )
+        .await;
+        assert_eq!(result, ValidationResult::Valid);
+    }
+
+    #[tokio::test]
+    async fn validate_pool_revm_routes_v2_analytical() {
+        use mock_rpc::{MockRpcConfig, provider_from_cfg};
+        let pool = address!("B4e16d0168e52d35CaCD2c6185b44281Ec28C9Dc");
+        let (provider, _server) = provider_from_cfg(MockRpcConfig {
+            token0: usdc(),
+            token1: WETH,
+            reserve0: U256::from(3_000_000_000_000u64),
+            reserve1: U256::from(1_000_000_000_000_000_000u64),
+            ..Default::default()
+        })
+        .await;
+        let info = PoolInfo {
+            address: pool,
+            token0: usdc(),
+            token1: WETH,
+            protocol: ProtocolType::UniswapV2,
+            fee_bps: 30,
+            score: 0.0,
+            tvl_usd: 0.0,
+            volume_24h_usd: 0.0,
+            slippage_estimate: 0.0,
+            discovered_at: 0,
+        };
+        let metrics = crate::metrics::DiscoveryMetrics::noop();
+        let result = validate_pool_revm(&provider, &info, 0.001, "analytical", Some(metrics)).await;
+        assert_eq!(result, ValidationResult::Valid);
+    }
+
+    #[tokio::test]
+    async fn validate_v3_pool_full_low_liquidity_via_mock() {
+        use mock_rpc::{MockRpcConfig, provider_from_cfg};
+        let pool = address!("88e6A0c2dDD26FEEb64F039a2c41296FcB3f5640");
+        let (provider, _server) = provider_from_cfg(MockRpcConfig {
+            token0: usdc(),
+            token1: WETH,
+            erc20_balance: Some(U256::from(1u64)),
+            ..Default::default()
+        })
+        .await;
+        let result = validate_v3_pool_full(
+            &provider, pool, usdc(), WETH, 5, 0.001, "analytical", None,
+        )
+        .await;
+        assert_eq!(result, ValidationResult::LowLiquidity);
     }
 }

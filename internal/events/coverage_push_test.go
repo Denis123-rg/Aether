@@ -38,6 +38,11 @@ func TestNewPublisher_InvalidURL(t *testing.T) {
 	}
 }
 
+func waitForSubscriberConnected(t *testing.T, state *DashboardState) {
+	t.Helper()
+	waitUntil(t, func() bool { return state.Get().RedisConnected }, "subscriber connected")
+}
+
 func TestPublisher_AllChannels(t *testing.T) {
 	mr, err := miniredis.Run()
 	if err != nil {
@@ -57,6 +62,7 @@ func TestPublisher_AllChannels(t *testing.T) {
 		cancel()
 		sub.Stop()
 	}()
+	waitForSubscriberConnected(t, state)
 
 	pub := NewPublisher(url)
 	defer pub.Close()
@@ -143,6 +149,7 @@ func TestSubscriber_OnEventCallback(t *testing.T) {
 		cancel()
 		sub.Stop()
 	}()
+	waitForSubscriberConnected(t, state)
 	pub := NewPublisher(url)
 	defer pub.Close()
 	pub.PublishPnLUpdate(1, 1)

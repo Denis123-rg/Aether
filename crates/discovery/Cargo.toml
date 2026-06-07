@@ -26,3 +26,4 @@ prometheus = "0.13.4"
 tempfile = "3.27.0"
 tokio = { workspace = true }
 url = "2"
+mockito = "1.6"

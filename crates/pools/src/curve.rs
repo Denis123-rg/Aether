@@ -433,4 +433,39 @@ mod tests {
             .predict_post_state(token0, U256::from(1_000_000_000u64))
             .is_none());
     }
+
+    #[test]
+    fn test_curve_zero_balance_in_returns_none() {
+        let mut pool = setup_curve_pool();
+        pool.balances[0] = U256::ZERO;
+        assert!(pool.get_amount_out(pool.tokens[0], U256::from(1000u64)).is_none());
+    }
+
+    #[test]
+    fn test_curve_invalid_token_returns_none() {
+        let pool = setup_curve_pool();
+        assert!(pool
+            .get_amount_out(Address::repeat_byte(0xab), U256::from(1000u64))
+            .is_none());
+    }
+
+    #[test]
+    fn test_curve_get_amount_in_exceeds_balance_returns_none() {
+        let pool = setup_curve_pool();
+        assert!(pool
+            .get_amount_in(pool.tokens[1], pool.balances[1] + U256::from(1u64))
+            .is_none());
+    }
+
+    #[test]
+    fn test_curve_large_swap_still_positive() {
+        let pool = setup_curve_pool();
+        let out = pool
+            .get_amount_out(
+                pool.tokens[0],
+                U256::from(100_000_000_000u64),
+            )
+            .expect("stableswap");
+        assert!(out > U256::ZERO);
+    }
 }

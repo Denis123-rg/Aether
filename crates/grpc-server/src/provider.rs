@@ -615,6 +615,10 @@ impl RpcProvider {
 mod tests {
     use super::*;
     use alloy::primitives::U256;
+    use std::sync::Mutex;
+
+    /// Serialize env-var mutation — parallel tests share process environment.
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
 
     /// Fresh metrics handle for tests that don't care about counter values —
     /// keeps every `RpcProvider::new` call site short and avoids a global
@@ -648,6 +652,7 @@ mod tests {
 
     #[test]
     fn test_resolve_http_poll_interval_defaults() {
+        let _guard = ENV_LOCK.lock().unwrap();
         std::env::remove_var("AETHER_HTTP_POLL_MS");
         assert_eq!(
             resolve_http_poll_interval("http://127.0.0.1:8547"),
@@ -663,6 +668,8 @@ mod tests {
 
     #[test]
     fn test_resolve_http_poll_interval_env_override() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        std::env::remove_var("AETHER_HTTP_POLL_MS");
         std::env::set_var("AETHER_HTTP_POLL_MS", "250");
         assert_eq!(
             resolve_http_poll_interval("https://eth-mainnet.g.alchemy.com/v2/KEY"),

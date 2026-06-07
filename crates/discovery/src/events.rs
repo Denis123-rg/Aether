@@ -163,6 +163,7 @@ pub fn http_to_ws_url(url: &str) -> Option<String> {
 
 /// Spawn the factory event listener. Tries WebSocket when mode is `websocket` or
 /// `auto`; falls back to HTTP polling when WS is unavailable or mode is `poll`.
+#[allow(clippy::too_many_arguments)]
 pub fn spawn_factory_listener(
     http_provider: Option<DynProvider<Ethereum>>,
     service: Arc<DiscoveryService>,

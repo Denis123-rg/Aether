@@ -362,4 +362,47 @@ mod tests {
         assert_eq!(post.new_balance0, pool.balance0 - post.amount_out);
         assert_eq!(post.new_balance1, pool.balance1 + dx);
     }
+
+    #[test]
+    fn test_balancer_zero_balance_error() {
+        let pool = BalancerPool::new(
+            Address::ZERO,
+            address!("C02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2"),
+            address!("A0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"),
+            500000,
+            500000,
+            30,
+        );
+        assert!(pool
+            .get_amount_out(pool.token0, U256::from(1000u64))
+            .is_none());
+    }
+
+    #[test]
+    fn test_balancer_invalid_token_error() {
+        let pool = setup_balancer_pool();
+        assert!(pool
+            .get_amount_out(Address::repeat_byte(0xcd), U256::from(1000u64))
+            .is_none());
+    }
+
+    #[test]
+    fn test_balancer_get_amount_in_overflow_reserve() {
+        let pool = setup_balancer_pool();
+        assert!(pool
+            .get_amount_in(pool.token1, pool.balance1)
+            .is_none());
+    }
+
+    #[test]
+    fn test_balancer_unequal_weight_huge_input() {
+        let pool = setup_balancer_80_20_pool();
+        let out = pool
+            .get_amount_out(
+                pool.token0,
+                U256::from(10u128.pow(30)),
+            )
+            .expect("approx path");
+        assert!(out < pool.balance1);
+    }
 }

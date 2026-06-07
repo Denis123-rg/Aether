@@ -97,4 +97,53 @@ mod tests {
         assert!(back <= amount_in);
         assert!(back >= amount_in * U256::from(99u64) / U256::from(100u64));
     }
+
+    #[test]
+    fn test_sushi_zero_reserves_error() {
+        let mut sushi = SushiSwapPool::new(
+            Address::ZERO,
+            address!("A0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"),
+            address!("C02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2"),
+            30,
+        );
+        sushi.update_state(U256::ZERO, U256::from(1_000_000u64));
+        let token = address!("C02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2");
+        assert!(sushi.get_amount_out(token, U256::from(1000u64)).is_none());
+    }
+
+    #[test]
+    fn test_sushi_invalid_token_error() {
+        let mut sushi = SushiSwapPool::new(
+            Address::ZERO,
+            address!("A0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"),
+            address!("C02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2"),
+            30,
+        );
+        sushi.update_state(
+            U256::from(10_000_000_000_000u64),
+            U256::from(5_000_000_000_000_000_000_000u128),
+        );
+        assert!(sushi
+            .get_amount_out(Address::repeat_byte(0xee), U256::from(1000u64))
+            .is_none());
+    }
+
+    #[test]
+    fn test_sushi_overflow_input_still_computes() {
+        let mut sushi = SushiSwapPool::new(
+            Address::ZERO,
+            address!("A0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"),
+            address!("C02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2"),
+            30,
+        );
+        sushi.update_state(
+            U256::from(10_000_000_000_000u64),
+            U256::from(5_000_000_000_000_000_000_000u128),
+        );
+        let token = address!("C02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2");
+        let out = sushi
+            .get_amount_out(token, U256::from(10u128.pow(28)))
+            .expect("v2 math");
+        assert!(out < U256::from(10_000_000_000_000u64));
+    }
 }

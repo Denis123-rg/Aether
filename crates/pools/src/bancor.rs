@@ -586,4 +586,40 @@ mod tests {
             .predict_post_state_multihop(weth_address(), amount_in, link_address(), &leg_b_pool)
             .is_none());
     }
+
+    #[test]
+    fn test_bancor_zero_reserves_error() {
+        let pool = BancorPool::new(
+            Address::ZERO,
+            weth_address(),
+            BNT_ADDRESS,
+            30,
+        );
+        assert!(pool.get_amount_out(weth_address(), U256::from(1000u64)).is_none());
+    }
+
+    #[test]
+    fn test_bancor_invalid_token_error() {
+        let pool = seeded_pool();
+        assert!(pool
+            .get_amount_out(Address::repeat_byte(0xef), U256::from(1000u64))
+            .is_none());
+    }
+
+    #[test]
+    fn test_bancor_get_amount_in_exceeds_reserve() {
+        let pool = seeded_pool();
+        assert!(pool
+            .get_amount_in(pool.bnt, pool.bnt_balance)
+            .is_none());
+    }
+
+    #[test]
+    fn test_bancor_huge_swap_bounded_by_reserve() {
+        let pool = seeded_pool();
+        let out = pool
+            .get_amount_out(pool.token, U256::from(10u128.pow(30)))
+            .expect("bonding curve");
+        assert!(out < pool.bnt_balance);
+    }
 }
