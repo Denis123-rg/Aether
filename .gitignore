@@ -44,3 +44,4 @@ fuzz_out.txt
 mempool_out.txt
 validator_out.txt
 
+cov2_func.txt

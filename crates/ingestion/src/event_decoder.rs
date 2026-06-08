@@ -55,6 +55,58 @@ sol! {
         int24 tickSpacing,
         address pool
     );
+
+    // Curve Stableswap-NG PlainPoolDeployed (factory event for discovery).
+    // Exported for discovery mock log helpers and tests.
+    event PlainPoolDeployed(
+        address pool,
+        address[] coins,
+        uint256 A,
+        uint256 fee,
+        address owner
+    );
+
+    // Balancer V3 Vault PoolRegistered (pool discovery via vault)
+    struct BalancerV3TokenConfig {
+        address token;
+        uint8 tokenType;
+        address rateProvider;
+        bool paysYieldFees;
+    }
+    struct BalancerV3RoleAccounts {
+        address pauseManager;
+        address swapFeeManager;
+        address poolCreator;
+    }
+    struct BalancerV3HooksConfig {
+        bool enableHookAdjustedAmounts;
+        bool shouldCallBeforeInitialize;
+        bool shouldCallAfterInitialize;
+        bool shouldCallComputeDynamicSwapFee;
+        bool shouldCallBeforeSwap;
+        bool shouldCallAfterSwap;
+        bool shouldCallBeforeAddLiquidity;
+        bool shouldCallAfterAddLiquidity;
+        bool shouldCallBeforeRemoveLiquidity;
+        bool shouldCallAfterRemoveLiquidity;
+        address hooksContract;
+    }
+    struct BalancerV3LiquidityManagement {
+        bool disableUnbalancedLiquidity;
+        bool enableAddLiquidityCustom;
+        bool enableRemoveLiquidityCustom;
+        bool enableDonation;
+    }
+    event PoolRegistered(
+        address indexed pool,
+        address indexed factory,
+        BalancerV3TokenConfig[] tokenConfig,
+        uint256 swapFeePercentage,
+        uint32 pauseWindowEndTime,
+        BalancerV3RoleAccounts roleAccounts,
+        BalancerV3HooksConfig hooksConfig,
+        BalancerV3LiquidityManagement liquidityManagement
+    );
 }
 
 /// Decoded pool update event
@@ -120,6 +172,14 @@ impl EventSignatures {
 
     pub fn pool_created_v3_topic() -> B256 {
         PoolCreated::SIGNATURE_HASH
+    }
+
+    pub fn plain_pool_deployed_topic() -> B256 {
+        PlainPoolDeployed::SIGNATURE_HASH
+    }
+
+    pub fn pool_registered_v3_topic() -> B256 {
+        PoolRegistered::SIGNATURE_HASH
     }
 }
 
@@ -344,6 +404,49 @@ pub fn v3_fee_bps_from_topic(fee_topic: &B256) -> u32 {
     let fee = U256::from_be_slice(fee_topic.as_slice());
     // fee is in hundredths of a bip: divide by 100 to get bps.
     (fee / U256::from(100u64)).as_limbs()[0] as u32
+}
+
+/// Decode a Curve `PlainPoolDeployed` factory log into pool + first two coins.
+/// Returns `(pool, token0, token1, fee_bps)` when at least two coins are present.
+pub fn decode_plain_pool_deployed(topics: &[B256], data: &[u8]) -> Option<(Address, Address, Address, u32)> {
+    if topics.is_empty() || topics[0] != EventSignatures::plain_pool_deployed_topic() {
+        return None;
+    }
+    let decoded = PlainPoolDeployed::decode_raw_log(topics, data).ok()?;
+    if decoded.coins.len() < 2 {
+        return None;
+    }
+    let fee_bps = curve_fee_to_bps(decoded.fee);
+    Some((decoded.pool, decoded.coins[0], decoded.coins[1], fee_bps))
+}
+
+/// Decode a Balancer V3 `PoolRegistered` vault log.
+/// Returns `(pool, token0, token1, fee_bps)` when at least two tokens are configured.
+pub fn decode_pool_registered_v3(topics: &[B256], data: &[u8]) -> Option<(Address, Address, Address, u32)> {
+    if topics.len() < 3 || topics[0] != EventSignatures::pool_registered_v3_topic() {
+        return None;
+    }
+    let decoded = PoolRegistered::decode_raw_log(topics, data).ok()?;
+    if decoded.tokenConfig.len() < 2 {
+        return None;
+    }
+    let fee_bps = balancer_v3_fee_to_bps(decoded.swapFeePercentage);
+    let t0 = decoded.tokenConfig.first()?.token;
+    let t1 = decoded.tokenConfig.get(1)?.token;
+    Some((decoded.pool, t0, t1, fee_bps))
+}
+
+/// Convert Curve on-chain fee (1e10 fixed point) to basis points.
+pub fn curve_fee_to_bps(fee: U256) -> u32 {
+    // fee / 1e10 * 10000 = fee * 10000 / 1e10
+    let bps = fee.saturating_mul(U256::from(10_000u64)) / U256::from(10u128.pow(10));
+    bps.as_limbs()[0].min(u32::MAX as u64) as u32
+}
+
+/// Convert Balancer V3 `swapFeePercentage` (1e18 fixed point) to basis points.
+pub fn balancer_v3_fee_to_bps(swap_fee: U256) -> u32 {
+    let bps = swap_fee.saturating_mul(U256::from(10_000u64)) / U256::from(10u128.pow(18));
+    bps.as_limbs()[0].min(u32::MAX as u64) as u32
 }
 
 #[cfg(test)]

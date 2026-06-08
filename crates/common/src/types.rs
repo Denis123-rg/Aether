@@ -17,6 +17,7 @@ pub enum ProtocolType {
     Curve = 4,
     BalancerV2 = 5,
     BancorV3 = 6,
+    BalancerV3 = 7,
 }
 
 impl ProtocolType {
@@ -29,6 +30,7 @@ impl ProtocolType {
             ProtocolType::Curve => 130_000,
             ProtocolType::BalancerV2 => 120_000,
             ProtocolType::BancorV3 => 150_000,
+            ProtocolType::BalancerV3 => 120_000,
         }
     }
 }
@@ -205,6 +207,7 @@ mod tests {
         assert_eq!(ProtocolType::SushiSwap.base_gas(), 60_000);
         assert_eq!(ProtocolType::Curve.base_gas(), 130_000);
         assert_eq!(ProtocolType::BalancerV2.base_gas(), 120_000);
+        assert_eq!(ProtocolType::BalancerV3.base_gas(), 120_000);
         assert_eq!(ProtocolType::BancorV3.base_gas(), 150_000);
     }
 
@@ -242,6 +245,7 @@ mod tests {
         assert_eq!(ProtocolType::Curve as u8, 4);
         assert_eq!(ProtocolType::BalancerV2 as u8, 5);
         assert_eq!(ProtocolType::BancorV3 as u8, 6);
+        assert_eq!(ProtocolType::BalancerV3 as u8, 7);
     }
 
     #[test]

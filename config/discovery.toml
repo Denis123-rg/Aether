@@ -50,11 +50,20 @@ address = "0x1F98431c8aD98523631AE4a59f267346ea31F984"
 fee_bps = 30
 event = "PoolCreated"
 
-# Curve factory — BasePoolAdded events handled separately when enabled.
+[curve]
+enabled = true
+default_fee_bps = 4
+
+[balancer_v3]
+enabled = true
+vault_address = "0xbA1333333333a1BA1108E8412f11850A5C319bA9"
+default_fee_bps = 10
+
+# Curve Stableswap-NG factory — emits PlainPoolDeployed with pool + coins.
 [[factories]]
-name = "curve"
+name = "curve_stableswap_ng"
 protocol = "curve"
-address = "0x0959158b6040D32d9a7C9b7bc94A37AeC10cEc22"
+address = "0xF18056Bbd9e56aC88eefA885588501c1806Be1D8"
 fee_bps = 4
 event = "PlainPoolDeployed"
 

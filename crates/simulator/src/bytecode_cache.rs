@@ -195,6 +195,22 @@ impl BytecodeCache {
         self.inner.mem.get(&addr).map(|v| v.value().clone())
     }
 
+    /// Pre-warm bytecode for a single address into the cache (disk + memory).
+    /// Logs RPC failures but does not propagate errors — callers should keep
+    /// the pool in the hot cache and retry on first simulation.
+    pub async fn prewarm_bytecode(
+        &self,
+        addr: Address,
+        provider: &DynProvider<Ethereum>,
+    ) {
+        if self.get(addr).is_some() {
+            return;
+        }
+        if let None = self.get_or_fetch(addr, provider).await {
+            tracing::error!(%addr, "bytecode prewarm: fetch returned empty or failed");
+        }
+    }
+
     /// Hit-or-fetch helper: returns the cached entry if present, otherwise
     /// fetches the bytecode from `provider`, persists it, and returns it.
     /// `None` means the address has no code (EOA) or the provider failed.
@@ -285,6 +301,23 @@ mod tests {
         drop(c1);
         // Reopen must succeed without TableDoesNotExist.
         let _c2 = BytecodeCache::open(&path).expect("reopen");
+    }
+
+    #[tokio::test]
+    async fn prewarm_bytecode_uses_cache_without_rpc() {
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let cache = BytecodeCache::open(tmp.path()).unwrap();
+        let addr = address!("C02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2");
+        let code = sample_bytecode();
+        cache
+            .put(addr, alloy::primitives::keccak256(&code), &code)
+            .unwrap();
+        let url: url::Url = "http://127.0.0.1:1".parse().unwrap();
+        let provider = alloy::providers::ProviderBuilder::new()
+            .connect_http(url)
+            .erased();
+        cache.prewarm_bytecode(addr, &provider).await;
+        assert!(cache.get(addr).is_some());
     }
 
     #[test]

@@ -7,6 +7,8 @@
 use std::time::Instant;
 
 use aether_common::types::{addresses::WETH, ProtocolType};
+use aether_pools::balancer::BalancerPool;
+use aether_pools::curve::CurvePool;
 use aether_pools::uniswap_v2::UniswapV2Pool;
 use aether_pools::Pool;
 use aether_simulator::fork::{RpcDB, RpcForkedState};
@@ -549,6 +551,7 @@ fn dex_label(protocol: ProtocolType) -> &'static str {
         ProtocolType::SushiSwap => "sushiswap",
         ProtocolType::Curve => "curve",
         ProtocolType::BalancerV2 => "balancer_v2",
+        ProtocolType::BalancerV3 => "balancer_v3",
         ProtocolType::BancorV3 => "bancor_v3",
     }
 }
@@ -601,7 +604,33 @@ pub async fn validate_pool_revm(
             )
             .await
         }
-        ProtocolType::Curve | ProtocolType::BalancerV2 | ProtocolType::BancorV3 => {
+        ProtocolType::Curve => {
+            validate_curve_pool_full(
+                provider,
+                pool.address,
+                pool.token0,
+                pool.token1,
+                pool.fee_bps,
+                swap_eth,
+                validation_mode,
+                metrics.clone(),
+            )
+            .await
+        }
+        ProtocolType::BalancerV3 => {
+            validate_balancer_v3_pool_full(
+                provider,
+                pool.address,
+                pool.token0,
+                pool.token1,
+                pool.fee_bps,
+                swap_eth,
+                validation_mode,
+                metrics.clone(),
+            )
+            .await
+        }
+        ProtocolType::BalancerV2 | ProtocolType::BancorV3 => {
             validate_custodial_pool(provider, pool).await
         }
     };
@@ -612,7 +641,227 @@ pub async fn validate_pool_revm(
     result
 }
 
-/// Integrity gate for Curve / Balancer / Bancor pools: require the pool
+alloy::sol! {
+    #[sol(rpc)]
+    interface ICurvePool {
+        function A() external view returns (uint256);
+        function balances(uint256 i) external view returns (uint256);
+        function coins(uint256 i) external view returns (address);
+    }
+}
+
+/// Validate a 2-coin Curve pool using on-chain balances and analytical round-trip.
+pub async fn validate_curve_pool_rpc(
+    provider: &DynProvider<Ethereum>,
+    pool_addr: Address,
+    token0: Address,
+    token1: Address,
+    fee_bps: u32,
+    swap_eth: f64,
+) -> ValidationResult {
+    let a_out = provider
+        .call(
+            alloy::rpc::types::TransactionRequest::default()
+                .to(pool_addr)
+                .input(ICurvePool::ACall {}.abi_encode().into()),
+        )
+        .await;
+    let a = match a_out {
+        Ok(out) if out.len() >= 32 => U256::from_be_slice(&out[0..32]),
+        _ => return ValidationResult::Invalid("Curve A() call failed".into()),
+    };
+
+    let mut balances = [U256::ZERO; 2];
+    for (idx, slot) in balances.iter_mut().enumerate() {
+        let out = provider
+            .call(
+                alloy::rpc::types::TransactionRequest::default()
+                    .to(pool_addr)
+                    .input(ICurvePool::balancesCall { i: U256::from(idx as u64) }.abi_encode().into()),
+            )
+            .await;
+        match out {
+            Ok(bytes) if bytes.len() >= 32 => *slot = U256::from_be_slice(&bytes[0..32]),
+            _ => return ValidationResult::Invalid("Curve balances() call failed".into()),
+        }
+    }
+
+    validate_curve_balances(token0, token1, fee_bps, a, balances[0], balances[1], swap_eth)
+}
+
+/// Analytical Curve validation from known balances (unit tests / offline).
+pub fn validate_curve_balances(
+    token0: Address,
+    token1: Address,
+    fee_bps: u32,
+    amplification: U256,
+    balance0: U256,
+    balance1: U256,
+    swap_eth: f64,
+) -> ValidationResult {
+    if balance0.is_zero() || balance1.is_zero() {
+        return ValidationResult::LowLiquidity;
+    }
+
+    let amp = amplification.as_limbs()[0] as u64;
+    let mut pool = CurvePool::new(Address::ZERO, vec![token0, token1], amp.max(1), fee_bps);
+    pool.balances = vec![balance0, balance1];
+
+    let swap_wei = eth_to_u256(swap_eth);
+    if swap_wei.is_zero() {
+        return ValidationResult::Invalid("swap amount too small".into());
+    }
+
+    let weth_side = if token0 == WETH {
+        u256_to_eth(balance0)
+    } else if token1 == WETH {
+        u256_to_eth(balance1)
+    } else {
+        u256_to_eth(balance0.min(balance1))
+    };
+    if weth_side < MIN_WETH_RESERVE_ETH {
+        return ValidationResult::LowLiquidity;
+    }
+
+    let token_out = match pool.get_amount_out(token0, swap_wei) {
+        Some(v) if !v.is_zero() => v,
+        _ => return ValidationResult::Invalid("Curve forward swap failed".into()),
+    };
+    let back = match pool.get_amount_out(token1, token_out) {
+        Some(v) if !v.is_zero() => v,
+        _ => return ValidationResult::Invalid("Curve reverse swap failed".into()),
+    };
+    if back > swap_wei / U256::from(100) {
+        ValidationResult::Valid
+    } else {
+        ValidationResult::Invalid("Curve round-trip output near zero".into())
+    }
+}
+
+/// Full Curve validation pipeline (analytical; revm optional via mode).
+#[allow(clippy::too_many_arguments)]
+pub async fn validate_curve_pool_full(
+    provider: &DynProvider<Ethereum>,
+    pool_addr: Address,
+    token0: Address,
+    token1: Address,
+    fee_bps: u32,
+    swap_eth: f64,
+    validation_mode: &str,
+    metrics: Option<std::sync::Arc<DiscoveryMetrics>>,
+) -> ValidationResult {
+    let start = Instant::now();
+    let mode = validation_mode.to_ascii_lowercase();
+    let result = if mode == "revm" {
+        // Curve pool-direct swaps need coin indices; analytical is the reliable gate here.
+        validate_curve_pool_rpc(provider, pool_addr, token0, token1, fee_bps, swap_eth).await
+    } else {
+        validate_curve_pool_rpc(provider, pool_addr, token0, token1, fee_bps, swap_eth).await
+    };
+    if let Some(m) = metrics {
+        m.validation_latency_ms
+            .observe(start.elapsed().as_secs_f64() * 1000.0);
+    }
+    result
+}
+
+/// Validate a Balancer V3 pool using ERC-20 balances held by the pool contract.
+pub async fn validate_balancer_v3_pool_rpc(
+    provider: &DynProvider<Ethereum>,
+    pool_addr: Address,
+    token0: Address,
+    token1: Address,
+    fee_bps: u32,
+    swap_eth: f64,
+) -> ValidationResult {
+    let code = match provider.get_code_at(pool_addr).await {
+        Ok(c) if !c.is_empty() => c,
+        Ok(_) => return ValidationResult::Invalid("pool address has no bytecode".into()),
+        Err(_) => return ValidationResult::Valid,
+    };
+    let _ = code;
+
+    let b0 = erc20_balance_of(provider, token0, pool_addr).await;
+    let b1 = erc20_balance_of(provider, token1, pool_addr).await;
+    let (Some(balance0), Some(balance1)) = (b0, b1) else {
+        return ValidationResult::Valid;
+    };
+    validate_balancer_v3_balances(token0, token1, fee_bps, balance0, balance1, swap_eth)
+}
+
+/// Analytical Balancer V3 validation from known token balances.
+pub fn validate_balancer_v3_balances(
+    token0: Address,
+    token1: Address,
+    fee_bps: u32,
+    balance0: U256,
+    balance1: U256,
+    swap_eth: f64,
+) -> ValidationResult {
+    if balance0.is_zero() || balance1.is_zero() {
+        return ValidationResult::LowLiquidity;
+    }
+
+    let weth_side = if token0 == WETH {
+        u256_to_eth(balance0)
+    } else if token1 == WETH {
+        u256_to_eth(balance1)
+    } else {
+        u256_to_eth(balance0.min(balance1))
+    };
+    if weth_side < MIN_WETH_RESERVE_ETH {
+        return ValidationResult::LowLiquidity;
+    }
+
+    let swap_wei = eth_to_u256(swap_eth);
+    if swap_wei.is_zero() {
+        return ValidationResult::Invalid("swap amount too small".into());
+    }
+
+    // Equal-weight 50/50 approximation for newly registered V3 pools.
+    let mut pool = BalancerPool::new(Address::ZERO, token0, token1, 50, 50, fee_bps);
+    pool.balance0 = balance0;
+    pool.balance1 = balance1;
+
+    let token_out = match pool.get_amount_out(token0, swap_wei) {
+        Some(v) if !v.is_zero() => v,
+        _ => return ValidationResult::Invalid("Balancer V3 forward swap failed".into()),
+    };
+    let back = match pool.get_amount_out(token1, token_out) {
+        Some(v) if !v.is_zero() => v,
+        _ => return ValidationResult::Invalid("Balancer V3 reverse swap failed".into()),
+    };
+    if back > swap_wei / U256::from(100) {
+        ValidationResult::Valid
+    } else {
+        ValidationResult::Invalid("Balancer V3 round-trip output near zero".into())
+    }
+}
+
+/// Full Balancer V3 validation pipeline.
+#[allow(clippy::too_many_arguments)]
+pub async fn validate_balancer_v3_pool_full(
+    provider: &DynProvider<Ethereum>,
+    pool_addr: Address,
+    token0: Address,
+    token1: Address,
+    fee_bps: u32,
+    swap_eth: f64,
+    validation_mode: &str,
+    metrics: Option<std::sync::Arc<DiscoveryMetrics>>,
+) -> ValidationResult {
+    let start = Instant::now();
+    let _mode = validation_mode.to_ascii_lowercase();
+    let result =
+        validate_balancer_v3_pool_rpc(provider, pool_addr, token0, token1, fee_bps, swap_eth).await;
+    if let Some(m) = metrics {
+        m.validation_latency_ms
+            .observe(start.elapsed().as_secs_f64() * 1000.0);
+    }
+    result
+}
+
+/// Integrity gate for Balancer V2 / Bancor pools: require the pool
 /// address to be a deployed contract. Cheap (single `eth_getCode`) and removes
 /// the most common malformed entry (an EOA or non-contract address). Infra
 /// errors fail open so a transient RPC hiccup never drops a real pool.
@@ -1592,6 +1841,7 @@ mod tests {
             ProtocolType::SushiSwap,
             ProtocolType::Curve,
             ProtocolType::BalancerV2,
+            ProtocolType::BalancerV3,
             ProtocolType::BancorV3,
         ] {
             assert!(!dex_label(p).is_empty());

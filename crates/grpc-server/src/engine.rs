@@ -626,6 +626,27 @@ impl AetherEngine {
             let addrs: Vec<Address> = added.iter().map(|p| p.address).collect();
             self.fetch_reserves_for_addresses(&addrs).await;
         }
+
+        if !added.is_empty() {
+            if let (Some(provider), Some(cache)) =
+                (self.rpc_provider.clone(), self.bytecode_cache.clone())
+            {
+                let addrs: Vec<Address> = added.iter().map(|p| p.address).collect();
+                tokio::spawn(async move {
+                    let futures: Vec<_> = addrs
+                        .into_iter()
+                        .map(|addr| {
+                            let provider = provider.clone();
+                            let cache = cache.clone();
+                            async move {
+                                cache.prewarm_bytecode(addr, &provider).await;
+                            }
+                        })
+                        .collect();
+                    futures::future::join_all(futures).await;
+                });
+            }
+        }
     }
 
     /// Fetch on-chain reserves for a specific set of pool addresses only.
@@ -914,6 +935,7 @@ impl AetherEngine {
                 "sushiswap" => ProtocolType::SushiSwap,
                 "curve" => ProtocolType::Curve,
                 "balancer_v2" => ProtocolType::BalancerV2,
+                "balancer_v3" => ProtocolType::BalancerV3,
                 "bancor_v3" => ProtocolType::BancorV3,
                 other => {
                     warn!(index = i, protocol = %other, "Unknown protocol, skipping pool");
@@ -4216,6 +4238,17 @@ fee_bps = 30
             slippage_estimate: 0.01,
             discovered_at: 1,
         }
+    }
+
+    #[tokio::test]
+    async fn test_sync_hot_cache_pools_spawns_bytecode_prewarm() {
+        let (tx, _rx) = broadcast::channel(100);
+        let engine = AetherEngine::new(EngineConfig::default(), tx);
+        let pools: Vec<PoolInfo> = (0x40u8..0x48)
+            .map(|b| sample_pool_info(b))
+            .collect();
+        engine.sync_hot_cache_pools(&pools, &[]).await;
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
     }
 
     #[tokio::test]

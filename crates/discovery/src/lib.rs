@@ -14,6 +14,6 @@ pub mod types;
 pub mod validator;
 
 pub use cache::DiscoveryCache;
-pub use config::DiscoveryConfig;
+pub use config::{DiscoveryConfig, FactoryEntry, FactoryEventType};
 pub use service::DiscoveryService;
 pub use types::{DiscoveryEvent, PoolInfo, PoolScoreInputs, ValidationResult};

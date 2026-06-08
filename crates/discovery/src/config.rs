@@ -1,7 +1,8 @@
 use std::path::Path;
 
 use aether_common::types::ProtocolType;
-use alloy::primitives::Address;
+use aether_ingestion::event_decoder::EventSignatures;
+use alloy::primitives::{Address, B256};
 use serde::Deserialize;
 
 /// Top-level discovery configuration loaded from `config/discovery.toml`.
@@ -17,6 +18,97 @@ pub struct DiscoveryConfig {
     pub factories: Vec<FactoryConfig>,
     #[serde(default)]
     pub the_graph: TheGraphSettings,
+    #[serde(default)]
+    pub curve: CurveDiscoverySettings,
+    #[serde(default)]
+    pub balancer_v3: BalancerV3DiscoverySettings,
+}
+
+/// Curve-specific discovery settings (supplements `[[factories]]` entries).
+#[derive(Debug, Clone, Deserialize)]
+pub struct CurveDiscoverySettings {
+    #[serde(default = "default_enabled")]
+    pub enabled: bool,
+    #[serde(default = "default_curve_fee")]
+    pub default_fee_bps: u32,
+}
+
+impl Default for CurveDiscoverySettings {
+    fn default() -> Self {
+        Self {
+            enabled: default_enabled(),
+            default_fee_bps: default_curve_fee(),
+        }
+    }
+}
+
+/// Balancer V3 vault-based discovery settings.
+#[derive(Debug, Clone, Deserialize)]
+pub struct BalancerV3DiscoverySettings {
+    #[serde(default = "default_enabled")]
+    pub enabled: bool,
+    #[serde(default = "default_balancer_v3_vault")]
+    pub vault_address: String,
+    #[serde(default = "default_balancer_v3_fee")]
+    pub default_fee_bps: u32,
+}
+
+impl Default for BalancerV3DiscoverySettings {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            vault_address: default_balancer_v3_vault(),
+            default_fee_bps: default_balancer_v3_fee(),
+        }
+    }
+}
+
+fn default_curve_fee() -> u32 {
+    4
+}
+fn default_balancer_v3_vault() -> String {
+    "0xbA1333333333a1BA1108E8412f11850A5C319bA9".to_string()
+}
+fn default_balancer_v3_fee() -> u32 {
+    10
+}
+
+/// Factory event type for log subscription and decoding.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum FactoryEventType {
+    PairCreated,
+    PoolCreatedV3,
+    PlainPoolDeployed,
+    PoolRegistered,
+}
+
+impl FactoryEventType {
+    pub fn from_config_str(s: &str) -> Self {
+        match s {
+            "PoolCreated" | "pool_created" | "PoolCreatedV3" => Self::PoolCreatedV3,
+            "PlainPoolDeployed" | "plain_pool_deployed" => Self::PlainPoolDeployed,
+            "PoolRegistered" | "pool_registered" => Self::PoolRegistered,
+            _ => Self::PairCreated,
+        }
+    }
+
+    pub fn topic(self) -> B256 {
+        match self {
+            Self::PairCreated => EventSignatures::pair_created_topic(),
+            Self::PoolCreatedV3 => EventSignatures::pool_created_v3_topic(),
+            Self::PlainPoolDeployed => EventSignatures::plain_pool_deployed_topic(),
+            Self::PoolRegistered => EventSignatures::pool_registered_v3_topic(),
+        }
+    }
+}
+
+/// A configured factory (or vault) entry for event listening.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FactoryEntry {
+    pub address: Address,
+    pub protocol: ProtocolType,
+    pub fee_bps: u32,
+    pub event_type: FactoryEventType,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -196,20 +288,48 @@ impl DiscoveryConfig {
             "sushiswap" => Some(ProtocolType::SushiSwap),
             "curve" => Some(ProtocolType::Curve),
             "balancer_v2" => Some(ProtocolType::BalancerV2),
+            "balancer_v3" => Some(ProtocolType::BalancerV3),
             "bancor_v3" => Some(ProtocolType::BancorV3),
             _ => None,
         }
     }
 
     pub fn factory_addresses(&self) -> Vec<(Address, ProtocolType, u32)> {
-        self.factories
+        self.factory_entries()
+            .into_iter()
+            .map(|e| (e.address, e.protocol, e.fee_bps))
+            .collect()
+    }
+
+    /// All factory/vault entries with event type for filtering and decoding.
+    pub fn factory_entries(&self) -> Vec<FactoryEntry> {
+        let mut entries: Vec<FactoryEntry> = self
+            .factories
             .iter()
             .filter_map(|f| {
                 let addr = f.address.parse::<Address>().ok()?;
                 let protocol = Self::parse_protocol(&f.protocol)?;
-                Some((addr, protocol, f.fee_bps))
+                Some(FactoryEntry {
+                    address: addr,
+                    protocol,
+                    fee_bps: f.fee_bps,
+                    event_type: FactoryEventType::from_config_str(&f.event),
+                })
             })
-            .collect()
+            .collect();
+
+        if self.balancer_v3.enabled {
+            if let Ok(vault) = self.balancer_v3.vault_address.parse::<Address>() {
+                entries.push(FactoryEntry {
+                    address: vault,
+                    protocol: ProtocolType::BalancerV3,
+                    fee_bps: self.balancer_v3.default_fee_bps,
+                    event_type: FactoryEventType::PoolRegistered,
+                });
+            }
+        }
+
+        entries
     }
 }
 

@@ -594,6 +594,7 @@ pub fn protocol_label(p: ProtocolType) -> &'static str {
         ProtocolType::SushiSwap => "SushiSwap",
         ProtocolType::Curve => "Curve",
         ProtocolType::BalancerV2 => "BalancerV2",
+        ProtocolType::BalancerV3 => "BalancerV3",
         ProtocolType::BancorV3 => "BancorV3",
     }
 }
@@ -631,6 +632,7 @@ mod tests {
             (ProtocolType::SushiSwap, "SushiSwap"),
             (ProtocolType::Curve, "Curve"),
             (ProtocolType::BalancerV2, "BalancerV2"),
+            (ProtocolType::BalancerV3, "BalancerV3"),
             (ProtocolType::BancorV3, "BancorV3"),
         ] {
             assert_eq!(protocol_label(p), expected);

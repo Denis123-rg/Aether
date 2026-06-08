@@ -38,6 +38,52 @@ pub fn default_slippage_estimate(settings: &ScoringSettings) -> f64 {
     (settings.slippage_estimate_bps as f64 / 10_000.0).clamp(0.0, 0.99)
 }
 
+/// Estimate slippage for a Curve 2-coin stable pool (first-order proxy).
+pub fn estimate_curve_slippage(
+    balance_in: f64,
+    balance_out: f64,
+    amount_in_eth: f64,
+    fee_bps: u32,
+) -> f64 {
+    if balance_in <= 0.0 || balance_out <= 0.0 || amount_in_eth <= 0.0 {
+        return 1.0;
+    }
+    // Stable pools have lower slippage than CP-AMM at equal depth; scale down V2 estimate.
+    estimate_v2_slippage(balance_in, balance_out, amount_in_eth, fee_bps) * 0.35
+}
+
+/// Estimate slippage for a Balancer weighted pool (50/50 default).
+pub fn estimate_balancer_v3_slippage(
+    balance_in: f64,
+    balance_out: f64,
+    amount_in_eth: f64,
+    fee_bps: u32,
+) -> f64 {
+    if balance_in <= 0.0 || balance_out <= 0.0 || amount_in_eth <= 0.0 {
+        return 1.0;
+    }
+    estimate_v2_slippage(balance_in, balance_out, amount_in_eth, fee_bps) * 0.85
+}
+
+/// Protocol-aware slippage estimate for discovery scoring.
+pub fn estimate_protocol_slippage(
+    protocol: aether_common::types::ProtocolType,
+    balance_in: f64,
+    balance_out: f64,
+    amount_in_eth: f64,
+    fee_bps: u32,
+) -> f64 {
+    match protocol {
+        aether_common::types::ProtocolType::Curve => {
+            estimate_curve_slippage(balance_in, balance_out, amount_in_eth, fee_bps)
+        }
+        aether_common::types::ProtocolType::BalancerV3 => {
+            estimate_balancer_v3_slippage(balance_in, balance_out, amount_in_eth, fee_bps)
+        }
+        _ => estimate_v2_slippage(balance_in, balance_out, amount_in_eth, fee_bps),
+    }
+}
+
 /// Estimate slippage for a constant-product pool given reserves and swap size.
 pub fn estimate_v2_slippage(
     reserve_in: f64,
@@ -175,5 +221,24 @@ mod tests {
     #[test]
     fn default_slippage_from_bps() {
         assert!((default_slippage_estimate(&settings()) - 0.005).abs() < 1e-9);
+    }
+
+    #[test]
+    fn curve_slippage_below_v2_at_equal_depth() {
+        let curve = estimate_curve_slippage(1e6, 1e6, 0.5, 4);
+        let v2 = estimate_v2_slippage(1e6, 1e6, 0.5, 4);
+        assert!(curve < v2);
+    }
+
+    #[test]
+    fn balancer_v3_slippage_positive() {
+        assert!(estimate_balancer_v3_slippage(1e6, 1e6, 0.1, 10) > 0.0);
+    }
+
+    #[test]
+    fn protocol_slippage_routes_curve_and_balancer_v3() {
+        use aether_common::types::ProtocolType;
+        assert!(estimate_protocol_slippage(ProtocolType::Curve, 1e6, 1e6, 0.1, 4) > 0.0);
+        assert!(estimate_protocol_slippage(ProtocolType::BalancerV3, 1e6, 1e6, 0.1, 10) > 0.0);
     }
 }

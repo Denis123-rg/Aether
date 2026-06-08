@@ -8,10 +8,12 @@ use std::time::Duration;
 
 use aether_common::types::ProtocolType;
 use aether_ingestion::event_decoder::{
-    decode_log, v3_fee_bps_from_topic, EventSignatures, PoolEvent,
+    decode_log, decode_plain_pool_deployed, decode_pool_registered_v3, v3_fee_bps_from_topic,
+    EventSignatures, PoolEvent,
 };
+use crate::config::{FactoryEntry, FactoryEventType};
 use alloy::network::Ethereum;
-use alloy::primitives::{Address, B256};
+use alloy::primitives::{Address, B256, U256};
 use alloy::providers::{DynProvider, Provider, ProviderBuilder, WsConnect};
 use alloy::rpc::types::Filter;
 use futures::StreamExt;
@@ -32,11 +34,12 @@ pub struct FactoryPoolCreated {
 }
 
 /// Decode a raw log into a `FactoryPoolCreated` event when it matches a
-/// configured factory's `PairCreated` or Uniswap V3 `PoolCreated` topic.
-pub fn decode_pair_created_log(
+/// configured factory's event topic (V2/V3/Curve/Balancer V3).
+pub fn decode_factory_log(
     factory: Address,
     protocol: ProtocolType,
     fee_bps: u32,
+    event_type: FactoryEventType,
     topics: &[B256],
     data: &[u8],
 ) -> Option<FactoryPoolCreated> {
@@ -44,57 +47,102 @@ pub fn decode_pair_created_log(
         return None;
     }
     let topic0 = topics[0];
-    if topic0 != EventSignatures::pair_created_topic()
-        && topic0 != EventSignatures::pool_created_v3_topic()
-    {
+    if topic0 != event_type.topic() {
         return None;
     }
-    let effective_fee = if topic0 == EventSignatures::pool_created_v3_topic() && topics.len() >= 4
-    {
-        v3_fee_bps_from_topic(&topics[3])
-    } else {
-        fee_bps
-    };
-    match decode_log(topics, data, factory, Some(protocol)) {
-        Ok(PoolEvent::PoolCreated {
-            token0,
-            token1,
-            pool,
-        }) => Some(FactoryPoolCreated {
-            factory,
-            protocol,
-            fee_bps: effective_fee,
-            token0,
-            token1,
-            pool,
-        }),
-        _ => None,
+
+    match event_type {
+        FactoryEventType::PlainPoolDeployed => {
+            let (pool, token0, token1, onchain_fee) = decode_plain_pool_deployed(topics, data)?;
+            Some(FactoryPoolCreated {
+                factory,
+                protocol,
+                fee_bps: if onchain_fee > 0 { onchain_fee } else { fee_bps },
+                token0,
+                token1,
+                pool,
+            })
+        }
+        FactoryEventType::PoolRegistered => {
+            let (pool, token0, token1, onchain_fee) = decode_pool_registered_v3(topics, data)?;
+            Some(FactoryPoolCreated {
+                factory,
+                protocol,
+                fee_bps: if onchain_fee > 0 { onchain_fee } else { fee_bps },
+                token0,
+                token1,
+                pool,
+            })
+        }
+        FactoryEventType::PairCreated | FactoryEventType::PoolCreatedV3 => {
+            let effective_fee =
+                if event_type == FactoryEventType::PoolCreatedV3 && topics.len() >= 4 {
+                    v3_fee_bps_from_topic(&topics[3])
+                } else {
+                    fee_bps
+                };
+            match decode_log(topics, data, factory, Some(protocol)) {
+                Ok(PoolEvent::PoolCreated {
+                    token0,
+                    token1,
+                    pool,
+                }) => Some(FactoryPoolCreated {
+                    factory,
+                    protocol,
+                    fee_bps: effective_fee,
+                    token0,
+                    token1,
+                    pool,
+                }),
+                _ => None,
+            }
+        }
     }
 }
 
-/// Build an alloy log filter for all configured factory addresses.
-/// Subscribes to both V2 `PairCreated` and V3 `PoolCreated` topics.
-pub fn build_factory_filter(factories: &[(Address, ProtocolType, u32)]) -> Filter {
-    let addresses: Vec<Address> = factories.iter().map(|(a, _, _)| *a).collect();
-    Filter::new().address(addresses).events(vec![
-        EventSignatures::pair_created_topic(),
-        EventSignatures::pool_created_v3_topic(),
-    ])
+/// Backward-compatible alias for V2 `PairCreated` decoding.
+pub fn decode_pair_created_log(
+    factory: Address,
+    protocol: ProtocolType,
+    fee_bps: u32,
+    topics: &[B256],
+    data: &[u8],
+) -> Option<FactoryPoolCreated> {
+    decode_factory_log(
+        factory,
+        protocol,
+        fee_bps,
+        FactoryEventType::PairCreated,
+        topics,
+        data,
+    )
+}
+
+/// Build an alloy log filter for all configured factory/vault addresses.
+pub fn build_factory_filter(entries: &[FactoryEntry]) -> Filter {
+    let addresses: Vec<Address> = entries.iter().map(|e| e.address).collect();
+    let mut topics: Vec<B256> = entries
+        .iter()
+        .map(|e| e.event_type.topic())
+        .collect();
+    topics.sort_unstable();
+    topics.dedup();
+    Filter::new().address(addresses).events(topics)
 }
 
 /// Process a batch of logs from a subscription and ingest valid pools.
 pub async fn process_logs(
     service: &DiscoveryService,
-    factories: &[(Address, ProtocolType, u32)],
+    entries: &[FactoryEntry],
     logs: Vec<alloy::rpc::types::Log>,
 ) -> usize {
-    process_logs_with_metrics(service, factories, logs, None).await
+    process_logs_with_metrics(service, entries, logs, None).await
 }
 
 /// Like [`process_logs`] but increments Prometheus counters when provided.
 pub async fn process_logs_with_metrics(
     service: &DiscoveryService,
-    factories: &[(Address, ProtocolType, u32)],
+    entries: &[FactoryEntry],
     logs: Vec<alloy::rpc::types::Log>,
     metrics: Option<Arc<DiscoveryMetrics>>,
 ) -> usize {
@@ -104,20 +152,22 @@ pub async fn process_logs_with_metrics(
     let mut ingested = 0usize;
     for log in logs {
         let factory_addr = log.address();
-        let Some((_, protocol, fee_bps)) = factories
-            .iter()
-            .find(|(a, _, _)| *a == factory_addr)
-        else {
+        let Some(entry) = entries.iter().find(|e| e.address == factory_addr) else {
             continue;
         };
 
         let topics: Vec<B256> = log.topics().to_vec();
         let data = log.data().data.as_ref();
 
-        if let Some(created) =
-            decode_pair_created_log(factory_addr, *protocol, *fee_bps, &topics, data)
-        {
-            debug!(pool = %created.pool, ?protocol, "PoolCreated event decoded");
+        if let Some(created) = decode_factory_log(
+            factory_addr,
+            entry.protocol,
+            entry.fee_bps,
+            entry.event_type,
+            &topics,
+            data,
+        ) {
+            debug!(pool = %created.pool, ?entry.protocol, "factory pool event decoded");
             if service.ingest_pool_created(created).await {
                 ingested += 1;
                 if let Some(m) = &metrics {
@@ -167,7 +217,7 @@ pub fn http_to_ws_url(url: &str) -> Option<String> {
 pub fn spawn_factory_listener(
     http_provider: Option<DynProvider<Ethereum>>,
     service: Arc<DiscoveryService>,
-    factories: Vec<(Address, ProtocolType, u32)>,
+    entries: Vec<FactoryEntry>,
     listener_mode: &str,
     ws_url: &str,
     poll_interval_secs: u64,
@@ -186,7 +236,7 @@ pub fn spawn_factory_listener(
     if want_ws {
         if let Some(ws) = resolve_ws_url(ws_url) {
             let svc = Arc::clone(&service);
-            let fac = factories.clone();
+            let fac = entries.clone();
             let m = metrics.clone();
             let mut shutdown_ws = shutdown.clone();
             handles.push(tokio::spawn(async move {
@@ -203,7 +253,7 @@ pub fn spawn_factory_listener(
             handles.push(spawn_polling_listener(
                 provider,
                 service,
-                factories,
+                entries,
                 poll_interval_secs,
                 shutdown,
             ));
@@ -223,7 +273,7 @@ pub fn spawn_factory_listener(
 async fn spawn_ws_listener(
     ws_url: String,
     service: Arc<DiscoveryService>,
-    factories: Vec<(Address, ProtocolType, u32)>,
+    entries: Vec<FactoryEntry>,
     metrics: Option<Arc<DiscoveryMetrics>>,
     shutdown: &mut tokio::sync::watch::Receiver<bool>,
 ) {
@@ -236,7 +286,7 @@ async fn spawn_ws_listener(
             return;
         }
 
-        match run_ws_subscription(&ws_url, &service, &factories, metrics.clone(), shutdown).await {
+        match run_ws_subscription(&ws_url, &service, &entries, metrics.clone(), shutdown).await {
             Ok(()) => {
                 info!("discovery WS listener exited cleanly");
                 return;
@@ -264,13 +314,13 @@ async fn spawn_ws_listener(
 async fn run_ws_subscription(
     ws_url: &str,
     service: &DiscoveryService,
-    factories: &[(Address, ProtocolType, u32)],
+    entries: &[FactoryEntry],
     metrics: Option<Arc<DiscoveryMetrics>>,
     shutdown: &mut tokio::sync::watch::Receiver<bool>,
 ) -> anyhow::Result<()> {
     let ws = WsConnect::new(ws_url);
     let provider = ProviderBuilder::new().connect_ws(ws).await?;
-    let filter = build_factory_filter(factories);
+    let filter = build_factory_filter(entries);
     let sub = provider.subscribe_logs(&filter).await?;
     let mut stream = sub.into_stream();
     info!(url = %ws_url, "discovery WebSocket subscribed to factory logs");
@@ -282,7 +332,7 @@ async fn run_ws_subscription(
                     Some(log) => {
                         let n = process_logs_with_metrics(
                             service,
-                            factories,
+                            entries,
                             vec![log],
                             metrics.clone(),
                         ).await;
@@ -306,22 +356,22 @@ async fn run_ws_subscription(
 pub async fn poll_factory_logs(
     provider: &DynProvider<Ethereum>,
     service: &DiscoveryService,
-    factories: &[(Address, ProtocolType, u32)],
+    entries: &[FactoryEntry],
     from_block: u64,
     to_block: u64,
 ) -> anyhow::Result<usize> {
-    let filter = build_factory_filter(factories)
+    let filter = build_factory_filter(entries)
         .from_block(from_block)
         .to_block(to_block);
     let logs = provider.get_logs(&filter).await?;
-    Ok(process_logs(service, factories, logs).await)
+    Ok(process_logs(service, entries, logs).await)
 }
 
 /// Spawn a background task that polls factory events every `interval_secs`.
 pub fn spawn_polling_listener(
     provider: DynProvider<Ethereum>,
     service: std::sync::Arc<DiscoveryService>,
-    factories: Vec<(Address, ProtocolType, u32)>,
+    entries: Vec<FactoryEntry>,
     interval_secs: u64,
     mut shutdown: tokio::sync::watch::Receiver<bool>,
 ) -> tokio::task::JoinHandle<()> {
@@ -349,7 +399,7 @@ pub fn spawn_polling_listener(
                         match poll_factory_logs(
                             &provider,
                             &service,
-                            &factories,
+                            &entries,
                             last_block + 1,
                             current,
                         ).await {
@@ -369,6 +419,90 @@ pub fn spawn_polling_listener(
             }
         }
     })
+}
+
+/// Simulate a Curve `PlainPoolDeployed` log for testing.
+pub fn mock_plain_pool_deployed_log(
+    pool: Address,
+    token0: Address,
+    token1: Address,
+    fee: u64,
+) -> (Vec<B256>, Vec<u8>) {
+    use aether_ingestion::event_decoder::PlainPoolDeployed;
+    use alloy::sol_types::SolEvent;
+    let event = PlainPoolDeployed {
+        pool,
+        coins: vec![token0, token1],
+        A: U256::from(100u64),
+        fee: U256::from(fee),
+        owner: Address::ZERO,
+    };
+    let topics = vec![PlainPoolDeployed::SIGNATURE_HASH];
+    let data = event.encode_data();
+    (topics, data)
+}
+
+/// Simulate a Balancer V3 `PoolRegistered` log for testing.
+pub fn mock_pool_registered_log(
+    pool: Address,
+    factory: Address,
+    token0: Address,
+    token1: Address,
+    swap_fee: U256,
+) -> (Vec<B256>, Vec<u8>) {
+    use aether_ingestion::event_decoder::PoolRegistered;
+    use alloy::sol_types::SolEvent;
+    let event = PoolRegistered {
+        pool,
+        factory,
+        tokenConfig: vec![
+            aether_ingestion::event_decoder::BalancerV3TokenConfig {
+                token: token0,
+                tokenType: 0,
+                rateProvider: Address::ZERO,
+                paysYieldFees: false,
+            },
+            aether_ingestion::event_decoder::BalancerV3TokenConfig {
+                token: token1,
+                tokenType: 0,
+                rateProvider: Address::ZERO,
+                paysYieldFees: false,
+            },
+        ],
+        swapFeePercentage: swap_fee,
+        pauseWindowEndTime: 0,
+        roleAccounts: aether_ingestion::event_decoder::BalancerV3RoleAccounts {
+            pauseManager: Address::ZERO,
+            swapFeeManager: Address::ZERO,
+            poolCreator: Address::ZERO,
+        },
+        hooksConfig: aether_ingestion::event_decoder::BalancerV3HooksConfig {
+            enableHookAdjustedAmounts: false,
+            shouldCallBeforeInitialize: false,
+            shouldCallAfterInitialize: false,
+            shouldCallComputeDynamicSwapFee: false,
+            shouldCallBeforeSwap: false,
+            shouldCallAfterSwap: false,
+            shouldCallBeforeAddLiquidity: false,
+            shouldCallAfterAddLiquidity: false,
+            shouldCallBeforeRemoveLiquidity: false,
+            shouldCallAfterRemoveLiquidity: false,
+            hooksContract: Address::ZERO,
+        },
+        liquidityManagement: aether_ingestion::event_decoder::BalancerV3LiquidityManagement {
+            disableUnbalancedLiquidity: false,
+            enableAddLiquidityCustom: false,
+            enableRemoveLiquidityCustom: false,
+            enableDonation: false,
+        },
+    };
+    let topics = vec![
+        PoolRegistered::SIGNATURE_HASH,
+        B256::left_padding_from(pool.as_slice()),
+        B256::left_padding_from(factory.as_slice()),
+    ];
+    let data = event.encode_data();
+    (topics, data)
 }
 
 /// Simulate a `PairCreated` log for testing (mock event listener).
@@ -442,8 +576,14 @@ mod tests {
 
     #[test]
     fn build_factory_filter_succeeds() {
-        let factories = vec![(uni_v2_factory(), ProtocolType::UniswapV2, 30)];
-        let _filter = build_factory_filter(&factories);
+        use crate::config::FactoryEventType;
+        let entries = vec![FactoryEntry {
+            address: uni_v2_factory(),
+            protocol: ProtocolType::UniswapV2,
+            fee_bps: 30,
+            event_type: FactoryEventType::PairCreated,
+        }];
+        let _filter = build_factory_filter(&entries);
     }
 
     #[test]
@@ -524,12 +664,23 @@ mod tests {
 
     #[test]
     fn build_factory_filter_multiple_factories() {
+        use crate::config::FactoryEventType;
         let sushi = address!("C0AEe478e3658e2610c5F7A4A2D1773cDCC8b275");
-        let factories = vec![
-            (uni_v2_factory(), ProtocolType::UniswapV2, 30),
-            (sushi, ProtocolType::SushiSwap, 30),
+        let entries = vec![
+            FactoryEntry {
+                address: uni_v2_factory(),
+                protocol: ProtocolType::UniswapV2,
+                fee_bps: 30,
+                event_type: FactoryEventType::PairCreated,
+            },
+            FactoryEntry {
+                address: sushi,
+                protocol: ProtocolType::SushiSwap,
+                fee_bps: 30,
+                event_type: FactoryEventType::PairCreated,
+            },
         ];
-        let _filter = build_factory_filter(&factories);
+        let _filter = build_factory_filter(&entries);
     }
 
     #[test]

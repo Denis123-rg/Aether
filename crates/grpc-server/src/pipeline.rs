@@ -38,7 +38,9 @@ pub fn protocol_to_proto(p: ProtocolType) -> i32 {
         ProtocolType::UniswapV3 => aether_proto::ProtocolType::UniswapV3 as i32,
         ProtocolType::SushiSwap => aether_proto::ProtocolType::Sushiswap as i32,
         ProtocolType::Curve => aether_proto::ProtocolType::Curve as i32,
-        ProtocolType::BalancerV2 => aether_proto::ProtocolType::BalancerV2 as i32,
+        ProtocolType::BalancerV2 | ProtocolType::BalancerV3 => {
+            aether_proto::ProtocolType::BalancerV2 as i32
+        }
         ProtocolType::BancorV3 => aether_proto::ProtocolType::BancorV3 as i32,
     }
 }

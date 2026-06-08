@@ -1178,7 +1178,7 @@ fn protocol_label(p: ProtocolType) -> &'static str {
         ProtocolType::UniswapV3 => "uni_v3",
         ProtocolType::SushiSwap => "sushi",
         ProtocolType::Curve => "curve",
-        ProtocolType::BalancerV2 => "balancer",
+        ProtocolType::BalancerV2 | ProtocolType::BalancerV3 => "balancer",
         ProtocolType::BancorV3 => "bancor",
     }
 }

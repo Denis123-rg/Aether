@@ -2090,7 +2090,9 @@ fn protocol_to_proto(p: ProtocolType) -> aether_proto::ProtocolType {
         ProtocolType::UniswapV3 => aether_proto::ProtocolType::UniswapV3,
         ProtocolType::SushiSwap => aether_proto::ProtocolType::Sushiswap,
         ProtocolType::Curve => aether_proto::ProtocolType::Curve,
-        ProtocolType::BalancerV2 => aether_proto::ProtocolType::BalancerV2,
+        ProtocolType::BalancerV2 | ProtocolType::BalancerV3 => {
+            aether_proto::ProtocolType::BalancerV2
+        }
         ProtocolType::BancorV3 => aether_proto::ProtocolType::BancorV3,
     }
 }

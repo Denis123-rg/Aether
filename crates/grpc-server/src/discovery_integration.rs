@@ -126,7 +126,7 @@ pub async fn maybe_start_discovery(
     let listener_handles = spawn_factory_listener(
         rpc_provider,
         Arc::clone(&discovery),
-        config.factory_addresses(),
+        config.factory_entries(),
         &config.discovery.listener_mode,
         &config.discovery.ws_url,
         config.discovery.poll_interval_secs,

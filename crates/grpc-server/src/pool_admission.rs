@@ -116,6 +116,7 @@ pub fn protocol_toml_str(p: ProtocolType) -> &'static str {
         ProtocolType::SushiSwap => "sushiswap",
         ProtocolType::Curve => "curve",
         ProtocolType::BalancerV2 => "balancer_v2",
+        ProtocolType::BalancerV3 => "balancer_v3",
         ProtocolType::BancorV3 => "bancor_v3",
     }
 }

@@ -13,7 +13,7 @@ use tracing::{debug, info};
 use crate::cache::{DiscoveryCache, SharedDiscoveryCache};
 use crate::config::DiscoveryConfig;
 use crate::events::FactoryPoolCreated;
-use crate::scorer::{default_slippage_estimate, estimate_v2_slippage};
+use crate::scorer::{default_slippage_estimate, estimate_protocol_slippage};
 use crate::types::{PoolInfo, PoolScoreInputs, ValidationResult};
 use crate::metrics::DiscoveryMetrics;
 use crate::validator::{validate_pool_revm, validate_v2_reserves};
@@ -52,7 +52,7 @@ impl PoolMetricsSource for OnChainMetricsSource {
         pool: Address,
         token0: Address,
         token1: Address,
-        _protocol: ProtocolType,
+        protocol: ProtocolType,
     ) -> PoolScoreInputs {
         let default_slip = (self.slippage_bps as f64 / 10_000.0).clamp(0.0, 0.99);
 
@@ -67,28 +67,38 @@ impl PoolMetricsSource for OnChainMetricsSource {
 
         // Blocking fetch in sync trait — callers run on blocking thread or use defaults.
         let rt = tokio::runtime::Handle::current();
-        match rt.block_on(fetch_v2_reserves(provider, pool)) {
+        let reserves = match protocol {
+            ProtocolType::Curve => rt.block_on(fetch_curve_balances(provider, pool)),
+            ProtocolType::BalancerV3 => {
+                rt.block_on(fetch_balancer_v3_balances(provider, pool, token0, token1))
+            }
+            _ => rt
+                .block_on(fetch_v2_reserves(provider, pool))
+                .map(|(r0, r1, fee)| (r0, r1, fee)),
+        };
+
+        match reserves {
             Some((r0, r1, fee_bps)) => {
                 let r0_f = u256_to_f64(r0);
                 let r1_f = u256_to_f64(r1);
                 let tvl_usd = estimate_tvl_usd(token0, token1, r0_f, r1_f);
-                let slip = estimate_v2_slippage(
-                    if token0 == aether_common::types::addresses::WETH {
-                        r0_f
-                    } else {
-                        r1_f
-                    },
-                    if token0 == aether_common::types::addresses::WETH {
-                        r1_f
-                    } else {
-                        r0_f
-                    },
+                let (bal_in, bal_out) = if token0 == aether_common::types::addresses::WETH {
+                    (r0_f, r1_f)
+                } else if token1 == aether_common::types::addresses::WETH {
+                    (r1_f, r0_f)
+                } else {
+                    (r0_f, r1_f)
+                };
+                let slip = estimate_protocol_slippage(
+                    protocol,
+                    bal_in,
+                    bal_out,
                     self.swap_eth,
                     fee_bps,
                 );
                 PoolScoreInputs {
                     tvl_usd,
-                    volume_24h_usd: tvl_usd * 0.05, // 5% daily turnover proxy
+                    volume_24h_usd: tvl_usd * 0.05,
                     fee_bps,
                     slippage_estimate: slip.max(default_slip),
                 }
@@ -101,6 +111,66 @@ impl PoolMetricsSource for OnChainMetricsSource {
             },
         }
     }
+}
+
+async fn fetch_curve_balances(
+    provider: &DynProvider<Ethereum>,
+    pool: Address,
+) -> Option<(U256, U256, u32)> {
+    alloy::sol! {
+        function balances(uint256 i) external view returns (uint256);
+    }
+    let mut out_bal = [U256::ZERO; 2];
+    for (idx, slot) in out_bal.iter_mut().enumerate() {
+        let out = provider
+            .call(
+                alloy::rpc::types::TransactionRequest::default()
+                    .to(pool)
+                    .input(balancesCall { i: U256::from(idx as u64) }.abi_encode().into()),
+            )
+            .await
+            .ok()?;
+        if out.len() < 32 {
+            return None;
+        }
+        *slot = U256::from_be_slice(&out[0..32]);
+    }
+    Some((out_bal[0], out_bal[1], 4))
+}
+
+async fn fetch_balancer_v3_balances(
+    provider: &DynProvider<Ethereum>,
+    pool: Address,
+    token0: Address,
+    token1: Address,
+) -> Option<(U256, U256, u32)> {
+    alloy::sol! {
+        function balanceOf(address account) external view returns (uint256);
+    }
+    let b0 = provider
+        .call(
+            alloy::rpc::types::TransactionRequest::default()
+                .to(token0)
+                .input(balanceOfCall { account: pool }.abi_encode().into()),
+        )
+        .await
+        .ok()?;
+    let b1 = provider
+        .call(
+            alloy::rpc::types::TransactionRequest::default()
+                .to(token1)
+                .input(balanceOfCall { account: pool }.abi_encode().into()),
+        )
+        .await
+        .ok()?;
+    if b0.len() < 32 || b1.len() < 32 {
+        return None;
+    }
+    Some((
+        U256::from_be_slice(&b0[b0.len() - 32..]),
+        U256::from_be_slice(&b1[b1.len() - 32..]),
+        10,
+    ))
 }
 
 async fn fetch_v2_reserves(
@@ -157,6 +227,15 @@ fn offline_validate(event: &FactoryPoolCreated, swap_eth: f64) -> ValidationResu
             event.token0,
             event.token1,
             event.protocol,
+            event.fee_bps,
+            U256::from(1_000_000_000_000_000_000u64),
+            U256::from(1_000_000_000_000_000_000u64),
+            swap_eth,
+        ),
+        ProtocolType::Curve | ProtocolType::BalancerV3 => validate_v2_reserves(
+            event.token0,
+            event.token1,
+            ProtocolType::UniswapV2,
             event.fee_bps,
             U256::from(1_000_000_000_000_000_000u64),
             U256::from(1_000_000_000_000_000_000u64),
