@@ -198,16 +198,21 @@ impl BytecodeCache {
     /// Pre-warm bytecode for a single address into the cache (disk + memory).
     /// Logs RPC failures but does not propagate errors — callers should keep
     /// the pool in the hot cache and retry on first simulation.
+    /// Returns `true` when bytecode is available in cache after prewarm.
     pub async fn prewarm_bytecode(
         &self,
         addr: Address,
         provider: &DynProvider<Ethereum>,
-    ) {
+    ) -> bool {
         if self.get(addr).is_some() {
-            return;
+            return true;
         }
-        if let None = self.get_or_fetch(addr, provider).await {
-            tracing::error!(%addr, "bytecode prewarm: fetch returned empty or failed");
+        match self.get_or_fetch(addr, provider).await {
+            Some(_) => true,
+            None => {
+                tracing::error!(%addr, "bytecode prewarm: fetch returned empty or failed");
+                false
+            }
         }
     }
 

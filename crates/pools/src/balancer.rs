@@ -2,6 +2,9 @@ use alloy::primitives::{Address, U256};
 use aether_common::types::ProtocolType;
 use crate::Pool;
 
+/// Conservative discount on unequal-weight analytical output (2%).
+const UNEQUAL_WEIGHT_SAFETY_MARGIN_BPS: u32 = 200;
+
 /// Balancer V2 weighted pool
 ///
 /// Implements the weighted constant product formula:
@@ -167,7 +170,8 @@ impl Pool for BalancerPool {
             if denominator.is_zero() {
                 return None;
             }
-            Some(numerator / denominator)
+            let raw = numerator / denominator;
+            Some(raw * U256::from(10_000u32 - UNEQUAL_WEIGHT_SAFETY_MARGIN_BPS) / U256::from(10_000u32))
         }
     }
 
@@ -277,6 +281,22 @@ mod tests {
             amount_in_back >= amount_in * U256::from(95u64) / U256::from(100u64),
             "equal-weight inverse should be within 5% (fee + approximation)"
         );
+    }
+
+    #[test]
+    fn unequal_weight_applies_safety_margin() {
+        let pool = setup_balancer_80_20_pool();
+        let amount_in = U256::from(1_000_000_000_000_000_000u64);
+        let w_in = pool.weight0;
+        let w_out = pool.weight1;
+        let fee_complement = U256::from(10_000 - pool.fee_bps);
+        let amount_in_after_fee = amount_in * fee_complement / U256::from(10_000);
+        let numerator = pool.balance1 * amount_in_after_fee * w_in;
+        let denominator = pool.balance0 * w_out + amount_in_after_fee * w_in;
+        let raw = numerator / denominator;
+        let out = pool.get_amount_out(pool.token0, amount_in).unwrap();
+        let expected = raw * U256::from(10_000u32 - UNEQUAL_WEIGHT_SAFETY_MARGIN_BPS) / U256::from(10_000u32);
+        assert_eq!(out, expected);
     }
 
     fn setup_balancer_80_20_pool() -> BalancerPool {

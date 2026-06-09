@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -304,6 +305,21 @@ func setRedisHealthy(healthy bool) {
 	})
 }
 
+// extractAdminToken reads the admin token from supported auth headers.
+// Accepts X-Aether-Admin-Token, Authorization: Bearer <token>, or ?token= query.
+func extractAdminToken(r *http.Request) string {
+	if got := r.Header.Get("X-Aether-Admin-Token"); got != "" {
+		return got
+	}
+	if auth := r.Header.Get("Authorization"); auth != "" {
+		const prefix = "Bearer "
+		if len(auth) > len(prefix) && strings.EqualFold(auth[:len(prefix)], prefix) {
+			return strings.TrimSpace(auth[len(prefix):])
+		}
+	}
+	return r.URL.Query().Get("token")
+}
+
 // requireAdminAuth wraps admin POST handlers with token auth when
 // AETHER_ADMIN_TOKEN is set. Unauthenticated requests receive 401.
 func requireAdminAuth(next http.HandlerFunc) http.HandlerFunc {
@@ -313,11 +329,7 @@ func requireAdminAuth(next http.HandlerFunc) http.HandlerFunc {
 			next(w, r)
 			return
 		}
-		got := r.Header.Get("X-Aether-Admin-Token")
-		if got == "" {
-			got = r.URL.Query().Get("token")
-		}
-		if got != token {
+		if extractAdminToken(r) != token {
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}

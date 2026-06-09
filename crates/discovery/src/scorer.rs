@@ -21,6 +21,13 @@ pub fn raw_score(inputs: &PoolScoreInputs, settings: &ScoringSettings) -> f64 {
         * slip_factor
 }
 
+/// Compute the normalised pool score in [0.0, 1.0] for discovery ranking.
+///
+/// Convenience wrapper over [`raw_score`] + [`normalise_score`].
+pub fn compute_score(inputs: &PoolScoreInputs, settings: &ScoringSettings, max_raw: f64) -> f64 {
+    normalise_score(raw_score(inputs, settings), max_raw)
+}
+
 /// Normalise a raw score into [0.0, 1.0] against the current cache maximum.
 /// When `max_raw` is zero, returns 0.0.
 pub fn normalise_score(raw: f64, max_raw: f64) -> f64 {
@@ -179,6 +186,30 @@ mod tests {
     #[test]
     fn normalise_above_max_clamped() {
         assert_eq!(normalise_score(200.0, 100.0), 1.0);
+    }
+
+    #[test]
+    fn compute_score_matches_raw_and_normalise() {
+        let inputs = PoolScoreInputs {
+            tvl_usd: 1_000_000.0,
+            volume_24h_usd: 500_000.0,
+            fee_bps: 30,
+            slippage_estimate: 0.005,
+        };
+        let raw = raw_score(&inputs, &settings());
+        let via_wrapper = compute_score(&inputs, &settings(), raw);
+        assert!((via_wrapper - 1.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn compute_score_zero_when_max_zero() {
+        let inputs = PoolScoreInputs {
+            tvl_usd: 100.0,
+            volume_24h_usd: 100.0,
+            fee_bps: 30,
+            slippage_estimate: 0.01,
+        };
+        assert_eq!(compute_score(&inputs, &settings(), 0.0), 0.0);
     }
 
     #[test]

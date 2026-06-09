@@ -303,7 +303,7 @@ mkdir -p bin
 # Build each Go binary independently — earlier `if [ ! -f bin/aether-executor ]`
 # wrapper skipped the other two when executor existed, leaving demo with
 # missing reconciler / monitor.
-for goprog in executor reconciler monitor pooldiscovery; do
+for goprog in executor reconciler monitor; do
   if [ ! -f "bin/aether-$goprog" ]; then
     log "Building bin/aether-$goprog..."
     go build -o "bin/aether-$goprog" "./cmd/$goprog" 2>&1 | tail -3
@@ -328,15 +328,12 @@ log "Artifacts ready"
 # ─────────────────────────────────────────────────────────────────────────
 
 step 5 "Pool registry check (using existing config/pools.toml)"
-# Skip overwriting config/pools.toml — pooldiscovery's --output regenerates
-# the file with only the top N discovered pools, which is fine for a fresh
-# repo but destructive for a curated registry. Operators who want to refresh
-# should run pooldiscovery manually before the demo.
+# Pool registry is maintained by the Rust aether-discovery service and config/pools.toml.
 pool_count=$(grep -c '^\[\[pools\]\]' config/pools.toml 2>/dev/null || echo 0)
 log "Pool registry: $pool_count pools loaded"
 if [ "$pool_count" -lt 100 ]; then
   warn "Pool registry has $pool_count pools — sparse. Candidate rate will be low."
-  warn "Refresh manually with: bin/aether-pooldiscovery --rpc-url \$ETH_RPC_URL --output config/pools.toml --limit 1000"
+  warn "Run aether-discovery or expand config/pools.toml for more coverage."
 fi
 
 # ─────────────────────────────────────────────────────────────────────────

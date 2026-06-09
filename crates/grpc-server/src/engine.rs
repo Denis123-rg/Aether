@@ -135,6 +135,8 @@ pub struct PoolMetadata {
     /// when the config entry omitted it. Required to construct a valid
     /// `UniswapV3Pool` for the post-state cache.
     pub tick_spacing: Option<i32>,
+    /// `true` once bytecode prewarm succeeded (or when no cache is configured).
+    pub bytecode_warmed: bool,
 }
 
 impl PoolMetadata {
@@ -605,30 +607,14 @@ impl AetherEngine {
         added: &[PoolInfo],
         removed: &[Address],
     ) {
-        for pool in added {
-            if self.pool_registry.load().contains_key(&pool.address) {
-                continue;
-            }
-            self.register_pool(
-                pool.address,
-                pool.token0,
-                pool.token1,
-                pool.protocol,
-                pool.fee_bps,
-            )
-            .await;
-        }
-
         for addr in removed {
             self.remove_pool(*addr).await;
         }
 
-        if !added.is_empty() && self.rpc_provider.is_some() {
-            let addrs: Vec<Address> = added.iter().map(|p| p.address).collect();
-            self.fetch_reserves_for_addresses(&addrs).await;
-        }
+        let mut warmed_addrs = std::collections::HashSet::new();
+        let require_prewarm = self.rpc_provider.is_some() && self.bytecode_cache.is_some();
 
-        if !added.is_empty() {
+        if !added.is_empty() && require_prewarm {
             if let (Some(provider), Some(cache)) =
                 (self.rpc_provider.clone(), self.bytecode_cache.clone())
             {
@@ -643,17 +629,26 @@ impl AetherEngine {
                             let provider = provider.clone();
                             let cache = cache.clone();
                             async move {
-                                cache.prewarm_bytecode(addr, &provider).await;
+                                let ok = cache.prewarm_bytecode(addr, &provider).await;
+                                (addr, ok)
                             }
                         })
                         .collect();
-                    futures::future::join_all(futures).await;
+                    futures::future::join_all(futures).await
                 })
                 .await;
                 match prewarm_result {
-                    Ok(_) => {
+                    Ok(results) => {
+                        for (addr, ok) in results {
+                            if ok {
+                                warmed_addrs.insert(addr);
+                            } else {
+                                warn!(%addr, "hot-cache pool skipped: bytecode prewarm failed");
+                            }
+                        }
                         debug!(
                             pools = pool_count,
+                            warmed = warmed_addrs.len(),
                             elapsed_ms = t_prewarm.elapsed().as_millis(),
                             "hot-cache bytecode prewarm complete"
                         );
@@ -663,11 +658,60 @@ impl AetherEngine {
                             pools = pool_count,
                             timeout_secs = prewarm_timeout.as_secs(),
                             elapsed_ms = t_prewarm.elapsed().as_millis(),
-                            "hot-cache bytecode prewarm timed out"
+                            "hot-cache bytecode prewarm timed out — pools not registered"
                         );
                     }
                 }
             }
+        }
+
+        for pool in added {
+            if self.pool_registry.load().contains_key(&pool.address) {
+                continue;
+            }
+            if require_prewarm && !warmed_addrs.contains(&pool.address) {
+                continue;
+            }
+            self.register_pool(
+                pool.address,
+                pool.token0,
+                pool.token1,
+                pool.protocol,
+                pool.fee_bps,
+            )
+            .await;
+            if require_prewarm {
+                self.mark_pool_bytecode_warmed(pool.address).await;
+            }
+        }
+
+        if !added.is_empty() && self.rpc_provider.is_some() {
+            let addrs: Vec<Address> = added
+                .iter()
+                .filter(|p| {
+                    !require_prewarm || warmed_addrs.contains(&p.address)
+                })
+                .map(|p| p.address)
+                .collect();
+            self.fetch_reserves_for_addresses(&addrs).await;
+        }
+    }
+
+    /// Mark a registered pool as bytecode-warmed for simulation gating.
+    pub async fn mark_pool_bytecode_warmed(&self, pool_addr: Address) {
+        let mut reg = (**self.pool_registry.load()).clone();
+        if let Some(meta) = reg.get_mut(&pool_addr) {
+            meta.bytecode_warmed = true;
+            self.pool_registry.store(Arc::new(reg));
+        }
+    }
+
+    /// Returns `false` when the pool is registered but bytecode is not warmed.
+    pub fn pool_ready_for_simulation(&self, pool_addr: Address) -> bool {
+        let reg = self.pool_registry.load();
+        match reg.get(&pool_addr) {
+            Some(meta) => meta.bytecode_warmed || self.bytecode_cache.is_none(),
+            None => false,
         }
     }
 
@@ -815,6 +859,7 @@ impl AetherEngine {
             protocol,
             fee_bps,
             tick_spacing,
+            bytecode_warmed: self.bytecode_cache.is_none(),
         };
 
         {
@@ -3248,6 +3293,7 @@ mod tests {
             protocol: ProtocolType::UniswapV2,
             fee_bps: 30,
             tick_spacing: None,
+            bytecode_warmed: true,
         };
         assert!((meta.fee_factor() - 0.997).abs() < 1e-10);
 
@@ -4356,6 +4402,46 @@ fee_bps = 30
         // No-op path — must not panic when both slices are empty.
         engine.sync_hot_cache_pools(&[], &[]).await;
         assert!(engine.pool_registry().load().is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_pool_ready_for_simulation_without_cache() {
+        let (tx, _rx) = broadcast::channel(100);
+        let engine = AetherEngine::new(EngineConfig::default(), tx);
+        let pool = sample_pool_info(0x55);
+        engine.sync_hot_cache_pools(&[pool.clone()], &[]).await;
+        assert!(engine.pool_ready_for_simulation(pool.address));
+    }
+
+    #[tokio::test]
+    async fn test_mark_pool_bytecode_warmed_sets_flag() {
+        let (tx, _rx) = broadcast::channel(100);
+        let engine = AetherEngine::new(EngineConfig::default(), tx);
+        let pool = sample_pool_info(0x66);
+        engine.sync_hot_cache_pools(&[pool.clone()], &[]).await;
+        engine.mark_pool_bytecode_warmed(pool.address).await;
+        let reg = engine.pool_registry().load();
+        let meta = reg.get(&pool.address).unwrap();
+        assert!(meta.bytecode_warmed);
+    }
+
+    #[test]
+    fn test_pool_metadata_bytecode_warmed_default_true_without_cache() {
+        let meta = PoolMetadata {
+            token0_idx: 0,
+            token1_idx: 1,
+            token0: Address::ZERO,
+            token1: Address::repeat_byte(1),
+            pool_id: PoolId {
+                address: Address::repeat_byte(2),
+                protocol: ProtocolType::UniswapV2,
+            },
+            protocol: ProtocolType::UniswapV2,
+            fee_bps: 30,
+            tick_spacing: None,
+            bytecode_warmed: true,
+        };
+        assert!(meta.bytecode_warmed);
     }
 
     #[tokio::test]

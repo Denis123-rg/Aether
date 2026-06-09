@@ -42,11 +42,11 @@ impl Pool for UniswapV2Pool {
         };
         if reserve_in.is_zero() || reserve_out.is_zero() { return None; }
 
-        // Exact Solidity formula from UniswapV2Pair.sol:
-        // dy = (dx * 997 * y) / (x * 1000 + dx * 997)
-        let amount_in_with_fee = amount_in * U256::from(997);
+        // dy = (dx * (10000 - fee_bps) * y) / (x * 10000 + dx * (10000 - fee_bps))
+        let fee_complement = 10_000u64.saturating_sub(self.fee_bps as u64);
+        let amount_in_with_fee = amount_in * U256::from(fee_complement);
         let numerator = amount_in_with_fee * reserve_out;
-        let denominator = reserve_in * U256::from(1000) + amount_in_with_fee;
+        let denominator = reserve_in * U256::from(10_000u64) + amount_in_with_fee;
         Some(numerator / denominator)
     }
 
@@ -62,10 +62,10 @@ impl Pool for UniswapV2Pool {
         if reserve_in.is_zero() || reserve_out.is_zero() { return None; }
         if amount_out >= reserve_out { return None; }
 
-        // Exact Solidity formula from UniswapV2Library.sol:
-        // dx = (x * dy * 1000) / ((y - dy) * 997) + 1
-        let numerator = reserve_in * amount_out * U256::from(1000);
-        let denominator = (reserve_out - amount_out) * U256::from(997);
+        // dx = (x * dy * 10000) / ((y - dy) * (10000 - fee_bps)) + 1
+        let fee_complement = 10_000u64.saturating_sub(self.fee_bps as u64);
+        let numerator = reserve_in * amount_out * U256::from(10_000u64);
+        let denominator = (reserve_out - amount_out) * U256::from(fee_complement);
         Some(numerator / denominator + U256::from(1))
     }
 
@@ -246,9 +246,60 @@ mod tests {
     #[test]
     fn test_get_amount_out_overflow_bounded_by_reserve() {
         let pool = setup_pool();
-        let max_in = U256::MAX / U256::from(2u64);
+        // Keep headroom so fee-scaled multiplication stays representable in U256.
+        let max_in = U256::MAX / U256::from(20_000u64);
         let out = pool.get_amount_out(pool.token1, max_in).expect("computes");
         assert!(out < pool.reserve0);
+    }
+
+    #[test]
+    fn fee_bps_30_matches_legacy_997_1000() {
+        let pool = setup_pool();
+        let amount_in = U256::from(1_000_000_000_000_000_000u64);
+        let out = pool.get_amount_out(pool.token1, amount_in).unwrap();
+        let legacy_num = amount_in * U256::from(997) * pool.reserve0;
+        let legacy_den = pool.reserve1 * U256::from(1000) + amount_in * U256::from(997);
+        assert_eq!(out, legacy_num / legacy_den);
+    }
+
+    #[test]
+    fn fee_bps_25_reduces_output_vs_30() {
+        let mut low_fee = setup_pool();
+        low_fee.fee_bps = 25;
+        let amount_in = U256::from(1_000_000_000_000_000_000u64);
+        let out_30 = setup_pool().get_amount_out(setup_pool().token1, amount_in).unwrap();
+        let out_25 = low_fee.get_amount_out(low_fee.token1, amount_in).unwrap();
+        assert!(out_25 > out_30);
+    }
+
+    #[test]
+    fn fee_bps_zero_max_output() {
+        let mut pool = setup_pool();
+        pool.fee_bps = 0;
+        let amount_in = U256::from(1_000_000_000_000_000_000u64);
+        let out = pool.get_amount_out(pool.token1, amount_in).unwrap();
+        let no_fee = amount_in * pool.reserve0 / (pool.reserve1 + amount_in);
+        assert_eq!(out, no_fee);
+    }
+
+    #[test]
+    fn fee_bps_100_one_percent() {
+        let mut pool = setup_pool();
+        pool.fee_bps = 100;
+        let amount_in = U256::from(1_000_000_000_000_000_000u64);
+        let out = pool.get_amount_out(pool.token1, amount_in).unwrap();
+        assert!(out > U256::ZERO);
+        let out_30 = setup_pool().get_amount_out(setup_pool().token1, amount_in).unwrap();
+        assert!(out < out_30);
+    }
+
+    #[test]
+    fn get_amount_in_respects_fee_bps() {
+        let mut pool = setup_pool();
+        pool.fee_bps = 25;
+        let amount_out = U256::from(1_000_000_000u64);
+        let amount_in = pool.get_amount_in(pool.token0, amount_out).unwrap();
+        assert!(amount_in > U256::ZERO);
     }
 
     #[test]

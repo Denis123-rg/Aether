@@ -3,6 +3,7 @@
 //! Decodes `PairCreated` / `PoolCreated` logs and forwards them to the
 //! discovery service for validation and scoring.
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -21,6 +22,31 @@ use tracing::{debug, info, warn};
 
 use crate::metrics::DiscoveryMetrics;
 use crate::service::DiscoveryService;
+
+/// Tracks whether the discovery WebSocket subscription is currently healthy.
+#[derive(Debug, Clone, Default)]
+pub struct WsHealth {
+    healthy: Arc<AtomicBool>,
+}
+
+impl WsHealth {
+    /// Create a new health handle (starts unhealthy until WS connects).
+    pub fn new() -> Self {
+        Self {
+            healthy: Arc::new(AtomicBool::new(false)),
+        }
+    }
+
+    /// Mark the WebSocket listener as connected or disconnected.
+    pub fn set_healthy(&self, ok: bool) {
+        self.healthy.store(ok, Ordering::Release);
+    }
+
+    /// Returns true when the WS listener is connected and receiving logs.
+    pub fn is_healthy(&self) -> bool {
+        self.healthy.load(Ordering::Acquire)
+    }
+}
 
 /// Decoded factory event ready for ingestion.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -222,6 +248,8 @@ pub fn spawn_factory_listener(
     ws_url: &str,
     poll_interval_secs: u64,
     ws_fallback_poll: bool,
+    poll_when_ws_healthy: bool,
+    ws_health: WsHealth,
     metrics: Option<Arc<DiscoveryMetrics>>,
     shutdown: tokio::sync::watch::Receiver<bool>,
 ) -> Vec<tokio::task::JoinHandle<()>> {
@@ -238,9 +266,10 @@ pub fn spawn_factory_listener(
             let svc = Arc::clone(&service);
             let fac = entries.clone();
             let m = metrics.clone();
+            let health = ws_health.clone();
             let mut shutdown_ws = shutdown.clone();
             handles.push(tokio::spawn(async move {
-                spawn_ws_listener(ws, svc, fac, m, &mut shutdown_ws).await;
+                spawn_ws_listener(ws, svc, fac, m, health, &mut shutdown_ws).await;
             }));
             info!("discovery: WebSocket listener started");
         } else if mode == "websocket" {
@@ -255,6 +284,8 @@ pub fn spawn_factory_listener(
                 service,
                 entries,
                 poll_interval_secs,
+                poll_when_ws_healthy,
+                ws_health.clone(),
                 shutdown,
             ));
             info!(
@@ -275,6 +306,7 @@ async fn spawn_ws_listener(
     service: Arc<DiscoveryService>,
     entries: Vec<FactoryEntry>,
     metrics: Option<Arc<DiscoveryMetrics>>,
+    ws_health: WsHealth,
     shutdown: &mut tokio::sync::watch::Receiver<bool>,
 ) {
     let mut attempt = 0u32;
@@ -286,12 +318,14 @@ async fn spawn_ws_listener(
             return;
         }
 
-        match run_ws_subscription(&ws_url, &service, &entries, metrics.clone(), shutdown).await {
+        match run_ws_subscription(&ws_url, &service, &entries, metrics.clone(), &ws_health, shutdown).await {
             Ok(()) => {
+                ws_health.set_healthy(false);
                 info!("discovery WS listener exited cleanly");
                 return;
             }
             Err(e) => {
+                ws_health.set_healthy(false);
                 attempt = attempt.saturating_add(1);
                 let backoff = Duration::from_secs(1u64 << attempt.min(5)).min(max_backoff);
                 warn!(
@@ -316,6 +350,7 @@ async fn run_ws_subscription(
     service: &DiscoveryService,
     entries: &[FactoryEntry],
     metrics: Option<Arc<DiscoveryMetrics>>,
+    ws_health: &WsHealth,
     shutdown: &mut tokio::sync::watch::Receiver<bool>,
 ) -> anyhow::Result<()> {
     let ws = WsConnect::new(ws_url);
@@ -323,6 +358,7 @@ async fn run_ws_subscription(
     let filter = build_factory_filter(entries);
     let sub = provider.subscribe_logs(&filter).await?;
     let mut stream = sub.into_stream();
+    ws_health.set_healthy(true);
     info!(url = %ws_url, "discovery WebSocket subscribed to factory logs");
 
     loop {
@@ -373,6 +409,8 @@ pub fn spawn_polling_listener(
     service: std::sync::Arc<DiscoveryService>,
     entries: Vec<FactoryEntry>,
     interval_secs: u64,
+    poll_when_ws_healthy: bool,
+    ws_health: WsHealth,
     mut shutdown: tokio::sync::watch::Receiver<bool>,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
@@ -388,6 +426,10 @@ pub fn spawn_polling_listener(
         loop {
             tokio::select! {
                 _ = interval.tick() => {
+                    if ws_health.is_healthy() && !poll_when_ws_healthy {
+                        debug!("discovery poll skipped: WebSocket healthy");
+                        continue;
+                    }
                     let current = match provider.get_block_number().await {
                         Ok(n) => n,
                         Err(e) => {

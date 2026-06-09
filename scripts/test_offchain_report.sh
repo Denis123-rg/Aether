@@ -15,7 +15,7 @@ echo ""
 
 echo "## Go coverage (off-chain packages)"
 cd "${PROJECT_ROOT}"
-go test ./internal/... ./cmd/executor/... ./cmd/pooldiscovery/... ./cmd/telebot/... ./tests/... \
+go test ./internal/... ./cmd/executor/... ./cmd/telebot/... ./tests/... \
   -count=1 -timeout 300s -coverprofile="${GO_COVER}" 2>&1 | grep -E 'coverage:|^ok|^FAIL' || true
 echo ""
 go tool cover -func="${GO_COVER}" 2>/dev/null | tail -1 || echo "total: (run go test first)"

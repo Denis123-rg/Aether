@@ -37,6 +37,7 @@ type Alerter struct {
 	history   []Alert
 	rateLimit time.Duration
 	lastAlert map[string]time.Time
+	webhook   *WebhookDispatcher
 }
 
 // NewAlerter creates a new alerter
@@ -46,7 +47,15 @@ func NewAlerter(channels []AlertChannel) *Alerter {
 		history:   make([]Alert, 0),
 		rateLimit: 5 * time.Minute,
 		lastAlert: make(map[string]time.Time),
+		webhook:   NewWebhookDispatcherFromEnv(),
 	}
+}
+
+// NewAlerterWithWebhook creates an alerter with an explicit webhook dispatcher (tests).
+func NewAlerterWithWebhook(channels []AlertChannel, webhook *WebhookDispatcher) *Alerter {
+	a := NewAlerter(channels)
+	a.webhook = webhook
+	return a
 }
 
 // Send dispatches an alert to all configured channels
@@ -74,8 +83,15 @@ func (a *Alerter) Send(severity AlertSeverity, title, message string) {
 }
 
 func (a *Alerter) dispatch(channel AlertChannel, alert Alert) {
-	// TODO: wire real alert dispatch (PagerDuty / Telegram / Discord webhooks).
-	// For now, structured logging is the production sink.
+	if a.webhook != nil {
+		if err := a.webhook.Dispatch(channel, alert); err != nil {
+			slog.Warn("alert webhook dispatch failed",
+				"channel", channel,
+				"title", alert.Title,
+				"err", err,
+			)
+		}
+	}
 	switch channel {
 	case ChannelPagerDuty:
 		slog.Info("alert dispatched",

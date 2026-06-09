@@ -5,6 +5,7 @@
 //! provider is available a revm fork executes the same round-trip on-chain.
 
 use std::time::Instant;
+use tracing::warn;
 
 use aether_common::types::{addresses::WETH, ProtocolType};
 use aether_pools::balancer::BalancerPool;
@@ -752,11 +753,18 @@ pub async fn validate_curve_pool_full(
 ) -> ValidationResult {
     let start = Instant::now();
     let mode = validation_mode.to_ascii_lowercase();
-    let result = if mode == "revm" {
-        // Curve pool-direct swaps need coin indices; analytical is the reliable gate here.
-        validate_curve_pool_rpc(provider, pool_addr, token0, token1, fee_bps, swap_eth).await
-    } else {
-        validate_curve_pool_rpc(provider, pool_addr, token0, token1, fee_bps, swap_eth).await
+    let result = match mode.as_str() {
+        "revm" => validate_curve_pool_revm(provider, pool_addr, token0, token1, fee_bps, swap_eth).await,
+        "both" => {
+            let analytical =
+                validate_curve_pool_rpc(provider, pool_addr, token0, token1, fee_bps, swap_eth).await;
+            if analytical != ValidationResult::Valid {
+                analytical
+            } else {
+                validate_curve_pool_revm(provider, pool_addr, token0, token1, fee_bps, swap_eth).await
+            }
+        }
+        _ => validate_curve_pool_rpc(provider, pool_addr, token0, token1, fee_bps, swap_eth).await,
     };
     if let Some(m) = metrics {
         m.validation_latency_ms
@@ -851,9 +859,26 @@ pub async fn validate_balancer_v3_pool_full(
     metrics: Option<std::sync::Arc<DiscoveryMetrics>>,
 ) -> ValidationResult {
     let start = Instant::now();
-    let _mode = validation_mode.to_ascii_lowercase();
-    let result =
-        validate_balancer_v3_pool_rpc(provider, pool_addr, token0, token1, fee_bps, swap_eth).await;
+    let mode = validation_mode.to_ascii_lowercase();
+    let result = match mode.as_str() {
+        "revm" => {
+            validate_balancer_v3_pool_revm(provider, pool_addr, token0, token1, fee_bps, swap_eth).await
+        }
+        "both" => {
+            let analytical =
+                validate_balancer_v3_pool_rpc(provider, pool_addr, token0, token1, fee_bps, swap_eth)
+                    .await;
+            if analytical != ValidationResult::Valid {
+                analytical
+            } else {
+                validate_balancer_v3_pool_revm(provider, pool_addr, token0, token1, fee_bps, swap_eth)
+                    .await
+            }
+        }
+        _ => {
+            validate_balancer_v3_pool_rpc(provider, pool_addr, token0, token1, fee_bps, swap_eth).await
+        }
+    };
     if let Some(m) = metrics {
         m.validation_latency_ms
             .observe(start.elapsed().as_secs_f64() * 1000.0);
@@ -869,10 +894,505 @@ async fn validate_custodial_pool(
     provider: &DynProvider<Ethereum>,
     pool: &PoolInfo,
 ) -> ValidationResult {
+    warn!(
+        pool = %pool.address,
+        protocol = ?pool.protocol,
+        "custodial pool validated by bytecode gate only — use revm for full swap verification"
+    );
     match provider.get_code_at(pool.address).await {
         Ok(code) if !code.is_empty() => ValidationResult::Valid,
         Ok(_) => ValidationResult::Invalid("pool address has no bytecode".into()),
         Err(_) => ValidationResult::Valid,
+    }
+}
+
+const BALANCER_VAULT: Address = address!("0xBA12222222228d8Ba445958a75a0704d566BF2C8");
+
+alloy::sol! {
+    #[sol(rpc)]
+    interface ICurveExchange {
+        function exchange(int128 i, int128 j, uint256 dx, uint256 min_dy) external returns (uint256);
+    }
+    #[sol(rpc)]
+    interface IBalancerVaultSwap {
+        struct SingleSwap {
+            bytes32 poolId;
+            uint8 kind;
+            address assetIn;
+            address assetOut;
+            uint256 amount;
+            bytes userData;
+        }
+        struct FundManagement {
+            address sender;
+            bool fromInternalBalance;
+            address recipient;
+            bool toInternalBalance;
+        }
+        function swap(SingleSwap singleSwap, FundManagement funds, uint256 limit, uint256 deadline)
+            external payable returns (uint256);
+    }
+}
+
+/// revm fork probe for a 2-coin Curve pool: WETH→token→WETH via `exchange`.
+pub async fn validate_curve_pool_revm(
+    provider: &DynProvider<Ethereum>,
+    pool_addr: Address,
+    token0: Address,
+    token1: Address,
+    fee_bps: u32,
+    swap_eth: f64,
+) -> ValidationResult {
+    let analytical =
+        validate_curve_pool_rpc(provider, pool_addr, token0, token1, fee_bps, swap_eth).await;
+    if analytical != ValidationResult::Valid {
+        return analytical;
+    }
+
+    let (weth_token, other_token) = if token0 == WETH {
+        (token0, token1)
+    } else if token1 == WETH {
+        (token1, token0)
+    } else {
+        return ValidationResult::Valid;
+    };
+
+    let swap_wei = eth_to_u256(swap_eth);
+    if swap_wei.is_zero() {
+        return ValidationResult::Invalid("swap amount too small".into());
+    }
+
+    let i: i128 = if weth_token == token0 { 0 } else { 1 };
+    let j: i128 = if i == 0 { 1 } else { 0 };
+
+    let block = match provider.get_block_by_number(alloy::eips::BlockNumberOrTag::Latest).await {
+        Ok(Some(b)) => b,
+        _ => return ValidationResult::Valid,
+    };
+    let block_number = block.header.number;
+    let block_timestamp = block.header.timestamp;
+    let base_fee = block.header.base_fee_per_gas.unwrap_or(0);
+
+    let mut state = match RpcForkedState::new_at_latest(
+        provider.clone(),
+        block_number,
+        block_timestamp,
+        base_fee,
+    ) {
+        Some(s) => s,
+        None => return ValidationResult::Valid,
+    };
+    state.insert_account_balance(REVM_PROBE_CALLER, U256::from(1_000_000_000_000_000_000u64));
+
+    run_curve_exchange_round_trip(
+        state,
+        pool_addr,
+        weth_token,
+        other_token,
+        i,
+        j,
+        swap_wei,
+        U256::from(block_timestamp + 3600),
+    )
+}
+
+fn run_curve_exchange_round_trip(
+    state: RpcForkedState,
+    pool_addr: Address,
+    weth_token: Address,
+    other_token: Address,
+    i: i128,
+    j: i128,
+    swap_wei: U256,
+    _deadline: U256,
+) -> ValidationResult {
+    let RpcForkedState {
+        db,
+        block_number,
+        block_timestamp,
+        base_fee,
+        chain_id,
+    } = state;
+
+    let block = BlockEnv {
+        number: U256::from(block_number),
+        timestamp: U256::from(block_timestamp),
+        basefee: base_fee,
+        ..Default::default()
+    };
+
+    let ctx = Context::<BlockEnv, TxEnv, _, RpcDB, revm::context::Journal<RpcDB>, ()>::new(
+        db,
+        SpecId::CANCUN,
+    )
+    .with_block(block.clone())
+    .modify_cfg_chained(|c| {
+        c.chain_id = chain_id;
+        c.disable_nonce_check = true;
+        c.disable_balance_check = true;
+        c.disable_base_fee = true;
+    });
+    let mut evm = ctx.build_mainnet();
+
+    // Wrap ETH to WETH for the Curve input leg.
+    let deposit = IWETH9::depositCall {}.abi_encode();
+    let deposit_tx = TxEnv::builder()
+        .caller(REVM_PROBE_CALLER)
+        .kind(TxKind::Call(weth_token))
+        .data(Bytes::copy_from_slice(&deposit))
+        .value(swap_wei)
+        .gas_limit(200_000)
+        .gas_price(base_fee as u128)
+        .nonce(0)
+        .chain_id(Some(chain_id))
+        .build_fill();
+    if !revm_transact_success(&mut evm, deposit_tx) {
+        return ValidationResult::Invalid("revm WETH deposit reverted".into());
+    }
+
+    let approve_data = IERC20::approveCall {
+        spender: pool_addr,
+        amount: swap_wei,
+    }
+    .abi_encode();
+    let approve_tx = TxEnv::builder()
+        .caller(REVM_PROBE_CALLER)
+        .kind(TxKind::Call(weth_token))
+        .data(Bytes::copy_from_slice(&approve_data))
+        .value(U256::ZERO)
+        .gas_limit(200_000)
+        .gas_price(base_fee as u128)
+        .nonce(1)
+        .chain_id(Some(chain_id))
+        .build_fill();
+    if !revm_transact_success(&mut evm, approve_tx) {
+        return ValidationResult::Invalid("revm WETH approve reverted".into());
+    }
+
+    let buy_data = ICurveExchange::exchangeCall {
+        i,
+        j,
+        dx: swap_wei,
+        min_dy: U256::ZERO,
+    }
+    .abi_encode();
+    let buy_tx = TxEnv::builder()
+        .caller(REVM_PROBE_CALLER)
+        .kind(TxKind::Call(pool_addr))
+        .data(Bytes::copy_from_slice(&buy_data))
+        .value(U256::ZERO)
+        .gas_limit(700_000)
+        .gas_price(base_fee as u128)
+        .nonce(2)
+        .chain_id(Some(chain_id))
+        .build_fill();
+    if !revm_transact_success(&mut evm, buy_tx) {
+        return ValidationResult::Invalid("revm Curve forward exchange reverted".into());
+    }
+
+    let balance_data = IERC20::balanceOfCall {
+        account: REVM_PROBE_CALLER,
+    }
+    .abi_encode();
+    let bal_tx = TxEnv::builder()
+        .caller(REVM_PROBE_CALLER)
+        .kind(TxKind::Call(other_token))
+        .data(Bytes::copy_from_slice(&balance_data))
+        .value(U256::ZERO)
+        .gas_limit(200_000)
+        .gas_price(base_fee as u128)
+        .nonce(3)
+        .chain_id(Some(chain_id))
+        .build_fill();
+    let token_balance = match revm_transact_output(&mut evm, bal_tx) {
+        Some(b) if !b.is_zero() => b,
+        _ => return ValidationResult::Invalid("revm Curve probe received zero tokens".into()),
+    };
+
+    let approve2 = IERC20::approveCall {
+        spender: pool_addr,
+        amount: token_balance,
+    }
+    .abi_encode();
+    let approve2_tx = TxEnv::builder()
+        .caller(REVM_PROBE_CALLER)
+        .kind(TxKind::Call(other_token))
+        .data(Bytes::copy_from_slice(&approve2))
+        .value(U256::ZERO)
+        .gas_limit(200_000)
+        .gas_price(base_fee as u128)
+        .nonce(4)
+        .chain_id(Some(chain_id))
+        .build_fill();
+    if !revm_transact_success(&mut evm, approve2_tx) {
+        return ValidationResult::Invalid("revm token approve reverted".into());
+    }
+
+    let sell_data = ICurveExchange::exchangeCall {
+        i: j,
+        j: i,
+        dx: token_balance,
+        min_dy: U256::ZERO,
+    }
+    .abi_encode();
+    let sell_tx = TxEnv::builder()
+        .caller(REVM_PROBE_CALLER)
+        .kind(TxKind::Call(pool_addr))
+        .data(Bytes::copy_from_slice(&sell_data))
+        .value(U256::ZERO)
+        .gas_limit(700_000)
+        .gas_price(base_fee as u128)
+        .nonce(5)
+        .chain_id(Some(chain_id))
+        .build_fill();
+
+    if revm_transact_success(&mut evm, sell_tx) {
+        ValidationResult::Valid
+    } else {
+        ValidationResult::Invalid("revm Curve reverse exchange reverted".into())
+    }
+}
+
+/// revm fork probe for Balancer V3: WETH→token→WETH via Vault `swap`.
+pub async fn validate_balancer_v3_pool_revm(
+    provider: &DynProvider<Ethereum>,
+    pool_addr: Address,
+    token0: Address,
+    token1: Address,
+    fee_bps: u32,
+    swap_eth: f64,
+) -> ValidationResult {
+    let analytical =
+        validate_balancer_v3_pool_rpc(provider, pool_addr, token0, token1, fee_bps, swap_eth).await;
+    if analytical != ValidationResult::Valid {
+        return analytical;
+    }
+
+    let (weth_token, other_token) = if token0 == WETH {
+        (token0, token1)
+    } else if token1 == WETH {
+        (token1, token0)
+    } else {
+        return ValidationResult::Valid;
+    };
+
+    let swap_wei = eth_to_u256(swap_eth);
+    if swap_wei.is_zero() {
+        return ValidationResult::Invalid("swap amount too small".into());
+    }
+
+    let block = match provider.get_block_by_number(alloy::eips::BlockNumberOrTag::Latest).await {
+        Ok(Some(b)) => b,
+        _ => return ValidationResult::Valid,
+    };
+    let block_number = block.header.number;
+    let block_timestamp = block.header.timestamp;
+    let base_fee = block.header.base_fee_per_gas.unwrap_or(0);
+    let deadline = U256::from(block_timestamp + 3600);
+
+    let mut state = match RpcForkedState::new_at_latest(
+        provider.clone(),
+        block_number,
+        block_timestamp,
+        base_fee,
+    ) {
+        Some(s) => s,
+        None => return ValidationResult::Valid,
+    };
+    state.insert_account_balance(REVM_PROBE_CALLER, U256::from(1_000_000_000_000_000_000u64));
+
+    run_balancer_v3_round_trip(
+        state,
+        pool_addr,
+        weth_token,
+        other_token,
+        swap_wei,
+        deadline,
+    )
+}
+
+fn balancer_pool_id(pool_addr: Address) -> alloy::primitives::B256 {
+    let mut id = [0u8; 32];
+    id[12..].copy_from_slice(pool_addr.as_slice());
+    alloy::primitives::B256::from(id)
+}
+
+fn run_balancer_v3_round_trip(
+    state: RpcForkedState,
+    pool_addr: Address,
+    weth_token: Address,
+    other_token: Address,
+    swap_wei: U256,
+    deadline: U256,
+) -> ValidationResult {
+    let RpcForkedState {
+        db,
+        block_number,
+        block_timestamp,
+        base_fee,
+        chain_id,
+    } = state;
+
+    let block = BlockEnv {
+        number: U256::from(block_number),
+        timestamp: U256::from(block_timestamp),
+        basefee: base_fee,
+        ..Default::default()
+    };
+
+    let ctx = Context::<BlockEnv, TxEnv, _, RpcDB, revm::context::Journal<RpcDB>, ()>::new(
+        db,
+        SpecId::CANCUN,
+    )
+    .with_block(block.clone())
+    .modify_cfg_chained(|c| {
+        c.chain_id = chain_id;
+        c.disable_nonce_check = true;
+        c.disable_balance_check = true;
+        c.disable_base_fee = true;
+    });
+    let mut evm = ctx.build_mainnet();
+    let pool_id = balancer_pool_id(pool_addr);
+
+    let deposit = IWETH9::depositCall {}.abi_encode();
+    let deposit_tx = TxEnv::builder()
+        .caller(REVM_PROBE_CALLER)
+        .kind(TxKind::Call(weth_token))
+        .data(Bytes::copy_from_slice(&deposit))
+        .value(swap_wei)
+        .gas_limit(200_000)
+        .gas_price(base_fee as u128)
+        .nonce(0)
+        .chain_id(Some(chain_id))
+        .build_fill();
+    if !revm_transact_success(&mut evm, deposit_tx) {
+        return ValidationResult::Invalid("revm WETH deposit reverted".into());
+    }
+
+    let approve = IERC20::approveCall {
+        spender: BALANCER_VAULT,
+        amount: swap_wei,
+    }
+    .abi_encode();
+    let approve_tx = TxEnv::builder()
+        .caller(REVM_PROBE_CALLER)
+        .kind(TxKind::Call(weth_token))
+        .data(Bytes::copy_from_slice(&approve))
+        .value(U256::ZERO)
+        .gas_limit(200_000)
+        .gas_price(base_fee as u128)
+        .nonce(1)
+        .chain_id(Some(chain_id))
+        .build_fill();
+    if !revm_transact_success(&mut evm, approve_tx) {
+        return ValidationResult::Invalid("revm WETH vault approve reverted".into());
+    }
+
+    let buy_data = IBalancerVaultSwap::swapCall {
+        singleSwap: IBalancerVaultSwap::SingleSwap {
+            poolId: pool_id,
+            kind: 0,
+            assetIn: weth_token,
+            assetOut: other_token,
+            amount: swap_wei,
+            userData: Bytes::new(),
+        },
+        funds: IBalancerVaultSwap::FundManagement {
+            sender: REVM_PROBE_CALLER,
+            fromInternalBalance: false,
+            recipient: REVM_PROBE_CALLER,
+            toInternalBalance: false,
+        },
+        limit: U256::ZERO,
+        deadline,
+    }
+    .abi_encode();
+    let buy_tx = TxEnv::builder()
+        .caller(REVM_PROBE_CALLER)
+        .kind(TxKind::Call(BALANCER_VAULT))
+        .data(Bytes::copy_from_slice(&buy_data))
+        .value(U256::ZERO)
+        .gas_limit(800_000)
+        .gas_price(base_fee as u128)
+        .nonce(2)
+        .chain_id(Some(chain_id))
+        .build_fill();
+    if !revm_transact_success(&mut evm, buy_tx) {
+        return ValidationResult::Invalid("revm Balancer V3 forward swap reverted".into());
+    }
+
+    let balance_data = IERC20::balanceOfCall {
+        account: REVM_PROBE_CALLER,
+    }
+    .abi_encode();
+    let bal_tx = TxEnv::builder()
+        .caller(REVM_PROBE_CALLER)
+        .kind(TxKind::Call(other_token))
+        .data(Bytes::copy_from_slice(&balance_data))
+        .value(U256::ZERO)
+        .gas_limit(200_000)
+        .gas_price(base_fee as u128)
+        .nonce(3)
+        .chain_id(Some(chain_id))
+        .build_fill();
+    let token_balance = match revm_transact_output(&mut evm, bal_tx) {
+        Some(b) if !b.is_zero() => b,
+        _ => return ValidationResult::Invalid("revm Balancer V3 probe received zero tokens".into()),
+    };
+
+    let approve2 = IERC20::approveCall {
+        spender: BALANCER_VAULT,
+        amount: token_balance,
+    }
+    .abi_encode();
+    let approve2_tx = TxEnv::builder()
+        .caller(REVM_PROBE_CALLER)
+        .kind(TxKind::Call(other_token))
+        .data(Bytes::copy_from_slice(&approve2))
+        .value(U256::ZERO)
+        .gas_limit(200_000)
+        .gas_price(base_fee as u128)
+        .nonce(4)
+        .chain_id(Some(chain_id))
+        .build_fill();
+    if !revm_transact_success(&mut evm, approve2_tx) {
+        return ValidationResult::Invalid("revm token vault approve reverted".into());
+    }
+
+    let sell_data = IBalancerVaultSwap::swapCall {
+        singleSwap: IBalancerVaultSwap::SingleSwap {
+            poolId: pool_id,
+            kind: 0,
+            assetIn: other_token,
+            assetOut: weth_token,
+            amount: token_balance,
+            userData: Bytes::new(),
+        },
+        funds: IBalancerVaultSwap::FundManagement {
+            sender: REVM_PROBE_CALLER,
+            fromInternalBalance: false,
+            recipient: REVM_PROBE_CALLER,
+            toInternalBalance: false,
+        },
+        limit: U256::ZERO,
+        deadline,
+    }
+    .abi_encode();
+    let sell_tx = TxEnv::builder()
+        .caller(REVM_PROBE_CALLER)
+        .kind(TxKind::Call(BALANCER_VAULT))
+        .data(Bytes::copy_from_slice(&sell_data))
+        .value(U256::ZERO)
+        .gas_limit(800_000)
+        .gas_price(base_fee as u128)
+        .nonce(5)
+        .chain_id(Some(chain_id))
+        .build_fill();
+
+    if revm_transact_success(&mut evm, sell_tx) {
+        ValidationResult::Valid
+    } else {
+        ValidationResult::Invalid("revm Balancer V3 reverse swap reverted".into())
     }
 }
 

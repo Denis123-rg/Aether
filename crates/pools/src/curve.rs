@@ -237,6 +237,14 @@ impl Pool for CurvePool {
         if amount_in.is_zero() {
             return None;
         }
+        if self.tokens.len() > 2 {
+            tracing::warn!(
+                pool = %self.address,
+                coins = self.tokens.len(),
+                "Curve 3+ coin pool — analytical adapter unsupported; use revm simulation"
+            );
+            return None;
+        }
         let i = self.tokens.iter().position(|t| *t == token_in)?;
         // For 2-token pools, output token is the other one
         let j = if i == 0 { 1 } else { 0 };
@@ -325,6 +333,15 @@ mod tests {
     fn test_curve_zero_amount() {
         let pool = setup_curve_pool();
         assert!(pool.get_amount_out(pool.tokens[0], U256::ZERO).is_none());
+    }
+
+    #[test]
+    fn three_coin_pool_returns_none() {
+        let t0 = address!("A0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48");
+        let t1 = address!("dAC17F958D2ee523a2206206994597C13D831ec7");
+        let t2 = address!("6B175474E89094C44Da98b954EedeAC495271d0F");
+        let pool = CurvePool::new(Address::ZERO, vec![t0, t1, t2], 100, 4);
+        assert!(pool.get_amount_out(t0, U256::from(1_000_000u64)).is_none());
     }
 
     #[test]

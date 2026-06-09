@@ -37,6 +37,8 @@ const TWO_POW_96_F64: f64 = 79_228_162_514_264_337_593_543_950_336.0;
 /// Pre-computed `ln(1.0001)` to avoid recomputing per call. Determines
 /// the size of one V3 tick on the log-price axis.
 const LN_1_0001: f64 = 0.000_099_995_000_333_308_34;
+/// Conservative discount on single-tick analytical output to bound sim drift.
+const SIMULATION_SAFETY_MARGIN_BPS: u32 = 200;
 
 /// Project a Q96 sqrt-price into its V3 tick index. Used to detect when a
 /// post-swap `sqrt_price_x96` lands outside the active tick bucket and the
@@ -337,6 +339,11 @@ impl UniswapV3Pool {
             Some(numerator / denominator)
         }
     }
+
+    /// Reduce analytical output by 2% to account for tick-crossing drift.
+    fn apply_simulation_safety_margin(amount: U256) -> U256 {
+        amount * U256::from(10_000u32 - SIMULATION_SAFETY_MARGIN_BPS) / U256::from(10_000u32)
+    }
 }
 
 impl Pool for UniswapV3Pool {
@@ -358,6 +365,7 @@ impl Pool for UniswapV3Pool {
             return None;
         }
         self.compute_swap_within_tick(token_in, amount_in)
+            .map(Self::apply_simulation_safety_margin)
     }
 
     fn get_amount_in(&self, token_out: Address, amount_out: U256) -> Option<U256> {
@@ -609,7 +617,7 @@ mod tests {
             U256::from(1_000_000_000_000u64),
         ] {
             let legacy = pool
-                .get_amount_out(pool.token0, amt)
+                .compute_swap_within_tick(pool.token0, amt)
                 .expect("legacy amount_out");
             let post = pool
                 .predict_post_state(pool.token0, amt)
@@ -663,7 +671,7 @@ mod tests {
             let dx = amt as f64;
             let dy_vr = (dx * fee_factor * y_v) / (x_v + dx * fee_factor);
             let dy_exact = u256_to_f64(
-                pool.get_amount_out(pool.token0, U256::from(amt))
+                pool.compute_swap_within_tick(pool.token0, U256::from(amt))
                     .expect("v3 amount_out"),
             );
             assert!(
@@ -677,7 +685,7 @@ mod tests {
             let dy = amt as f64;
             let dx_vr = (dy * fee_factor * x_v) / (y_v + dy * fee_factor);
             let dx_exact = u256_to_f64(
-                pool.get_amount_out(pool.token1, U256::from(amt))
+                pool.compute_swap_within_tick(pool.token1, U256::from(amt))
                     .expect("v3 amount_out"),
             );
             assert!(
@@ -726,5 +734,34 @@ mod tests {
             .get_amount_out(pool.token1, U256::from(10u128.pow(30)))
             .expect("single-tick math returns");
         assert!(out > U256::ZERO);
+    }
+
+    #[test]
+    fn safety_margin_reduces_get_amount_out_by_2_percent() {
+        let pool = setup_v3_pool();
+        let amount_in = U256::from(1_000_000_000_000_000_000u64);
+        let raw = pool
+            .compute_swap_within_tick(pool.token1, amount_in)
+            .expect("raw");
+        let margined = pool.get_amount_out(pool.token1, amount_in).expect("margined");
+        let expected = raw * U256::from(10_000u32 - SIMULATION_SAFETY_MARGIN_BPS) / U256::from(10_000u32);
+        assert_eq!(margined, expected);
+        assert!(margined < raw);
+    }
+
+    #[test]
+    fn safety_margin_applies_both_directions() {
+        let pool = setup_v3_pool();
+        for token_in in [pool.token0, pool.token1] {
+            let raw = pool
+                .compute_swap_within_tick(token_in, U256::from(1_000_000_000u64))
+                .unwrap_or_default();
+            let out = pool
+                .get_amount_out(token_in, U256::from(1_000_000_000u64))
+                .unwrap_or_default();
+            if !raw.is_zero() {
+                assert!(out <= raw);
+            }
+        }
     }
 }

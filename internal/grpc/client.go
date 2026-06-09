@@ -126,3 +126,22 @@ func (c *Client) StreamArbs(ctx context.Context, minProfitETH float64) (pb.ArbSe
 		MinProfitEth: minProfitETH,
 	})
 }
+
+// SetState sends a control request to pause/resume/halt the Rust engine.
+func (c *Client) SetState(ctx context.Context, state pb.SystemState, reason string) (*pb.SetStateResponse, error) {
+	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+	return c.control.SetState(ctx, &pb.SetStateRequest{
+		State:  state,
+		Reason: reason,
+	})
+}
+
+// ReloadConfig hot-reloads the pool registry on the Rust engine.
+func (c *Client) ReloadConfig(ctx context.Context, configPath string) (*pb.ReloadConfigResponse, error) {
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	return c.control.ReloadConfig(ctx, &pb.ReloadConfigRequest{
+		ConfigPath: configPath,
+	})
+}

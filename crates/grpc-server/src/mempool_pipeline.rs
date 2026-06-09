@@ -2717,6 +2717,7 @@ mod tests {
             protocol: ProtocolType::Curve,
             fee_bps: 4,
             tick_spacing: None,
+            bytecode_warmed: true,
         };
         let post = UnifiedPostState::Curve(CurvePostState {
             i: 0,
@@ -2770,6 +2771,7 @@ mod tests {
             protocol: ProtocolType::BancorV3,
             fee_bps: 30,
             tick_spacing: None,
+            bytecode_warmed: true,
         };
         // Predictor aligns new_balance_in/out to swap direction — helper
         // trusts them directly regardless of swap_token_in vs meta.token0/1.
@@ -3259,6 +3261,7 @@ mod tests {
             protocol: ProtocolType::BancorV3,
             fee_bps: 30,
             tick_spacing: None,
+            bytecode_warmed: true,
         };
         (addr, meta)
     }

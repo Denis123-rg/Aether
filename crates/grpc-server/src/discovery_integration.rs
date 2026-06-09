@@ -131,6 +131,8 @@ pub async fn maybe_start_discovery(
         &config.discovery.ws_url,
         config.discovery.poll_interval_secs,
         config.discovery.ws_fallback_poll,
+        config.discovery.poll_when_ws_healthy,
+        aether_discovery::events::WsHealth::new(),
         Some(discovery_metrics),
         shutdown_rx.clone(),
     );

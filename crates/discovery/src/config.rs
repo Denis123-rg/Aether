@@ -137,6 +137,9 @@ pub struct DiscoverySettings {
     /// When true, keep a polling listener running alongside WS as a safety net.
     #[serde(default = "default_ws_fallback_poll")]
     pub ws_fallback_poll: bool,
+    /// When false (default), disable HTTP polling while the WebSocket listener is healthy.
+    #[serde(default)]
+    pub poll_when_ws_healthy: bool,
     /// Validation mode: `revm` (fork simulation), `analytical` (math only), or `both`.
     #[serde(default = "default_validation_mode")]
     pub validation_mode: String,
@@ -155,6 +158,7 @@ impl Default for DiscoverySettings {
             ws_url: String::new(),
             poll_interval_secs: default_poll_interval(),
             ws_fallback_poll: default_ws_fallback_poll(),
+            poll_when_ws_healthy: false,
             validation_mode: default_validation_mode(),
         }
     }

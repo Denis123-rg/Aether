@@ -11,6 +11,9 @@ use crate::Pool;
 /// per-event allocation.
 pub const BNT_ADDRESS: Address = address!("1F573D6Fb3F13d689FF844B4cE37794d79a7FF1C");
 
+/// Conservative discount on closed-form bonding-curve output (2%).
+const ANALYTICAL_SAFETY_MARGIN_BPS: u32 = 200;
+
 /// Bancor V3 pool with BNT intermediary
 ///
 /// Uses a bonding curve where the price is determined by the reserve ratio:
@@ -105,15 +108,7 @@ impl BancorPool {
             (self.bnt_balance, self.token_balance)
         };
 
-        // Fee applied to input — matches `get_amount_out` above.
-        let fee_complement = U256::from(10_000u64 - self.fee_bps as u64);
-        let amount_in_after_fee = amount_in * fee_complement / U256::from(10_000u64);
-        let numerator = bal_out * amount_in_after_fee;
-        let denominator = bal_in + amount_in_after_fee;
-        if denominator.is_zero() {
-            return None;
-        }
-        let amount_out = numerator / denominator;
+        let amount_out = self.get_amount_out(token_in, amount_in)?;
         if amount_out.is_zero() || amount_out >= bal_out {
             // Degenerate: amount_in_after_fee rounds to zero against a
             // huge reserve, or the swap would drain the output side. Bail
@@ -244,7 +239,8 @@ impl Pool for BancorPool {
         let amount_in_after_fee = amount_in * fee_complement / U256::from(10000);
         let numerator = bal_out * amount_in_after_fee;
         let denominator = bal_in + amount_in_after_fee;
-        Some(numerator / denominator)
+        let raw = numerator / denominator;
+        Some(raw * U256::from(10_000u32 - ANALYTICAL_SAFETY_MARGIN_BPS) / U256::from(10_000u32))
     }
 
     fn get_amount_in(&self, token_out: Address, amount_out: U256) -> Option<U256> {
@@ -344,6 +340,28 @@ mod tests {
             amount_in_back >= amount_in * U256::from(95u64) / U256::from(100u64),
             "bancor inverse should recover input within 5%"
         );
+    }
+
+    #[test]
+    fn analytical_safety_margin_reduces_output() {
+        let mut pool = BancorPool::new(
+            Address::ZERO,
+            address!("C02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2"),
+            address!("1F573D6Fb3F13d689FF844B4cE37794d79a7FF1C"),
+            30,
+        );
+        pool.update_state(
+            U256::from(1_000_000_000_000_000_000_000u128),
+            U256::from(2_000_000_000_000_000_000_000u128),
+        );
+        let amount_in = U256::from(1_000_000_000_000_000_000u64);
+        let fee_complement = U256::from(10_000u64 - 30);
+        let amount_in_after_fee = amount_in * fee_complement / U256::from(10_000u64);
+        let raw = pool.bnt_balance * amount_in_after_fee
+            / (pool.token_balance + amount_in_after_fee);
+        let out = pool.get_amount_out(pool.token, amount_in).unwrap();
+        let expected = raw * U256::from(10_000u32 - ANALYTICAL_SAFETY_MARGIN_BPS) / U256::from(10_000u32);
+        assert_eq!(out, expected);
     }
 
     // ----- predict_post_state -----
