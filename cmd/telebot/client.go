@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"time"
 
 	"github.com/aether-arb/aether/internal/metrics"
@@ -54,6 +55,7 @@ func (c *MetricsClient) FetchSnapshot(ctx context.Context) (metrics.Snapshot, er
 type AdminClient struct {
 	baseHost   string
 	httpClient *http.Client
+	adminToken string
 }
 
 // NewAdminClient creates a client for executor admin endpoints.
@@ -64,8 +66,9 @@ func NewAdminClient(metricsURL string) *AdminClient {
 		host = metricsURL[:idx]
 	}
 	return &AdminClient{
-		baseHost: host,
+		baseHost:   host,
 		httpClient: &http.Client{Timeout: 5 * time.Second},
+		adminToken: os.Getenv("AETHER_ADMIN_TOKEN"),
 	}
 }
 
@@ -73,6 +76,9 @@ func (a *AdminClient) post(ctx context.Context, path string) error {
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, a.baseHost+path, nil)
 	if err != nil {
 		return err
+	}
+	if a.adminToken != "" {
+		req.Header.Set("Authorization", "Bearer "+a.adminToken)
 	}
 	resp, err := a.httpClient.Do(req)
 	if err != nil {

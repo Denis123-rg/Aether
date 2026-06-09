@@ -74,7 +74,8 @@ func (a *Alerter) Send(severity AlertSeverity, title, message string) {
 }
 
 func (a *Alerter) dispatch(channel AlertChannel, alert Alert) {
-	// In production, this would call the actual API for each channel
+	// TODO: wire real alert dispatch (PagerDuty / Telegram / Discord webhooks).
+	// For now, structured logging is the production sink.
 	switch channel {
 	case ChannelPagerDuty:
 		slog.Info("alert dispatched",

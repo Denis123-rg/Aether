@@ -86,7 +86,7 @@ func TestRiskManagerPauseResume(t *testing.T) {
 	cfg := risk.DefaultRiskConfig()
 	rm := risk.NewRiskManager(cfg)
 
-	rm.Pause("test")
+	_ = rm.Pause("test")
 	if rm.State() != risk.StatePaused {
 		t.Fatalf("state = %s", rm.State())
 	}

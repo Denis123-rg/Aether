@@ -10,7 +10,11 @@ pub struct TickInfo {
     pub liquidity_gross: u128,
 }
 
-/// Uniswap V3 concentrated liquidity pool
+/// Uniswap V3 concentrated liquidity pool.
+///
+/// **Limitation:** `get_amount_out` uses a single-tick approximation. Swaps
+/// crossing tick boundaries underestimate price impact — `predict_post_state`
+/// sets `single_tick = false` so callers escalate to revm simulation.
 #[derive(Debug, Clone)]
 pub struct UniswapV3Pool {
     pub address: Address,
@@ -388,8 +392,8 @@ impl Pool for UniswapV3Pool {
         // V3 doesn't use simple reserves; state is updated via update_sqrt_price()
     }
 
-    fn encode_swap(&self, _token_in: Address, _amount_in: U256, _min_out: U256) -> Vec<u8> {
-        Vec::new() // Placeholder - real encoding in calldata builder
+    fn encode_swap(&self, token_in: Address, amount_in: U256, _min_out: U256) -> Vec<u8> {
+        crate::swap_encode::encode_univ3_swap(self.token0, token_in, amount_in, Address::ZERO)
     }
 
     fn liquidity_depth(&self) -> U256 {

@@ -396,7 +396,9 @@ func processArb(
 				Value: 1,
 				Tags:  map[string]string{"stage": "bundle_build", "source": sourceLbl},
 			})
-			rm.Pause("signer_unavailable")
+			if err := rm.Pause("signer_unavailable"); err != nil {
+				slog.ErrorContext(ctx, "pause after signer failure", "err", err)
+			}
 			slog.ErrorContext(ctx, "remote signer unavailable — pausing executor", "arb_id", arb.Id, "err", err)
 		}
 		return false, fmt.Errorf("build bundle: %w", err)

@@ -107,8 +107,21 @@ func resolveEnvFields(cfg *ProductionConfig) {
 	}
 }
 
-// ValidateProductionConfig validates required fields.
+// ValidateProductionConfig validates required fields for production telebot
+// and executor admin HTTP integration.
 func ValidateProductionConfig(cfg ProductionConfig) error {
+	if strings.TrimSpace(cfg.Telegram.BotToken) == "" {
+		return fmt.Errorf("telegram.bot_token is required")
+	}
+	if len(cfg.Telegram.AdminChatIDs) == 0 {
+		return fmt.Errorf("telegram.admin_chat_ids must contain at least one entry")
+	}
+	if cfg.Telegram.DashboardUpdateIntervalSecs < 0 {
+		return fmt.Errorf("telegram.dashboard_update_interval_secs must be non-negative")
+	}
+	if strings.TrimSpace(cfg.Telegram.ExecutorMetricsURL) == "" {
+		return fmt.Errorf("telegram.executor_metrics_url is required")
+	}
 	return nil
 }
 

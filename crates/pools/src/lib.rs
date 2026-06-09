@@ -1,8 +1,10 @@
 pub mod balancer;
+pub mod balancer_v3;
 pub mod bancor;
 pub mod curve;
 pub mod registry;
 pub mod router_decoder;
+pub mod swap_encode;
 pub mod sushiswap;
 pub mod uniswap_v2;
 pub mod uniswap_v3;
@@ -14,6 +16,7 @@ use aether_common::types::ProtocolType;
 use dashmap::DashMap;
 
 use crate::balancer::BalancerPool;
+use crate::balancer_v3::BalancerV3Pool;
 use crate::bancor::BancorPool;
 use crate::curve::CurvePool;
 use crate::uniswap_v2::UniswapV2Pool;
@@ -47,6 +50,7 @@ pub enum PoolState {
     SushiSwap(UniswapV2Pool),
     Curve(CurvePool),
     Balancer(BalancerPool),
+    BalancerV3(BalancerV3Pool),
     Bancor(BancorPool),
 }
 
@@ -58,6 +62,7 @@ impl PoolState {
             PoolState::UniswapV3(p) => p.address,
             PoolState::Curve(p) => p.address,
             PoolState::Balancer(p) => p.address,
+            PoolState::BalancerV3(p) => p.address(),
             PoolState::Bancor(p) => p.address,
         }
     }
@@ -70,6 +75,7 @@ impl PoolState {
             PoolState::SushiSwap(_) => ProtocolType::SushiSwap,
             PoolState::Curve(_) => ProtocolType::Curve,
             PoolState::Balancer(_) => ProtocolType::BalancerV2,
+            PoolState::BalancerV3(_) => ProtocolType::BalancerV3,
             PoolState::Bancor(_) => ProtocolType::BancorV3,
         }
     }
@@ -189,6 +195,14 @@ where
             }
             Some(UnifiedPostState::Balancer(post))
         }
+        PoolState::BalancerV3(pool) => {
+            let post = pool.predict_post_state(token_in, amount_in)?;
+            if !post.analytical {
+                on_fallback("balancer_unequal_weight");
+                return None;
+            }
+            Some(UnifiedPostState::Balancer(post))
+        }
         PoolState::Bancor(pool) => {
             // Bancor's bonding curve is closed-form — `analytical` is
             // always `true` on a `Some` return, so the low-confidence
@@ -255,6 +269,14 @@ where
             Some(UnifiedPostState::Curve(post))
         }
         PoolState::Balancer(pool) => {
+            let post = pool.predict_post_state(token_in, amount_in)?;
+            if !post.analytical {
+                on_fallback("balancer_unequal_weight");
+                return replay(ReplayProtocol::Balancer);
+            }
+            Some(UnifiedPostState::Balancer(post))
+        }
+        PoolState::BalancerV3(pool) => {
             let post = pool.predict_post_state(token_in, amount_in)?;
             if !post.analytical {
                 on_fallback("balancer_unequal_weight");

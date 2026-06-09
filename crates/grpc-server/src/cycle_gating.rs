@@ -354,6 +354,23 @@ pub fn gate_pre_sim(
     PreSimGateVerdict::Pass
 }
 
+/// Select the lowest-weight unfiltered edge for a directed hop.
+/// Filtered edges (below min-liquidity floor or failed reserve fetch) are
+/// excluded so cycle reconstruction matches what Bellman-Ford traversed.
+pub fn select_best_edge_for_hop<'a>(
+    edges: &'a [aether_state::price_graph::PriceEdge],
+    to_idx: usize,
+) -> Option<&'a aether_state::price_graph::PriceEdge> {
+    edges
+        .iter()
+        .filter(|e| e.to == to_idx && !e.filtered)
+        .min_by(|a, b| {
+            a.weight
+                .partial_cmp(&b.weight)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        })
+}
+
 /// Verdict of the post-simulation revm cross-check (gate 4).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PostSimGateVerdict {

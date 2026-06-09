@@ -19,8 +19,8 @@ func TestParseBundleStatsBlockNumber(t *testing.T) {
 func TestParseBundleStatsSentToMiners(t *testing.T) {
 	raw := json.RawMessage(`{"isSimulated":true,"isSentToMiners":true}`)
 	included, block := parseBundleStats(raw)
-	if !included {
-		t.Fatal("expected included via isSentToMiners")
+	if included {
+		t.Fatal("isSentToMiners without blockNumber must not count as included")
 	}
 	if block != 0 {
 		t.Fatalf("block=%d want 0", block)

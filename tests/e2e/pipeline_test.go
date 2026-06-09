@@ -13,6 +13,19 @@ import (
 	"github.com/aether-arb/aether/internal/metrics"
 )
 
+// e2eRequireServices returns true when CI must fail instead of skip on unreachable services.
+func e2eRequireServices() bool {
+	return os.Getenv("AETHER_E2E_REQUIRE_SERVICES") == "1"
+}
+
+func skipOrFail(t *testing.T, err error, msg string) {
+	t.Helper()
+	if e2eRequireServices() {
+		t.Fatalf("%s: %v", msg, err)
+	}
+	t.Skip(msg, err)
+}
+
 func TestMetricsEndpointReturnsExpectedFields(t *testing.T) {
 	url := os.Getenv("EXECUTOR_METRICS_URL")
 	if url == "" {
@@ -22,11 +35,11 @@ func TestMetricsEndpointReturnsExpectedFields(t *testing.T) {
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
-		t.Skip("executor not running:", err)
+		skipOrFail(t, err, "executor not running")
 	}
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		t.Skip("executor not reachable:", err)
+		skipOrFail(t, err, "executor not reachable")
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
@@ -58,7 +71,7 @@ func TestAdminPauseResume(t *testing.T) {
 
 	resp, err := client.Post(base+"/admin/pause", "application/json", nil)
 	if err != nil {
-		t.Skip("executor not reachable:", err)
+		skipOrFail(t, err, "executor not reachable")
 	}
 	resp.Body.Close()
 
@@ -82,7 +95,7 @@ func TestHealthEndpoint(t *testing.T) {
 	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, base+"/health", nil)
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		t.Skip("executor not reachable:", err)
+		skipOrFail(t, err, "executor not reachable")
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
@@ -100,7 +113,7 @@ func TestTopPoolsEndpoint(t *testing.T) {
 	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		t.Skip("discovery not reachable:", err)
+		skipOrFail(t, err, "discovery not reachable")
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
@@ -117,7 +130,7 @@ func TestSetMinProfitEndpoint(t *testing.T) {
 	}
 	resp, err := http.Post(base+"/admin/set_min_profit?value=0.001", "application/json", nil)
 	if err != nil {
-		t.Skip("executor not reachable:", err)
+		skipOrFail(t, err, "executor not reachable")
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
@@ -136,7 +149,7 @@ func TestRedisFallbackPolling(t *testing.T) {
 	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		t.Skip("executor not reachable:", err)
+		skipOrFail(t, err, "executor not reachable")
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
@@ -151,7 +164,7 @@ func TestDashboardPnLField(t *testing.T) {
 	}
 	resp, err := http.Get(url)
 	if err != nil {
-		t.Skip("executor not reachable:", err)
+		skipOrFail(t, err, "executor not reachable")
 	}
 	defer resp.Body.Close()
 	var snap metrics.Snapshot
@@ -168,7 +181,7 @@ func TestBreakerStatusField(t *testing.T) {
 	}
 	resp, err := http.Get(url)
 	if err != nil {
-		t.Skip("executor not reachable:", err)
+		skipOrFail(t, err, "executor not reachable")
 	}
 	defer resp.Body.Close()
 	var snap metrics.Snapshot
@@ -183,7 +196,7 @@ func TestRecentTradesField(t *testing.T) {
 	}
 	resp, err := http.Get(url)
 	if err != nil {
-		t.Skip("executor not reachable:", err)
+		skipOrFail(t, err, "executor not reachable")
 	}
 	defer resp.Body.Close()
 	var snap metrics.Snapshot
@@ -200,7 +213,7 @@ func TestExecutorReachableFlag(t *testing.T) {
 	}
 	resp, err := http.Get(url)
 	if err != nil {
-		t.Skip("executor not reachable:", err)
+		skipOrFail(t, err, "executor not reachable")
 	}
 	defer resp.Body.Close()
 	var snap metrics.Snapshot

@@ -275,8 +275,15 @@ impl Pool for BancorPool {
         self.bnt_balance = reserve1;
     }
 
-    fn encode_swap(&self, _token_in: Address, _amount_in: U256, _min_out: U256) -> Vec<u8> {
-        Vec::new() // Placeholder - real encoding in calldata builder
+    fn encode_swap(&self, token_in: Address, amount_in: U256, min_out: U256) -> Vec<u8> {
+        let token_out = if token_in == self.token {
+            self.bnt
+        } else if token_in == self.bnt {
+            self.token
+        } else {
+            return Vec::new();
+        };
+        crate::swap_encode::encode_bancor_trade(token_in, token_out, amount_in, min_out, Address::ZERO)
     }
 
     fn liquidity_depth(&self) -> U256 {

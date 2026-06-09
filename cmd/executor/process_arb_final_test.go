@@ -186,8 +186,8 @@ func TestPollPendingInclusions_StatsErrorGiveUp(t *testing.T) {
 func TestParseBundleStats_FallbackFlags(t *testing.T) {
 	raw := []byte(`{"isHighPriority":true,"isSentToMiners":false,"blockNumber":"0x0"}`)
 	included, block := parseBundleStats(raw)
-	if !included || block != 0 {
-		t.Fatalf("included=%v block=%d", included, block)
+	if included {
+		t.Fatalf("high priority without confirmed block must not count as included; block=%d", block)
 	}
 }
 

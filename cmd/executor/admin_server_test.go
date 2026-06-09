@@ -78,7 +78,7 @@ func TestHandleAdminPause(t *testing.T) {
 func TestHandleAdminResume(t *testing.T) {
 	resetAdminGlobals()
 	rm := risk.NewRiskManager(risk.DefaultRiskConfig())
-	rm.Pause("test")
+	_ = rm.Pause("test")
 	globalAdminDeps.riskMgr = rm
 
 	req := httptest.NewRequest(http.MethodPost, "/admin/resume", nil)

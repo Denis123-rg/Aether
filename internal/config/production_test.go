@@ -62,10 +62,23 @@ admin_chat_ids = [1]
 	}
 }
 
-func TestValidateProductionConfigDefaults(t *testing.T) {
+func TestValidateProductionConfigRejectsEmpty(t *testing.T) {
 	cfg := ProductionConfig{}
+	if err := ValidateProductionConfig(cfg); err == nil {
+		t.Fatal("expected validation error for empty config")
+	}
+}
+
+func TestValidateProductionConfigAcceptsValid(t *testing.T) {
+	cfg := ProductionConfig{
+		Telegram: TelegramConfig{
+			BotToken:           "tok",
+			AdminChatIDs:       []int64{1},
+			ExecutorMetricsURL: "http://localhost:8080/metrics/json",
+		},
+	}
 	if err := ValidateProductionConfig(cfg); err != nil {
-		t.Fatal(err)
+		t.Fatalf("valid config rejected: %v", err)
 	}
 }
 

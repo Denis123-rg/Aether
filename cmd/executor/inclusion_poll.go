@@ -118,9 +118,10 @@ func parseBundleStats(raw json.RawMessage) (included bool, blockNum uint64) {
 			return true, n
 		}
 	}
-	// Fallback: sent to miners counts as inclusion for ACK-level reconciliation
-	// when block number is not yet available (common on mock builders / forks).
-	return stats.IsHighPriority || stats.IsSentToMiners, 0
+	// Only on-chain confirmation (nonzero block number) counts as inclusion.
+	// isSentToMiners / isHighPriority without a block number means the bundle
+	// is still pending — keep polling until timeout.
+	return false, 0
 }
 
 func fmtSscanfHex(hex string, out *uint64) (int, error) {

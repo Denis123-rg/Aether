@@ -2158,6 +2158,7 @@ fn poolstate_quote(ps: &PoolState, token_in: Address, amount_in: U256) -> Option
         PoolState::UniswapV3(p) => p.get_amount_out(token_in, amount_in),
         PoolState::Curve(p) => p.get_amount_out(token_in, amount_in),
         PoolState::Balancer(p) => p.get_amount_out(token_in, amount_in),
+        PoolState::BalancerV3(p) => p.get_amount_out(token_in, amount_in),
         PoolState::Bancor(p) => p.get_amount_out(token_in, amount_in),
     }
 }

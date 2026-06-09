@@ -13,7 +13,8 @@ use alloy::sol_types::SolCall;
 
 use aether_common::db::{protocol_label, Ledger, NewArb, NewPool, NoopLedger};
 use aether_common::types::{
-    known_token_decimals, ArbHop, ArbOpportunity, PoolId, ProtocolType, SwapStep,
+    erc20_balance_slot_for_token, known_token_decimals, ArbHop, ArbOpportunity, PoolId,
+    ProtocolType, SwapStep,
 };
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
@@ -632,7 +633,10 @@ impl AetherEngine {
                 (self.rpc_provider.clone(), self.bytecode_cache.clone())
             {
                 let addrs: Vec<Address> = added.iter().map(|p| p.address).collect();
-                tokio::spawn(async move {
+                let pool_count = addrs.len();
+                let prewarm_timeout = std::time::Duration::from_secs(10);
+                let t_prewarm = Instant::now();
+                let prewarm_result = tokio::time::timeout(prewarm_timeout, async {
                     let futures: Vec<_> = addrs
                         .into_iter()
                         .map(|addr| {
@@ -644,7 +648,25 @@ impl AetherEngine {
                         })
                         .collect();
                     futures::future::join_all(futures).await;
-                });
+                })
+                .await;
+                match prewarm_result {
+                    Ok(_) => {
+                        debug!(
+                            pools = pool_count,
+                            elapsed_ms = t_prewarm.elapsed().as_millis(),
+                            "hot-cache bytecode prewarm complete"
+                        );
+                    }
+                    Err(_) => {
+                        warn!(
+                            pools = pool_count,
+                            timeout_secs = prewarm_timeout.as_secs(),
+                            elapsed_ms = t_prewarm.elapsed().as_millis(),
+                            "hot-cache bytecode prewarm timed out"
+                        );
+                    }
+                }
             }
         }
     }
@@ -2119,16 +2141,12 @@ impl AetherEngine {
                         }
                     };
 
-                    // Find the best (lowest weight) edge for this hop.
-                    let best_edge = match graph
-                        .edges_from(from_idx)
-                        .iter()
-                        .filter(|e| e.to == to_idx)
-                        .min_by(|a, b| {
-                            a.weight
-                                .partial_cmp(&b.weight)
-                                .unwrap_or(std::cmp::Ordering::Equal)
-                        }) {
+                    // Find the best (lowest weight) unfiltered edge for this hop.
+                    let best_edge = match cycle_gating::select_best_edge_for_hop(
+                        graph.edges_from(from_idx),
+                        to_idx,
+                    )
+                    {
                         Some(edge) => edge,
                         None => {
                             valid = false;
@@ -2442,6 +2460,9 @@ impl AetherEngine {
             let block_number = block_info.number;
             let block_timestamp = block_info.timestamp;
             let base_fee = block_info.base_fee as u64;
+            let flashloan_token = input.flashloan_token;
+            let profit_recipient = sim_config.caller;
+            let balance_slot = erc20_balance_slot_for_token(&flashloan_token);
 
             sim_handles.push(tokio::spawn(async move {
                 // Hold permit for the lifetime of this task.
@@ -2484,11 +2505,22 @@ impl AetherEngine {
                                         if let Some(ref pw) = prewarmed {
                                             pw.inject_into(&mut rpc_state);
                                         }
-                                        simulator.simulate_rpc(
-                                            rpc_state,
-                                            executor_addr,
-                                            calldata,
-                                        )
+                                        if let Some(slot) = balance_slot {
+                                            simulator.simulate_rpc_with_erc20_profit(
+                                                rpc_state,
+                                                executor_addr,
+                                                calldata,
+                                                flashloan_token,
+                                                profit_recipient,
+                                                slot,
+                                            )
+                                        } else {
+                                            simulator.simulate_rpc(
+                                                rpc_state,
+                                                executor_addr,
+                                                calldata,
+                                            )
+                                        }
                                     }
                                     None => {
                                         debug!("RpcForkedState::new returned None, falling back to empty state");
@@ -4241,14 +4273,14 @@ fee_bps = 30
     }
 
     #[tokio::test]
-    async fn test_sync_hot_cache_pools_spawns_bytecode_prewarm() {
+    async fn test_sync_hot_cache_pools_awaits_bytecode_prewarm() {
         let (tx, _rx) = broadcast::channel(100);
         let engine = AetherEngine::new(EngineConfig::default(), tx);
         let pools: Vec<PoolInfo> = (0x40u8..0x48)
             .map(|b| sample_pool_info(b))
             .collect();
+        // Returns only after prewarm completes (or times out) — no background spawn.
         engine.sync_hot_cache_pools(&pools, &[]).await;
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
     }
 
     #[tokio::test]

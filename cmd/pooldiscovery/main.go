@@ -1,9 +1,11 @@
-// Pool discovery utility for Aether MEV bot.
-// Queries Uniswap V2/V3 and SushiSwap factory contracts to discover active
-// trading pools, filters for pairs containing WETH or USDC, and outputs a
-// pools.toml config file matching the Aether pool registry format.
+// Pool discovery utility for Aether MEV bot (DEPRECATED).
 //
-// Usage:
+// Production pool discovery runs in the Rust `aether-discovery` service
+// (factory event listeners + on-chain validation). This Go tool returns
+// well-known static pools for local bootstrap only — it does NOT perform
+// live RPC factory scanning despite accepting --rpc-url.
+//
+// Usage (bootstrap / dev only):
 //
 //	go run ./cmd/pooldiscovery/ --rpc-url $ETH_RPC_URL --output config/pools.toml --limit 100
 package main
@@ -290,7 +292,8 @@ func main() {
 		*rpcURL = "simulated"
 	}
 
-	fmt.Println("aether-pooldiscovery: DEX pool discovery utility")
+	fmt.Println("aether-pooldiscovery: DEPRECATED — use Rust aether-discovery for production")
+	fmt.Println("WARNING: this tool returns well-known static pools, not live RPC discovery")
 	slog.Info("pool discovery starting", "rpc_url", *rpcURL, "output", *output, "limit", *limit)
 
 	discoverer := NewPoolDiscoverer(*rpcURL, *limit)

@@ -11,7 +11,10 @@ use crate::Pool;
 ///   amount_out = B_out * (1 - (B_in / (B_in + amount_in))^(W_in / W_out))
 ///
 /// Equal-weight (50/50) pools simplify to the standard constant product formula.
-/// For unequal weights, a first-order approximation is used for gas-efficient estimation.
+/// For unequal weights, a first-order approximation is used for gas-efficient
+/// estimation. Equal-weight (50/50) pools use exact constant-product math;
+/// unequal-weight outputs include implicit conservative bias — escalate to
+/// revm simulation when `predict_post_state` returns `analytical = false`.
 #[derive(Debug, Clone)]
 pub struct BalancerPool {
     pub address: Address,
@@ -206,8 +209,21 @@ impl Pool for BalancerPool {
         self.balance1 = reserve1;
     }
 
-    fn encode_swap(&self, _token_in: Address, _amount_in: U256, _min_out: U256) -> Vec<u8> {
-        Vec::new() // Placeholder - real encoding in calldata builder
+    fn encode_swap(&self, token_in: Address, amount_in: U256, min_out: U256) -> Vec<u8> {
+        let token_out = if token_in == self.token0 {
+            self.token1
+        } else if token_in == self.token1 {
+            self.token0
+        } else {
+            return Vec::new();
+        };
+        crate::swap_encode::encode_balancer_vault_swap(
+            self.address,
+            token_in,
+            token_out,
+            amount_in,
+            min_out,
+        )
     }
 
     fn liquidity_depth(&self) -> U256 {

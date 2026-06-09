@@ -25,6 +25,7 @@ enum ProtocolType {
     CURVE = 4;
     BALANCER_V2 = 5;
     BANCOR_V3 = 6;
+    BALANCER_V3 = 7;
 }
 
 enum SystemState {

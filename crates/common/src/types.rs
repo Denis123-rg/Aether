@@ -56,6 +56,20 @@ pub fn known_token_decimals(addr: &Address) -> Option<u8> {
     }
 }
 
+/// Return the ERC20 `_balances` mapping storage slot for well-known mainnet
+/// tokens. Used by revm profit extraction (`simulate_rpc_with_erc20_profit`).
+/// Returns `None` for tokens without a known layout — callers fall back to
+/// success-only simulation without balance-delta profit measurement.
+pub fn erc20_balance_slot_for_token(addr: &Address) -> Option<U256> {
+    use addresses::{DAI, USDC, USDT, WETH};
+    match *addr {
+        WETH => Some(U256::from(3u64)),
+        USDC => Some(U256::from(9u64)),
+        DAI | USDT => Some(U256::from(2u64)),
+        _ => None,
+    }
+}
+
 /// Unique pool identifier
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct PoolId {
@@ -235,6 +249,23 @@ mod tests {
         let usdc_lower: Address =
             "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48".parse().expect("valid addr");
         assert_eq!(known_token_decimals(&usdc_lower), Some(6));
+    }
+
+    #[test]
+    fn erc20_balance_slot_weth() {
+        use addresses::WETH;
+        assert_eq!(erc20_balance_slot_for_token(&WETH), Some(U256::from(3u64)));
+    }
+
+    #[test]
+    fn erc20_balance_slot_usdc() {
+        use addresses::USDC;
+        assert_eq!(erc20_balance_slot_for_token(&USDC), Some(U256::from(9u64)));
+    }
+
+    #[test]
+    fn erc20_balance_slot_unknown_none() {
+        assert_eq!(erc20_balance_slot_for_token(&Address::ZERO), None);
     }
 
     #[test]

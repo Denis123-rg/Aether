@@ -119,7 +119,9 @@ func handleAdminPause(w http.ResponseWriter, r *http.Request) {
 	if reason == "" {
 		reason = "admin_pause"
 	}
-	globalAdminDeps.riskMgr.Pause(reason)
+	if err := globalAdminDeps.riskMgr.Pause(reason); err != nil {
+		slog.Error("admin pause transition failed", "reason", reason, "err", err)
+	}
 	globalSnapshotStore.Update(func(s *metrics.Snapshot) {
 		s.BreakerOpen = true
 		s.BreakerReason = reason

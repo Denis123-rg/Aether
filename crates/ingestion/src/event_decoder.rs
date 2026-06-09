@@ -4,6 +4,13 @@ use alloy::sol;
 use alloy::sol_types::SolEvent;
 use tracing::trace;
 
+// Factory-event coverage notes:
+// - Uniswap V2/V3, SushiSwap, Curve NG, and Balancer V3 `PoolRegistered` are
+//   decoded here for dynamic discovery.
+// - Balancer V2 and Bancor V3 do NOT emit factory events handled by this
+//   generic decoder; those protocols are discovered via dedicated listeners in
+//   `aether-discovery` (vault/registry scans). This is intentional — not a gap.
+
 // Compile-time ABI definitions via alloy sol! macro
 sol! {
     // Uniswap V2 / SushiSwap Sync event

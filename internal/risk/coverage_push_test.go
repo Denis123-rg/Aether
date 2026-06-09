@@ -54,7 +54,7 @@ func TestResume_Table(t *testing.T) {
 		{
 			name: "from paused",
 			setup: func(rm *RiskManager) {
-				rm.Pause("test")
+				_ = rm.Pause("test")
 			},
 			want: StateRunning,
 		},

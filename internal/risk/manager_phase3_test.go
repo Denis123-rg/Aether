@@ -4,7 +4,9 @@ import "testing"
 
 func TestResumeFromPaused(t *testing.T) {
 	rm := NewRiskManager(DefaultRiskConfig())
-	rm.Pause("test")
+	if err := rm.Pause("test"); err != nil {
+		t.Fatalf("pause: %v", err)
+	}
 	if rm.State() != StatePaused {
 		t.Fatalf("state: %s", rm.State())
 	}

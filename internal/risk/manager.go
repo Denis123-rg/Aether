@@ -404,10 +404,20 @@ func (rm *RiskManager) WinRate() float64 {
 // remote signer — becomes unavailable, so submission stops until an operator
 // (or a future health-driven resume) brings the system back. Pausing from a
 // terminal Halted state is a no-op transition but still counts the trip.
-func (rm *RiskManager) Pause(reason string) {
+func (rm *RiskManager) Pause(reason string) error {
 	rm.mu.Lock()
 	defer rm.mu.Unlock()
-	rm.notifyTrip(reason, StatePaused)
+	if rm.metricsObs != nil {
+		rm.metricsObs.OnCircuitBreakerTrip(reason)
+	}
+	if err := rm.state.Transition(StatePaused); err != nil {
+		slog.Error("pause transition failed", "reason", reason, "err", err)
+		return fmt.Errorf("pause: %w", err)
+	}
+	if rm.metricsObs != nil {
+		rm.metricsObs.OnStateChange(StatePaused)
+	}
+	return nil
 }
 
 // RecordTrade records a completed trade for daily tracking.

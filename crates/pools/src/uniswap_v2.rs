@@ -75,13 +75,7 @@ impl Pool for UniswapV2Pool {
     }
 
     fn encode_swap(&self, token_in: Address, _amount_in: U256, min_out: U256) -> Vec<u8> {
-        // Encode swap(uint amount0Out, uint amount1Out, address to, bytes data)
-        let (_amount0_out, _amount1_out) = if token_in == self.token0 {
-            (U256::ZERO, min_out)
-        } else {
-            (min_out, U256::ZERO)
-        };
-        Vec::new() // Placeholder - real encoding done in calldata builder
+        crate::swap_encode::encode_univ2_swap(self.token0, token_in, min_out, Address::ZERO)
     }
 
     fn liquidity_depth(&self) -> U256 {
@@ -109,6 +103,18 @@ mod tests {
             U256::from(5_000_000_000_000_000_000_000u128), // 5000 ETH (18 decimals)
         );
         pool
+    }
+
+    #[test]
+    fn encode_swap_produces_valid_selector() {
+        let pool = setup_pool();
+        let cd = pool.encode_swap(
+            pool.token1,
+            U256::from(1_000_000_000_000_000_000u128),
+            U256::from(1_000_000_000u64),
+        );
+        assert!(cd.len() >= 4);
+        assert_eq!(&cd[0..4], &[0x02, 0x2c, 0x0d, 0x9f]);
     }
 
     #[test]

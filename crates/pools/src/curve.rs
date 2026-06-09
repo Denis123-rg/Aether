@@ -9,6 +9,9 @@ use crate::Pool;
 ///
 /// Newton's method is used to solve for D and y, exactly matching the
 /// on-chain Solidity implementation in Curve's StableSwap contracts.
+///
+/// **Limitation:** Only 2-coin pools are supported. 3+ coin pools are not
+/// discovered by the factory listener and are excluded from the hot cache.
 #[derive(Debug, Clone)]
 pub struct CurvePool {
     pub address: Address,
@@ -275,8 +278,8 @@ impl Pool for CurvePool {
         }
     }
 
-    fn encode_swap(&self, _token_in: Address, _amount_in: U256, _min_out: U256) -> Vec<u8> {
-        Vec::new() // Placeholder - real encoding in calldata builder
+    fn encode_swap(&self, token_in: Address, amount_in: U256, min_out: U256) -> Vec<u8> {
+        crate::swap_encode::encode_curve_exchange(token_in, &self.tokens, amount_in, min_out)
     }
 
     fn liquidity_depth(&self) -> U256 {
