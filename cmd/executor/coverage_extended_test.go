@@ -148,7 +148,7 @@ func TestRequireAdminAuth_Table(t *testing.T) {
 		queryToken string
 		wantCode   int
 	}{
-		{"no token env passes through", "", "", "", http.StatusTeapot},
+		{"no token configured unauthorized", "", "", "", http.StatusUnauthorized},
 		{"valid header token", "secret", "secret", "", http.StatusTeapot},
 		{"valid query token", "secret", "", "secret", http.StatusTeapot},
 		{"missing token unauthorized", "secret", "", "", http.StatusUnauthorized},
@@ -157,11 +157,7 @@ func TestRequireAdminAuth_Table(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			if tc.tokenEnv == "" {
-				os.Unsetenv("AETHER_ADMIN_TOKEN")
-			} else {
-				t.Setenv("AETHER_ADMIN_TOKEN", tc.tokenEnv)
-			}
+			setAdminTokenForTest(tc.tokenEnv)
 
 			req := httptest.NewRequest(http.MethodPost, "/admin/pause", nil)
 			if tc.header != "" {

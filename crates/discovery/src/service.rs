@@ -98,7 +98,14 @@ impl PoolMetricsSource for OnChainMetricsSource {
                 );
                 PoolScoreInputs {
                     tvl_usd,
-                    volume_24h_usd: tvl_usd * 0.05,
+                    volume_24h_usd: {
+                        let vol_src = crate::volume::VolumeSource::from_config(
+                            "proxy",
+                            String::new(),
+                            None,
+                        );
+                        vol_src.volume_24h_usd(pool, token0, token1, protocol, tvl_usd)
+                    },
                     fee_bps,
                     slippage_estimate: slip.max(default_slip),
                 }

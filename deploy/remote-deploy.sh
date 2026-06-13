@@ -57,6 +57,14 @@ if ! ssh "$SSH_HOST" "test -f '$COMPOSE_DIR/.env'"; then
   echo "         then re-run. Bringing the stack up anyway (vars will be empty)." >&2
 fi
 
+# Generate admin token if missing on remote
+echo "==> ensuring AETHER_ADMIN_TOKEN on remote …"
+ssh "$SSH_HOST" "cd '$COMPOSE_DIR' && \
+  if ! grep -q '^AETHER_ADMIN_TOKEN=' .env 2>/dev/null; then \
+    echo \"AETHER_ADMIN_TOKEN=\$(openssl rand -hex 32)\" >> .env; \
+    echo 'generated AETHER_ADMIN_TOKEN in remote .env'; \
+  fi"
+
 # ── 4. Build + start detached ────────────────────────────────────────────
 echo "==> building + starting stack …"
 ssh "$SSH_HOST" "cd '$COMPOSE_DIR' && \

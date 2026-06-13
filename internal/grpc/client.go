@@ -127,6 +127,15 @@ func (c *Client) StreamArbs(ctx context.Context, minProfitETH float64) (pb.ArbSe
 	})
 }
 
+// SetEngineState pauses or resumes the Rust detection engine.
+func (c *Client) SetEngineState(ctx context.Context, paused bool) (*pb.SetStateResponse, error) {
+	state := pb.SystemState_RUNNING
+	if paused {
+		state = pb.SystemState_PAUSED
+	}
+	return c.SetState(ctx, state, "admin")
+}
+
 // SetState sends a control request to pause/resume/halt the Rust engine.
 func (c *Client) SetState(ctx context.Context, state pb.SystemState, reason string) (*pb.SetStateResponse, error) {
 	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)

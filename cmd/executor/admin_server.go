@@ -17,12 +17,18 @@ import (
 	"github.com/aether-arb/aether/internal/risk"
 )
 
+// engineStateController pauses/resumes the Rust detection engine.
+type engineStateController interface {
+	SetEngineState(ctx context.Context, paused bool) error
+}
+
 // adminDeps holds references wired into the admin HTTP server.
 type adminDeps struct {
 	riskMgr       *risk.RiskManager
 	snapshotStore *metrics.Store
 	discoveryURL  string
 	eventPub      adminEventPublisher
+	engineCtrl    engineStateController
 }
 
 // adminEventPublisher is the minimal surface the admin server needs from the
@@ -40,13 +46,14 @@ var (
 
 // startAdminServer starts the executor admin/metrics HTTP server on the
 // configured port (default 8080). Idempotent — only the first call binds.
-func startAdminServer(rm *risk.RiskManager, discoveryURL string, port int, pub adminEventPublisher) {
+func startAdminServer(rm *risk.RiskManager, discoveryURL string, port int, pub adminEventPublisher, engineCtrl engineStateController) {
 	adminServerOnce.Do(func() {
 		globalAdminDeps = adminDeps{
 			riskMgr:       rm,
 			snapshotStore: globalSnapshotStore,
 			discoveryURL:  discoveryURL,
 			eventPub:      pub,
+			engineCtrl:    engineCtrl,
 		}
 		if port <= 0 {
 			port = 8080
@@ -58,6 +65,7 @@ func startAdminServer(rm *risk.RiskManager, discoveryURL string, port int, pub a
 		mux.HandleFunc("/admin/pause", requireAdminAuth(handleAdminPause))
 		mux.HandleFunc("/admin/resume", requireAdminAuth(handleAdminResume))
 		mux.HandleFunc("/admin/set_min_profit", requireAdminAuth(handleSetMinProfit))
+		mux.HandleFunc("/admin/backrun/promote", requireAdminAuth(handleBackrunPromote))
 		mux.HandleFunc("/health", handleHealthJSON)
 
 		go func() {
@@ -77,9 +85,21 @@ func loadAdminPort() (int, string) {
 	cfg, err := config.LoadProductionConfig(path)
 	if err != nil {
 		slog.Warn("production.toml not loaded, using admin defaults", "path", path, "err", err)
-		return 8080, ""
+		port := 8080
+		if p := strings.TrimSpace(os.Getenv("ADMIN_HTTP_PORT")); p != "" {
+			if v, err := strconv.Atoi(p); err == nil && v > 0 {
+				port = v
+			}
+		}
+		return port, ""
 	}
-	return cfg.Executor.Port, cfg.Executor.DiscoveryTopPoolsURL
+	port := cfg.Executor.Port
+	if p := strings.TrimSpace(os.Getenv("ADMIN_HTTP_PORT")); p != "" {
+		if v, err := strconv.Atoi(p); err == nil && v > 0 {
+			port = v
+		}
+	}
+	return port, cfg.Executor.DiscoveryTopPoolsURL
 }
 
 func handleMetricsJSON(w http.ResponseWriter, r *http.Request) {
@@ -123,6 +143,11 @@ func handleAdminPause(w http.ResponseWriter, r *http.Request) {
 	if err := globalAdminDeps.riskMgr.Pause(reason); err != nil {
 		slog.Error("admin pause transition failed", "reason", reason, "err", err)
 	}
+	if globalAdminDeps.engineCtrl != nil {
+		if err := globalAdminDeps.engineCtrl.SetEngineState(r.Context(), true); err != nil {
+			slog.Warn("rust engine pause failed; local risk manager paused", "err", err)
+		}
+	}
 	globalSnapshotStore.Update(func(s *metrics.Snapshot) {
 		s.BreakerOpen = true
 		s.BreakerReason = reason
@@ -144,6 +169,11 @@ func handleAdminResume(w http.ResponseWriter, r *http.Request) {
 	if err := globalAdminDeps.riskMgr.Resume(); err != nil {
 		http.Error(w, err.Error(), http.StatusConflict)
 		return
+	}
+	if globalAdminDeps.engineCtrl != nil {
+		if err := globalAdminDeps.engineCtrl.SetEngineState(r.Context(), false); err != nil {
+			slog.Warn("rust engine resume failed; local risk manager resumed", "err", err)
+		}
 	}
 	globalSnapshotStore.Update(func(s *metrics.Snapshot) {
 		s.BreakerOpen = false
@@ -320,13 +350,14 @@ func extractAdminToken(r *http.Request) string {
 	return r.URL.Query().Get("token")
 }
 
-// requireAdminAuth wraps admin POST handlers with token auth when
-// AETHER_ADMIN_TOKEN is set. Unauthenticated requests receive 401.
+// requireAdminAuth wraps admin POST handlers with Bearer token auth.
+// All requests are rejected with 401 when no token is configured or the
+// presented token does not match.
 func requireAdminAuth(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		token := os.Getenv("AETHER_ADMIN_TOKEN")
+		token := configuredAdminToken
 		if token == "" {
-			next(w, r)
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
 		if extractAdminToken(r) != token {
@@ -335,6 +366,34 @@ func requireAdminAuth(next http.HandlerFunc) http.HandlerFunc {
 		}
 		next(w, r)
 	}
+}
+
+// handleBackrunPromote moves mempool backrun mode to live_only when the
+// confirmation token matches AETHER_BACKRUN_CONFIRM_TOKEN (in addition to
+// the standard admin Bearer token enforced by requireAdminAuth).
+func handleBackrunPromote(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	confirm := strings.TrimSpace(os.Getenv("AETHER_BACKRUN_CONFIRM_TOKEN"))
+	if confirm == "" {
+		http.Error(w, "promotion not configured", http.StatusForbidden)
+		return
+	}
+	got := strings.TrimSpace(r.Header.Get("X-Aether-Backrun-Confirm"))
+	if got == "" {
+		got = r.URL.Query().Get("confirm_token")
+	}
+	if got != confirm {
+		http.Error(w, "forbidden", http.StatusForbidden)
+		return
+	}
+	setBackrunMode(BackrunLiveOnly)
+	recordBackrunPromoted()
+	slog.Warn("mempool backrun promoted to live_only")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write([]byte(`{"status":"live_only"}`))
 }
 
 // signerHealthLoop periodically probes the remote signer and updates /health.

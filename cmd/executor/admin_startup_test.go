@@ -28,7 +28,7 @@ func TestStartAdminServer_BindsAndServes(t *testing.T) {
 	resetAdminGlobals()
 
 	rm := risk.NewRiskManager(risk.DefaultRiskConfig())
-	startAdminServer(rm, "", 0, nil)
+	startAdminServer(rm, "", 0, nil, nil)
 
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {

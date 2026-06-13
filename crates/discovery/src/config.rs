@@ -140,9 +140,26 @@ pub struct DiscoverySettings {
     /// When false (default), disable HTTP polling while the WebSocket listener is healthy.
     #[serde(default)]
     pub poll_when_ws_healthy: bool,
+    /// Volume source: subgraph | onchain | proxy (default proxy).
+    #[serde(default = "default_volume_source")]
+    pub volume_source: String,
+    /// Enable revm swap probe for custodial pools (Balancer V2, Bancor V3).
+    #[serde(default = "default_enabled")]
+    pub custodial_swap_validation_enabled: bool,
+    /// Max input amount for custodial swap probe (wei-scale float ETH).
+    #[serde(default = "default_custodial_max_amount")]
+    pub custodial_max_amount: f64,
     /// Validation mode: `revm` (fork simulation), `analytical` (math only), or `both`.
     #[serde(default = "default_validation_mode")]
     pub validation_mode: String,
+}
+
+fn default_volume_source() -> String {
+    "proxy".to_string()
+}
+
+fn default_custodial_max_amount() -> f64 {
+    1e18_f64
 }
 
 impl Default for DiscoverySettings {
@@ -159,6 +176,9 @@ impl Default for DiscoverySettings {
             poll_interval_secs: default_poll_interval(),
             ws_fallback_poll: default_ws_fallback_poll(),
             poll_when_ws_healthy: false,
+            volume_source: default_volume_source(),
+            custodial_swap_validation_enabled: default_enabled(),
+            custodial_max_amount: default_custodial_max_amount(),
             validation_mode: default_validation_mode(),
         }
     }

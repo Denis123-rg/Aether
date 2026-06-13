@@ -72,6 +72,10 @@ func run(ctx context.Context, cfg *Config, deps *Dependencies) error {
 		reconnectDelay = 5 * time.Second
 	}
 
+	if err := initAdminAuth(); err != nil {
+		return fmt.Errorf("admin auth: %w", err)
+	}
+
 	if !deps.SkipMigrations {
 		if dbURL := os.Getenv("DATABASE_URL"); dbURL != "" {
 			migrationsPath := config.MigrationsDir()
@@ -128,6 +132,7 @@ func run(ctx context.Context, cfg *Config, deps *Dependencies) error {
 
 	mempoolRiskCfg = LoadMempoolRiskConfig()
 	mempoolInflight = NewMempoolInflightTracker()
+	initBackrunMode()
 	slog.Info("mempool-backrun risk gates configured",
 		"min_profit_wei", mempoolRiskCfg.MinProfitWei.String(),
 		"max_tip_bps", mempoolRiskCfg.MaxTipShareBps,
@@ -135,7 +140,10 @@ func run(ctx context.Context, cfg *Config, deps *Dependencies) error {
 		"max_inflight_per_block", mempoolRiskCfg.MaxInflightPerTargetBlock,
 	)
 	if isShadowMode() {
-		slog.Warn("SHADOW MODE ENABLED — eth_sendBundle calls will be blocked for both block-driven and mempool-backrun bundles")
+		slog.Warn("SHADOW MODE ENABLED — block-driven eth_sendBundle calls will be blocked")
+	}
+	if getBackrunMode() == BackrunShadowOnly {
+		slog.Warn("BACKRUN SHADOW MODE — mempool backrun bundles will not be submitted", "mode", getBackrunMode())
 	}
 
 	liveBalance := NewLiveBalance()
@@ -194,7 +202,7 @@ func run(ctx context.Context, cfg *Config, deps *Dependencies) error {
 
 	if !deps.SkipAdminHTTP {
 		adminPort, discoveryURL := loadAdminPort()
-		startAdminServer(riskMgr, discoveryURL, adminPort, eventPublisher)
+		startAdminServer(riskMgr, discoveryURL, adminPort, eventPublisher, nil)
 	}
 
 	wg.Add(1)
@@ -214,6 +222,8 @@ func run(ctx context.Context, cfg *Config, deps *Dependencies) error {
 	if err != nil {
 		slog.Warn("could not create gRPC client, executor will start without arb stream", "addr", cfg.GRPCAddress, "err", err)
 	} else {
+		// Wire engine control into admin server after gRPC client is ready.
+		globalAdminDeps.engineCtrl = newGRPCEngineAdapter(grpcClient)
 		wg.Add(1)
 		go func() {
 			defer wg.Done()

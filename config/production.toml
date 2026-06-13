@@ -11,5 +11,19 @@ executor_metrics_url = "http://localhost:8080/metrics/json"
 url = "env:REDIS_URL"
 
 [executor]
+# Admin HTTP port (metrics JSON, /admin/*). Override with ADMIN_HTTP_PORT env.
 port = 8080
+# Set AETHER_ADMIN_TOKEN in production — required when AETHER_ENV=production.
 discovery_top_pools_url = "http://localhost:9093/top-pools"
+
+[monitor]
+# Dashboard HTTP port (distinct from executor admin to avoid :8080 conflicts).
+port = 8090
+
+[monitor.alerting]
+# Optional native alert integrations (secrets via env: prefix or deployment inject).
+pagerduty_routing_key = "env:PD_ROUTING_KEY"
+telegram_bot_token = "env:TELEGRAM_ALERT_BOT_TOKEN"
+telegram_chat_id = "env:TELEGRAM_ALERT_CHAT_ID"
+discord_webhook_url = "env:DISCORD_WEBHOOK_URL"
+alert_webhook_url = "env:ALERT_WEBHOOK_URL"

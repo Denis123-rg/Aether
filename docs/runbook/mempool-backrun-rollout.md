@@ -20,7 +20,7 @@ mempool tx → Rust mempool_pipeline → validate_backrun_rpc (revm fork sim)
             → BuildMempoolBackrunBundle → eth_sendBundle to builders
 ```
 
-The **shadow gate** (`AETHER_SHADOW=1`) intercepts between bundle build
+The **shadow gate** (`AETHER_BACKRUN_MODE=shadow_only`, legacy `AETHER_SHADOW=1`) intercepts between bundle build
 and submission. Everything upstream runs identically to live; only the
 HTTP POST to Flashbots is short-circuited. Each blocked bundle is written
 to disk as forensics JSON.
@@ -33,7 +33,7 @@ to disk as forensics JSON.
 
 - PRs #142, #143, #144 merged into `main` and deployed.
 - `feat/mempool-backrun-shadow-rollout` branch live on the staging box.
-- `AETHER_SHADOW=1` exported.
+- `AETHER_BACKRUN_MODE=shadow_only` exported (default).
 - `aether_executor_bundles_shadow_blocked_total{source="mempool_backrun"}`
   series visible at `/metrics` (pre-touched at boot — should read `0`).
 - Ops on standby with shutdown command on hot key.
@@ -41,7 +41,7 @@ to disk as forensics JSON.
 **Configuration:**
 
 ```bash
-export AETHER_SHADOW=1
+export AETHER_BACKRUN_MODE=shadow_only
 export AETHER_MEMPOOL_MIN_PROFIT_WEI=1000000000000000      # 1e15 wei = 0.001 ETH
 export AETHER_MEMPOOL_MAX_TIP_BPS=9500                     # 95%
 export AETHER_MEMPOOL_VICTIM_FRESHNESS_MS=500
@@ -82,7 +82,11 @@ before retry.
 **Configuration delta from Stage A:**
 
 ```bash
-unset AETHER_SHADOW                                        # ← go live
+# Promote to live (requires AETHER_BACKRUN_CONFIRM_TOKEN + admin Bearer token):
+# curl -X POST -H "Authorization: Bearer $AETHER_ADMIN_TOKEN" \
+#   -H "X-Aether-Backrun-Confirm: $AETHER_BACKRUN_CONFIRM_TOKEN" \
+#   http://localhost:8080/admin/backrun/promote
+export AETHER_BACKRUN_MODE=live_only
 export AETHER_MEMPOOL_MIN_PROFIT_WEI=50000000000000000     # 5e16 wei = 0.05 ETH (50× Stage A)
 export AETHER_MEMPOOL_MAX_TIP_BPS=8500                     # 85% — leave margin for infra cost
 export AETHER_MEMPOOL_VICTIM_FRESHNESS_MS=300              # 300 ms — tighter staleness

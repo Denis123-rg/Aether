@@ -18,6 +18,9 @@ poll_interval_secs = 12
 ws_fallback_poll = true
 # Validation: both (analytical pre-filter + revm fork), revm, or analytical
 validation_mode = "both"
+volume_source = "proxy"
+custodial_swap_validation_enabled = true
+custodial_max_amount = 1e18
 
 [scoring]
 # score = sqrt(tvl) * volume_24h * (1 - fee) * (1 - slippage)
@@ -66,6 +69,20 @@ protocol = "curve"
 address = "0xF18056Bbd9e56aC88eefA885588501c1806Be1D8"
 fee_bps = 4
 event = "PlainPoolDeployed"
+
+[[factories]]
+name = "balancer_v2_vault"
+protocol = "balancer_v2"
+address = "0xBA12222222228d8Ba445958a75a0704d566BF2C8"
+fee_bps = 10
+event = "PoolRegistered"
+
+[[factories]]
+name = "bancor_v3_network"
+protocol = "bancor_v3"
+address = "0xeEF417e1D5CC832e619ae18D2F140De2999dD4fB"
+fee_bps = 30
+event = "PairCreated"
 
 [the_graph]
 # Optional subgraph endpoint for TVL / volume enrichment.

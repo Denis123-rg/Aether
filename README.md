@@ -167,7 +167,7 @@ aether/
 │   ├── executor/                    # Bundle construction & multi-builder submission
 │   ├── risk/                        # Risk management & circuit breakers
 │   ├── monitor/                     # Prometheus metrics, dashboard, Slack alerter
-│   ├── pooldiscovery/               # Pool discovery + qualification tool
+│   ├── discovery/                   # Rust pool discovery (aether-discovery)
 │   └── reconciler/                  # Mempool prediction outcome reconciler
 │
 ├── contracts/                       # ── Solidity ──

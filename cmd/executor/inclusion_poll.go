@@ -173,6 +173,8 @@ func resolveInclusion(p pendingBundle, ledger db.Ledger, included bool, blockNum
 			})
 		}
 		rm.RecordTrade(new(big.Int), p.profitWei)
+	} else if p.source == SourceMempoolBackrun {
+		recordBackrunRevert()
 	}
 
 	slog.Info("bundle inclusion resolved",

@@ -1,0 +1,44 @@
+name: E2E
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - 'cmd/**'
+      - 'internal/**'
+      - 'tests/e2e/**'
+      - 'deploy/docker/**'
+      - '.github/workflows/e2e.yml'
+
+jobs:
+  e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+
+      - name: Start E2E stack
+        run: |
+          if [ -f deploy/docker/docker-compose.e2e.yaml ]; then
+            docker compose -f deploy/docker/docker-compose.e2e.yaml up -d --build --wait
+          else
+            echo "docker-compose.e2e.yaml not found, running tests against localhost defaults"
+          fi
+
+      - name: Run E2E tests
+        env:
+          AETHER_E2E_REQUIRE_SERVICES: "1"
+          AETHER_ADMIN_TOKEN: "e2e-test-token"
+        run: go test -v -count=1 ./tests/e2e/...
+
+      - name: Tear down
+        if: always()
+        run: |
+          if [ -f deploy/docker/docker-compose.e2e.yaml ]; then
+            docker compose -f deploy/docker/docker-compose.e2e.yaml down -v
+          fi

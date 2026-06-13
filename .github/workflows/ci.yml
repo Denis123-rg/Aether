@@ -53,6 +53,12 @@ jobs:
       - name: Vet
         run: go vet ./...
 
+      - name: Factory coverage validation
+        run: bash scripts/validate_factory_coverage.sh
+
+      - name: Production hardening checks
+        run: bash scripts/test_production_hardening.sh
+
       - name: Tests (with coverage)
         run: go test ./... -count=1 -coverprofile=coverage.out
 

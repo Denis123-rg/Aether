@@ -11,14 +11,28 @@ import (
 
 func withAdminToken(t *testing.T, token string) func() {
 	t.Helper()
-	prev := os.Getenv("AETHER_ADMIN_TOKEN")
-	t.Setenv("AETHER_ADMIN_TOKEN", token)
+	prev := configuredAdminToken
+	setAdminTokenForTest(token)
 	return func() {
-		if prev == "" {
-			os.Unsetenv("AETHER_ADMIN_TOKEN")
-		} else {
-			os.Setenv("AETHER_ADMIN_TOKEN", prev)
-		}
+		setAdminTokenForTest(prev)
+	}
+}
+
+func TestInitAdminAuth_ProductionWithoutToken_Fatal(t *testing.T) {
+	t.Setenv("AETHER_ENV", "production")
+	t.Setenv("AETHER_ADMIN_TOKEN", "")
+	setAdminTokenForTest("")
+	if err := initAdminAuth(); err == nil {
+		t.Fatal("expected error in production without token")
+	}
+}
+
+func TestInitAdminAuth_DevWithoutToken_Warns(t *testing.T) {
+	t.Setenv("AETHER_ENV", "development")
+	t.Setenv("AETHER_ADMIN_TOKEN", "")
+	setAdminTokenForTest("")
+	if err := initAdminAuth(); err != nil {
+		t.Fatalf("dev mode should start: %v", err)
 	}
 }
 
@@ -46,25 +60,8 @@ func TestExtractAdminToken_BearerCaseInsensitive(t *testing.T) {
 	}
 }
 
-func TestExtractAdminToken_QueryParam(t *testing.T) {
-	req := httptest.NewRequest(http.MethodPost, "/admin/pause?token=query-secret", nil)
-	if got := extractAdminToken(req); got != "query-secret" {
-		t.Fatalf("got %q", got)
-	}
-}
-
-func TestExtractAdminToken_HeaderPrecedence(t *testing.T) {
-	req := httptest.NewRequest(http.MethodPost, "/admin/pause?token=query", nil)
-	req.Header.Set("X-Aether-Admin-Token", "header-wins")
-	if got := extractAdminToken(req); got != "header-wins" {
-		t.Fatalf("got %q", got)
-	}
-}
-
-func TestRequireAdminAuth_NoTokenConfigured_Allows(t *testing.T) {
+func TestRequireAdminAuth_NoTokenConfigured_401(t *testing.T) {
 	resetAdminGlobals()
-	rm := risk.NewRiskManager(risk.DefaultRiskConfig())
-	globalAdminDeps.riskMgr = rm
 	cleanup := withAdminToken(t, "")
 	defer cleanup()
 
@@ -72,7 +69,7 @@ func TestRequireAdminAuth_NoTokenConfigured_Allows(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/admin/pause", nil)
 	w := httptest.NewRecorder()
 	handler(w, req)
-	if w.Code != http.StatusOK {
+	if w.Code != http.StatusUnauthorized {
 		t.Fatalf("status %d", w.Code)
 	}
 }
@@ -91,24 +88,6 @@ func TestRequireAdminAuth_ValidBearer_Allows(t *testing.T) {
 	handler(w, req)
 	if w.Code != http.StatusOK {
 		t.Fatalf("status %d body %s", w.Code, w.Body.String())
-	}
-}
-
-func TestRequireAdminAuth_ValidXAether_Allows(t *testing.T) {
-	resetAdminGlobals()
-	rm := risk.NewRiskManager(risk.DefaultRiskConfig())
-	_ = rm.Pause("auth-test")
-	globalAdminDeps.riskMgr = rm
-	cleanup := withAdminToken(t, "x-token")
-	defer cleanup()
-
-	handler := requireAdminAuth(handleAdminResume)
-	req := httptest.NewRequest(http.MethodPost, "/admin/resume", nil)
-	req.Header.Set("X-Aether-Admin-Token", "x-token")
-	w := httptest.NewRecorder()
-	handler(w, req)
-	if w.Code != http.StatusOK {
-		t.Fatalf("status %d", w.Code)
 	}
 }
 
@@ -141,6 +120,19 @@ func TestRequireAdminAuth_WrongToken_401(t *testing.T) {
 	}
 }
 
+func TestMetricsJSON_RemainsUnauthenticated(t *testing.T) {
+	resetAdminGlobals()
+	cleanup := withAdminToken(t, "secret")
+	defer cleanup()
+
+	req := httptest.NewRequest(http.MethodGet, "/metrics/json", nil)
+	w := httptest.NewRecorder()
+	handleMetricsJSON(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status %d", w.Code)
+	}
+}
+
 func TestRequireAdminAuth_SetMinProfit_WithBearer(t *testing.T) {
 	resetAdminGlobals()
 	rm := risk.NewRiskManager(risk.DefaultRiskConfig())
@@ -159,4 +151,16 @@ func TestRequireAdminAuth_SetMinProfit_WithBearer(t *testing.T) {
 	if rm.MinProfitETH() != 0.002 {
 		t.Fatalf("min profit %f", rm.MinProfitETH())
 	}
+}
+
+func TestInitAdminAuth_ProductionWithToken_OK(t *testing.T) {
+	t.Setenv("AETHER_ENV", "production")
+	t.Setenv("AETHER_ADMIN_TOKEN", "prod-secret")
+	if err := initAdminAuth(); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if configuredAdminToken != "prod-secret" {
+		t.Fatalf("token not stored")
+	}
+	os.Unsetenv("AETHER_ADMIN_TOKEN")
 }

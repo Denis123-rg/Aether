@@ -285,6 +285,11 @@ func processArb(
 	)
 	defer span.End()
 
+	if sourceLbl == SourceMempoolBackrun && !shouldProcessMempoolBackrun() {
+		span.SetAttributes(attribute.String("outcome", "backrun_off"))
+		return false, nil
+	}
+
 	profitWei := new(big.Int).SetBytes(arb.NetProfitWei)
 	tradeValueWei := new(big.Int).SetBytes(arb.FlashloanAmount)
 
@@ -418,13 +423,30 @@ func processArb(
 	bundleID := db.BundleIDFor(arbDBID, targetBlock)
 	signedTxHex := signedTxsHex(bundle)
 
-	// Shadow mode: the bundle is fully built and signed, but we skip the
-	// network submission. Used by historical replay + pre-prod measurement
-	// to exercise the full pipeline without touching Flashbots.
-	if isShadowMode() {
+	// Shadow / live gating: block-driven honours AETHER_SHADOW; mempool
+	// backrun uses AETHER_BACKRUN_MODE (off | shadow_only | shadow_and_live | live_only).
+	shadowOnly := false
+	if sourceLbl == SourceMempoolBackrun {
+		shadowOnly = shouldShadowMempoolBackrun() && !shouldSubmitMempoolBackrun()
+		if shouldShadowMempoolBackrun() && shouldSubmitMempoolBackrun() {
+			recordBackrunShadow(sourceLbl)
+			profitEth := weiToEth(profitWei)
+			if err := dumpMempoolShadowBundle(arb, bundle, gasFees, tipSharePct, mempoolDecision); err != nil {
+				slog.WarnContext(ctx, "mempool shadow forensics dump failed", "arb_id", arb.Id, "err", err)
+			}
+			_ = profitEth
+		}
+	} else {
+		shadowOnly = shouldShadowBlockDriven()
+	}
+
+	if shadowOnly {
 		recordEndToEndLatency(receivedAt)
 		recordShadowBundle()
 		recordShadowBlocked(sourceLbl)
+		if sourceLbl == SourceMempoolBackrun {
+			recordBackrunShadow(sourceLbl)
+		}
 		profitEth := weiToEth(profitWei)
 		slog.InfoContext(ctx, "shadow bundle built, skipping submission",
 			"arb_id", arb.Id,
@@ -461,6 +483,9 @@ func processArb(
 
 	// Submit to all builders
 	recordEndToEndLatency(receivedAt)
+	if sourceLbl == SourceMempoolBackrun {
+		recordBackrunLive(sourceLbl)
+	}
 	recordBundleSubmitted(sourceLbl)
 	var results []SubmissionResult
 	if routingMode == "select" && builderSelector != nil {
@@ -756,6 +781,7 @@ func recordBundleMetrics(source string, profitWei *big.Int, receivedAt time.Time
 			if r.Success && included && !profitCredited {
 				out.ProfitWei = profitWei
 				profitCredited = true
+				recordABProvisionalCredit(r.Builder)
 			}
 			builderSelector.Record(r.Builder, out)
 		}

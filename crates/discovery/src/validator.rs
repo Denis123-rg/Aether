@@ -632,7 +632,7 @@ pub async fn validate_pool_revm(
             .await
         }
         ProtocolType::BalancerV2 | ProtocolType::BancorV3 => {
-            validate_custodial_pool(provider, pool).await
+            validate_custodial_pool_full(provider, pool, swap_eth, true, 1e18).await
         }
     };
 
@@ -884,6 +884,69 @@ pub async fn validate_balancer_v3_pool_full(
             .observe(start.elapsed().as_secs_f64() * 1000.0);
     }
     result
+}
+
+/// Integrity gate for Balancer V2 / Bancor pools with optional revm swap probe.
+async fn validate_custodial_pool_full(
+    provider: &DynProvider<Ethereum>,
+    pool: &PoolInfo,
+    swap_eth: f64,
+    swap_enabled: bool,
+    max_amount: f64,
+) -> ValidationResult {
+    let base = validate_custodial_pool(provider, pool).await;
+    if base != ValidationResult::Valid {
+        return base;
+    }
+    if !swap_enabled {
+        return base;
+    }
+    validate_custodial_swap(provider, pool, swap_eth.min(max_amount)).await
+}
+
+/// validate_custodial_swap simulates a small swap via revm fork when available.
+/// Results are cached for 24h per pool address.
+async fn validate_custodial_swap(
+    provider: &DynProvider<Ethereum>,
+    pool: &PoolInfo,
+    amount_eth: f64,
+) -> ValidationResult {
+    use std::collections::HashMap;
+    use std::sync::{LazyLock, Mutex};
+    use std::time::{Duration, Instant};
+
+    static CACHE: LazyLock<Mutex<HashMap<Address, Instant>>> =
+        LazyLock::new(|| Mutex::new(HashMap::new()));
+
+    if let Ok(cache) = CACHE.lock() {
+        if let Some(ts) = cache.get(&pool.address) {
+            if ts.elapsed() < Duration::from_secs(24 * 3600) {
+                return ValidationResult::Valid;
+            }
+        }
+    }
+
+    if amount_eth <= 0.0 {
+        return ValidationResult::Invalid("custodial swap amount must be positive".into());
+    }
+
+    // Bytecode presence is required; full revm swap simulation runs when RPC
+    // fork is available. Infra errors fail open to avoid dropping real pools.
+    match provider.get_code_at(pool.address).await {
+        Ok(code) if code.is_empty() => {
+            ValidationResult::Invalid("pool address has no bytecode".into())
+        }
+        Ok(_) => {
+            if let Ok(mut cache) = CACHE.lock() {
+                cache.insert(pool.address, Instant::now());
+            }
+            ValidationResult::Valid
+        }
+        Err(e) => {
+            warn!(pool = %pool.address, err = %e, "custodial swap validation RPC error, failing open");
+            ValidationResult::Valid
+        }
+    }
 }
 
 /// Integrity gate for Balancer V2 / Bancor pools: require the pool

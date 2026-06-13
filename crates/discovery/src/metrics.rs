@@ -18,6 +18,8 @@ pub struct DiscoveryMetrics {
     /// `dex` ∈ {uniswap_v2, uniswap_v3, sushiswap, curve, balancer_v2,
     /// bancor_v3}, `result` ∈ {valid, low_liquidity, invalid}.
     pub revm_validations: CounterVec,
+    pub volume_fetch_errors: Counter,
+    pub volume_fetch_duration_ms: Histogram,
 }
 
 impl DiscoveryMetrics {
@@ -53,6 +55,19 @@ impl DiscoveryMetrics {
             &["dex", "result"],
         )
         .expect("discovery_revm_validations_total");
+        let volume_fetch_errors = Counter::with_opts(Opts::new(
+            "aether_discovery_volume_fetch_errors_total",
+            "Volume provider fetch failures",
+        ))
+        .expect("discovery_volume_fetch_errors");
+        let volume_fetch_duration_ms = Histogram::with_opts(
+            HistogramOpts::new(
+                "aether_discovery_volume_fetch_duration_ms",
+                "Volume provider fetch duration in milliseconds",
+            )
+            .buckets(vec![1.0, 5.0, 10.0, 25.0, 50.0, 100.0, 250.0, 500.0]),
+        )
+        .expect("discovery_volume_fetch_duration_ms");
 
         registry
             .register(Box::new(events_received.clone()))
@@ -69,6 +84,12 @@ impl DiscoveryMetrics {
         registry
             .register(Box::new(revm_validations.clone()))
             .expect("register discovery_revm_validations_total");
+        registry
+            .register(Box::new(volume_fetch_errors.clone()))
+            .expect("register discovery_volume_fetch_errors");
+        registry
+            .register(Box::new(volume_fetch_duration_ms.clone()))
+            .expect("register discovery_volume_fetch_duration_ms");
 
         Arc::new(Self {
             events_received,
@@ -76,6 +97,8 @@ impl DiscoveryMetrics {
             pools_rejected,
             validation_latency_ms,
             revm_validations,
+            volume_fetch_errors,
+            volume_fetch_duration_ms,
         })
     }
 

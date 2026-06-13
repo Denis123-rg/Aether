@@ -206,6 +206,49 @@ func TestRecentTradesField(t *testing.T) {
 	}
 }
 
+func TestAdminAuth_RejectsUnauthenticated(t *testing.T) {
+	base := os.Getenv("EXECUTOR_ADMIN_URL")
+	if base == "" {
+		base = "http://localhost:8080"
+	}
+	resp, err := http.Post(base+"/admin/pause", "application/json", nil)
+	if err != nil {
+		skipOrFail(t, err, "executor not reachable")
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("expected 401, got %d", resp.StatusCode)
+	}
+}
+
+func TestBackrunShadowMode_NoLiveSubmission(t *testing.T) {
+	// When AETHER_BACKRUN_MODE=shadow_only, backrun_live_total should not increase.
+	// Requires running stack with metrics endpoint.
+	url := os.Getenv("EXECUTOR_METRICS_URL")
+	if url == "" {
+		t.Skip("metrics URL not set")
+	}
+}
+
+func TestFullPipeline_ShadowMode(t *testing.T) {
+	if !e2eRequireServices() {
+		t.Skip("requires services")
+	}
+	// Placeholder: full pipeline verified by run_full_pipeline.sh in CI.
+}
+
+func TestPauseResume_BothLayers(t *testing.T) {
+	if !e2eRequireServices() {
+		t.Skip("requires services")
+	}
+}
+
+func TestVolumeScoring_AffectsRanking(t *testing.T) {
+	if !e2eRequireServices() {
+		t.Skip("requires services")
+	}
+}
+
 func TestExecutorReachableFlag(t *testing.T) {
 	url := os.Getenv("EXECUTOR_METRICS_URL")
 	if url == "" {

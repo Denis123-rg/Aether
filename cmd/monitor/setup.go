@@ -31,9 +31,12 @@ func runMonitorSetup() MonitorSetup {
 	if metricsPort == "" {
 		metricsPort = "9090"
 	}
-	dashboardPort := os.Getenv("DASHBOARD_PORT")
+	dashboardPort := os.Getenv("MONITOR_HTTP_PORT")
 	if dashboardPort == "" {
-		dashboardPort = "8080"
+		dashboardPort = os.Getenv("DASHBOARD_PORT")
+	}
+	if dashboardPort == "" {
+		dashboardPort = "8090"
 	}
 
 	metrics := NewMetrics()

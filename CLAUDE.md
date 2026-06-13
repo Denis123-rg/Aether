@@ -154,7 +154,7 @@ aether/
 │   │   ├── dashboard.go          # HTTP dashboard server
 │   │   └── alerter.go            # Alert dispatch (PagerDuty/Telegram/Discord)
 │   │
-│   ├── pooldiscovery/            # Factory-event pool discovery & qualification
+│   ├── discovery/                # Rust factory-event pool discovery (crates/discovery)
 │   └── reconciler/               # Mempool prediction-vs-actual reconciliation
 │
 ├── internal/                     # ── Go Shared Packages ──
@@ -265,7 +265,7 @@ A second arb source alongside block-driven cyclic detection. `ArbSource` (proto)
 - `rescue()` — emergency token withdrawal, `onlyOwner` only.
 - Protocol constants: `UNISWAP_V2=1, UNISWAP_V3=2, SUSHISWAP=3, CURVE=4, BALANCER_V2=5, BANCOR_V3=6`.
 
-### 8. Risk Management (`cmd/risk/`)
+### 8. Risk Management (`internal/risk/` + `cmd/executor/`)
 
 - **System States**: `Running → Degraded → Paused → Halted` (manual reset to resume from Halted).
 - **Circuit Breakers**: Gas >300 gwei → HALT, 10 consecutive reverts in 10m → PAUSE, daily loss >0.5 ETH → HALT, ETH balance <0.1 ETH → HALT, node latency >500ms → DEGRADE, bundle miss rate >80%/1h → ALERT.

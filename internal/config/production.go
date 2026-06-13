@@ -13,9 +13,25 @@ import (
 
 // ProductionConfig is the top-level production.toml structure.
 type ProductionConfig struct {
-	Telegram TelegramConfig `toml:"telegram"`
-	Redis    RedisConfig    `toml:"redis"`
+	Telegram TelegramConfig     `toml:"telegram"`
+	Redis    RedisConfig        `toml:"redis"`
 	Executor ExecutorHTTPConfig `toml:"executor"`
+	Monitor  MonitorConfig      `toml:"monitor"`
+}
+
+// MonitorConfig holds monitor service HTTP settings.
+type MonitorConfig struct {
+	Port      int            `toml:"port"`
+	Alerting  MonitorAlerting `toml:"alerting"`
+}
+
+// MonitorAlerting holds optional native alert channel credentials.
+type MonitorAlerting struct {
+	PagerDutyRoutingKey string `toml:"pagerduty_routing_key"`
+	TelegramBotToken    string `toml:"telegram_bot_token"`
+	TelegramChatID      string `toml:"telegram_chat_id"`
+	DiscordWebhookURL   string `toml:"discord_webhook_url"`
+	AlertWebhookURL     string `toml:"alert_webhook_url"`
 }
 
 // TelegramConfig holds telebot settings.
@@ -69,6 +85,9 @@ func applyProductionDefaults(cfg *ProductionConfig) {
 	if cfg.Executor.Port <= 0 {
 		cfg.Executor.Port = 8080
 	}
+	if cfg.Monitor.Port <= 0 {
+		cfg.Monitor.Port = 8090
+	}
 	if cfg.Telegram.ExecutorMetricsURL == "" {
 		cfg.Telegram.ExecutorMetricsURL = "http://localhost:8080/metrics/json"
 	}
@@ -104,6 +123,25 @@ func resolveEnvFields(cfg *ProductionConfig) {
 	}
 	if strings.HasPrefix(cfg.Redis.URL, "env:") {
 		cfg.Redis.URL = os.Getenv(strings.TrimPrefix(cfg.Redis.URL, "env:"))
+	}
+	resolveMonitorEnv(&cfg.Monitor)
+}
+
+func resolveMonitorEnv(m *MonitorConfig) {
+	if strings.HasPrefix(m.Alerting.PagerDutyRoutingKey, "env:") {
+		m.Alerting.PagerDutyRoutingKey = os.Getenv(strings.TrimPrefix(m.Alerting.PagerDutyRoutingKey, "env:"))
+	}
+	if strings.HasPrefix(m.Alerting.TelegramBotToken, "env:") {
+		m.Alerting.TelegramBotToken = os.Getenv(strings.TrimPrefix(m.Alerting.TelegramBotToken, "env:"))
+	}
+	if strings.HasPrefix(m.Alerting.TelegramChatID, "env:") {
+		m.Alerting.TelegramChatID = os.Getenv(strings.TrimPrefix(m.Alerting.TelegramChatID, "env:"))
+	}
+	if strings.HasPrefix(m.Alerting.DiscordWebhookURL, "env:") {
+		m.Alerting.DiscordWebhookURL = os.Getenv(strings.TrimPrefix(m.Alerting.DiscordWebhookURL, "env:"))
+	}
+	if strings.HasPrefix(m.Alerting.AlertWebhookURL, "env:") {
+		m.Alerting.AlertWebhookURL = os.Getenv(strings.TrimPrefix(m.Alerting.AlertWebhookURL, "env:"))
 	}
 }
 

@@ -12,12 +12,13 @@ import (
 func TestRunMonitorSetup_DefaultPorts(t *testing.T) {
 	os.Unsetenv("METRICS_PORT")
 	os.Unsetenv("DASHBOARD_PORT")
+	os.Unsetenv("MONITOR_HTTP_PORT")
 
 	setup := runMonitorSetup()
 	if setup.Metrics == nil || setup.Dashboard == nil || setup.Alerter == nil {
 		t.Fatal("nil component")
 	}
-	if setup.MetricsPort != "9090" || setup.DashboardPort != "8080" {
+	if setup.MetricsPort != "9090" || setup.DashboardPort != "8090" {
 		t.Fatalf("ports = %q / %q", setup.MetricsPort, setup.DashboardPort)
 	}
 	if setup.ShutdownTracer == nil {

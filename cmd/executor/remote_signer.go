@@ -41,7 +41,7 @@ var errSignerUnavailable = errors.New("remote signer unavailable")
 // searcher private key never enters the executor's address space — only the
 // 32-byte signing digest crosses the socket.
 type RemoteSigner struct {
-	client    *signer.Client
+	client    signer.Signer
 	address   common.Address
 	ethSigner types.Signer
 }
@@ -57,7 +57,7 @@ func NewRemoteSigner(socketPath string, chainID int64) (*RemoteSigner, error) {
 	if chainID <= 0 {
 		return nil, fmt.Errorf("remote signer: chain id must be positive, got %d", chainID)
 	}
-	client := signer.Dial(socketPath)
+	client := signer.DialAuto(socketPath)
 	addrHex, err := client.Address()
 	if err != nil {
 		return nil, fmt.Errorf("%w: address probe on %s: %v", errSignerUnavailable, socketPath, err)

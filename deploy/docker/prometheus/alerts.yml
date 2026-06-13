@@ -157,3 +157,16 @@ groups:
           summary: "Aether risk manager rejecting >1 arb/sec"
           description: "Risk rejection rate is {{ printf \"%.2f\" $value }} rejections/sec over a 5m window, sustained for 10m. Investigate circuit breaker state, gas, and position limits."
           runbook_url: "https://github.com/Pablosinyores/aether/blob/main/docs/runbooks/AetherRiskRejectionStorm.md"
+
+      - alert: AetherABSelectorCorrectionRateHigh
+        expr: |
+          sum(rate(aether_executor_ab_selector_corrections_total[1h]))
+          /
+          clamp_min(sum(rate(aether_executor_ab_selector_credits_total{status="provisional"}[1h])), 1e-9) > 0.01
+        for: 1h
+        labels:
+          severity: warning
+        annotations:
+          summary: "A/B builder attribution corrections exceed 1% over 1h"
+          description: "Provisional builder credits are being corrected by inclusion poll more than 1% of the time. Review fan-out vs select routing."
+          runbook_url: "https://github.com/Pablosinyores/aether/blob/main/docs/runbook/ab-selector-attribution.md"
