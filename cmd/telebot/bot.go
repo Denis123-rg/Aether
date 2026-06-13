@@ -36,6 +36,7 @@ type TeleBot struct {
 	mu              sync.Mutex
 	dashboardMsgID  map[int64]int // chatID → messageID for edit-in-place
 	refreshCh       chan struct{}
+	resetPending    map[int64]bool
 }
 
 // NewTeleBot creates a configured telebot instance.
@@ -64,6 +65,7 @@ func NewTeleBot(
 		redisState:    state,
 		dashboardMsgID: make(map[int64]int),
 		refreshCh:     make(chan struct{}, 1),
+		resetPending:  make(map[int64]bool),
 	}
 
 	sub := events.NewSubscriber(redisURL, state, bot.triggerRefresh)
@@ -159,6 +161,10 @@ func (b *TeleBot) handleUpdate(ctx context.Context, update tgbotapi.Update) {
 		b.handlePause(ctx, chatID)
 	case "resume":
 		b.handleResume(ctx, chatID)
+	case "reset":
+		b.handleReset(ctx, chatID)
+	case "reset_confirm":
+		b.handleResetConfirm(ctx, chatID)
 	case "set_min_profit":
 		b.handleSetMinProfit(ctx, chatID, args)
 	case "health":
@@ -278,7 +284,7 @@ func (b *TeleBot) sendTrades(ctx context.Context, chatID int64) {
 
 func (b *TeleBot) handlePause(ctx context.Context, chatID int64) {
 	if err := b.adminClient.Pause(ctx); err != nil {
-		b.reply(chatID, fmt.Sprintf("❌ Pause failed: %v", err))
+		b.reply(chatID, formatAdminError("Pause", err))
 		return
 	}
 	b.reply(chatID, "⏸ Bundle submission *paused*")
@@ -287,11 +293,53 @@ func (b *TeleBot) handlePause(ctx context.Context, chatID int64) {
 
 func (b *TeleBot) handleResume(ctx context.Context, chatID int64) {
 	if err := b.adminClient.Resume(ctx); err != nil {
-		b.reply(chatID, fmt.Sprintf("❌ Resume failed: %v", err))
+		b.reply(chatID, formatAdminError("Resume", err))
 		return
 	}
 	b.reply(chatID, "▶️ Bundle submission *resumed*")
 	b.triggerRefresh()
+}
+
+func (b *TeleBot) handleReset(ctx context.Context, chatID int64) {
+	b.mu.Lock()
+	b.resetPending[chatID] = true
+	b.mu.Unlock()
+	b.reply(chatID, "⚠️ System is *Halted*. Type /reset_confirm to reset daily counters and resume. Use only after investigating the halt reason.")
+}
+
+func (b *TeleBot) handleResetConfirm(ctx context.Context, chatID int64) {
+	b.mu.Lock()
+	pending := b.resetPending[chatID]
+	delete(b.resetPending, chatID)
+	b.mu.Unlock()
+	if !pending {
+		b.reply(chatID, "No pending reset. Send /reset first.")
+		return
+	}
+	if err := b.adminClient.Reset(ctx); err != nil {
+		b.reply(chatID, formatAdminError("Reset", err))
+		return
+	}
+	b.reply(chatID, "✅ System reset from *Halted* — now *Running*")
+	b.triggerRefresh()
+}
+
+func formatAdminError(action string, err error) string {
+	msg := err.Error()
+	if strings.Contains(msg, "409") || strings.Contains(msg, "Conflict") {
+		if strings.Contains(msg, "Halted") {
+			return fmt.Sprintf("❌ Cannot %s: system is halted. Use /reset if appropriate.", strings.ToLower(action))
+		}
+		return fmt.Sprintf("❌ Cannot %s: %s", strings.ToLower(action), friendlyConflict(msg))
+	}
+	return fmt.Sprintf("❌ %s failed: %v", action, err)
+}
+
+func friendlyConflict(msg string) string {
+	if strings.Contains(msg, "already") || strings.Contains(msg, "invalid transition") {
+		return "state transition not allowed in current state"
+	}
+	return msg
 }
 
 func (b *TeleBot) handleSetMinProfit(ctx context.Context, chatID int64, args string) {

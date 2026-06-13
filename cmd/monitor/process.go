@@ -4,6 +4,9 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"os"
+	"os/signal"
+	"syscall"
 	"time"
 )
 
@@ -36,8 +39,18 @@ func runMonitorService(ctx context.Context) error {
 	slog.Info("dashboard endpoint", "url", fmt.Sprintf("http://localhost:%s/", setup.DashboardPort))
 	setup.Alerter.Send(SeverityInfo, "System Started", "Aether monitor service started")
 
+	runCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+	defer signal.Stop(sigCh)
+
 	select {
-	case <-ctx.Done():
+	case <-runCtx.Done():
+		return nil
+	case sig := <-sigCh:
+		slog.Info("received signal, shutting down monitor", "signal", sig.String())
+		cancel()
 		return nil
 	case err := <-errCh:
 		return err

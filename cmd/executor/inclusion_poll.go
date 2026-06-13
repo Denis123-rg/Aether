@@ -161,6 +161,8 @@ func resolveInclusion(p pendingBundle, ledger db.Ledger, included bool, blockNum
 	})
 
 	if included {
+		recordInclusionLatency(now.Sub(p.submittedAt).Seconds())
+		recordArbProfitETH(weiToEth(p.profitWei))
 		ledger.UpsertPnLDaily(db.PnLDailyDelta{
 			Day:               now,
 			RealizedProfitWei: new(big.Int).Set(p.profitWei),
@@ -175,6 +177,7 @@ func resolveInclusion(p pendingBundle, ledger db.Ledger, included bool, blockNum
 		rm.RecordTrade(new(big.Int), p.profitWei)
 	} else if p.source == SourceMempoolBackrun {
 		recordBackrunRevert()
+		recordBundleSubmissionFailure()
 	}
 
 	slog.Info("bundle inclusion resolved",

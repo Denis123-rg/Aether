@@ -9,6 +9,8 @@ import (
 	"net/http"
 	"os"
 	"time"
+
+	"github.com/aether-arb/aether/internal/config"
 )
 
 // PagerDutyNotifier sends events to the PagerDuty Events API v2.
@@ -165,4 +167,50 @@ func loadAlertingFromEnv() (pdKey, tgToken, tgChat, discordURL, webhookURL strin
 	discordURL = os.Getenv("DISCORD_WEBHOOK_URL")
 	webhookURL = os.Getenv("ALERT_WEBHOOK_URL")
 	return
+}
+
+// loadAlertingFromConfig merges production.toml [monitor.alerting] with env overrides.
+func loadAlertingFromConfig(cfg config.MonitorAlerting) (pdKey, tgToken, tgChat, discordURL, webhookURL string) {
+	pdKey = cfg.PagerDutyRoutingKey
+	tgToken = cfg.TelegramBotToken
+	tgChat = cfg.TelegramChatID
+	discordURL = cfg.DiscordWebhookURL
+	webhookURL = cfg.AlertWebhookURL
+	config.ApplyMonitorAlertingEnvOverrides(&cfg)
+	if cfg.PagerDutyRoutingKey != "" {
+		pdKey = cfg.PagerDutyRoutingKey
+	}
+	if cfg.TelegramBotToken != "" {
+		tgToken = cfg.TelegramBotToken
+	}
+	if cfg.TelegramChatID != "" {
+		tgChat = cfg.TelegramChatID
+	}
+	if cfg.DiscordWebhookURL != "" {
+		discordURL = cfg.DiscordWebhookURL
+	}
+	if cfg.AlertWebhookURL != "" {
+		webhookURL = cfg.AlertWebhookURL
+	}
+	return
+}
+
+// NewAlerterFromConfig creates an alerter using production.toml alerting settings.
+func NewAlerterFromConfig(channels []AlertChannel, cfg config.MonitorAlerting) *Alerter {
+	pdKey, tgToken, tgChat, discordURL, webhookURL := loadAlertingFromConfig(cfg)
+	wh := NewWebhookDispatcherFromEnv()
+	if webhookURL != "" && wh == nil {
+		wh = &WebhookDispatcher{url: webhookURL, httpClient: &http.Client{Timeout: 5 * time.Second}}
+	}
+	return &Alerter{
+		channels:  channels,
+		history:   make([]Alert, 0),
+		rateLimit: 5 * time.Minute,
+		lastAlert: make(map[string]time.Time),
+		webhook:   wh,
+		pagerduty: NewPagerDutyNotifier(pdKey),
+		telegram:  NewTelegramNotifier(tgToken, tgChat),
+		discord:   NewDiscordNotifier(discordURL),
+		maxPerMin: 30,
+	}
 }

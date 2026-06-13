@@ -126,6 +126,27 @@ var (
 		Name: "aether_metrics_precision_loss_total",
 		Help: "Number of big.Int → float64 down-casts in addBigIntCounter that lost precision (expected once cumulative wei counters cross 2^53).",
 	})
+	bundleSubmissionTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "bundle_submission_total",
+		Help: "Bundle submission outcomes by status",
+	}, []string{"status"})
+	bundleInclusionLatencySeconds = prometheus.NewHistogram(prometheus.HistogramOpts{
+		Name:    "bundle_inclusion_latency_seconds",
+		Help:    "Time from bundle submission to on-chain inclusion confirmation",
+		Buckets: []float64{1, 5, 12, 24, 48, 96, 300},
+	})
+	arbProfitTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "arb_profit_total",
+		Help: "Cumulative arb profit by currency",
+	}, []string{"currency"})
+	redisConnectedGauge = prometheus.NewGauge(prometheus.GaugeOpts{
+		Name: "redis_connected",
+		Help: "Redis connection status (1=up, 0=down)",
+	})
+	signerConnectionReuseTotal = prometheus.NewCounter(prometheus.CounterOpts{
+		Name: "signer_connection_reuse_total",
+		Help: "Signer RPC calls that reused a pooled connection",
+	})
 )
 
 func init() {
@@ -149,6 +170,11 @@ func init() {
 		shadowBundles,
 		signerErrorsTotal,
 		metricsPrecisionLoss,
+		bundleSubmissionTotal,
+		bundleInclusionLatencySeconds,
+		arbProfitTotal,
+		redisConnectedGauge,
+		signerConnectionReuseTotal,
 	)
 	// Pre-touch both `source` labels so the Prometheus text exposition
 	// emits a zero-row for each value even before any bundles flow.
@@ -209,6 +235,23 @@ func recordBundleBuilt(source string) {
 
 func recordBundleSubmitted(source string) {
 	bundlesSubmitted.WithLabelValues(source).Inc()
+	bundleSubmissionTotal.WithLabelValues("success").Inc()
+}
+
+func recordBundleSubmissionFailure() {
+	bundleSubmissionTotal.WithLabelValues("failure").Inc()
+}
+
+func recordInclusionLatency(seconds float64) {
+	bundleInclusionLatencySeconds.Observe(seconds)
+}
+
+func recordArbProfitETH(eth float64) {
+	arbProfitTotal.WithLabelValues("eth").Add(eth)
+}
+
+func recordSignerConnectionReuse() {
+	signerConnectionReuseTotal.Inc()
 }
 
 func recordBundleIncluded(source string, profitWei *big.Int, gasGwei float64, gasUsed uint64) {

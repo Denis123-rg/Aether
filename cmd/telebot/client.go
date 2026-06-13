@@ -102,6 +102,11 @@ func (a *AdminClient) Resume(ctx context.Context) error {
 	return a.post(ctx, "/admin/resume")
 }
 
+// Reset clears Halted state via POST /admin/reset.
+func (a *AdminClient) Reset(ctx context.Context) error {
+	return a.post(ctx, "/admin/reset")
+}
+
 // SetMinProfit updates the minimum profit threshold.
 func (a *AdminClient) SetMinProfit(ctx context.Context, value float64) error {
 	return a.post(ctx, fmt.Sprintf("/admin/set_min_profit?value=%g", value))

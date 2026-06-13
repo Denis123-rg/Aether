@@ -288,6 +288,8 @@ cd contracts && forge test
 
 All configuration lives in `config/`:
 
+> **Rust-owned pool config:** `pools.toml` and `discovery.toml` are read **only by the Rust engine**. The Go executor does not load or hot-reload pools directly. To apply pool changes, edit these files and call gRPC `ReloadConfig` (or restart the Rust process). Pool loading errors appear in Rust logs.
+
 | File | Purpose | Hot-Reload |
 |---|---|---|
 | `config/pools.toml` | Pool registry — monitored DEX pools | Yes (via `ControlService.ReloadConfig()`) |

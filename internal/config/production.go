@@ -21,7 +21,7 @@ type ProductionConfig struct {
 
 // MonitorConfig holds monitor service HTTP settings.
 type MonitorConfig struct {
-	Port      int            `toml:"port"`
+	Port      int             `toml:"port"`
 	Alerting  MonitorAlerting `toml:"alerting"`
 }
 
@@ -49,8 +49,9 @@ type RedisConfig struct {
 
 // ExecutorHTTPConfig holds the executor admin/metrics HTTP server settings.
 type ExecutorHTTPConfig struct {
-	Port                  int    `toml:"port"`
-	DiscoveryTopPoolsURL  string `toml:"discovery_top_pools_url"`
+	Port                 int    `toml:"port"`
+	DiscoveryTopPoolsURL string `toml:"discovery_top_pools_url"`
+	SignerConnectionPool bool   `toml:"signer_connection_pool"`
 }
 
 // LoadProductionConfig reads config/production.toml (or the path given).
@@ -142,6 +143,33 @@ func resolveMonitorEnv(m *MonitorConfig) {
 	}
 	if strings.HasPrefix(m.Alerting.AlertWebhookURL, "env:") {
 		m.Alerting.AlertWebhookURL = os.Getenv(strings.TrimPrefix(m.Alerting.AlertWebhookURL, "env:"))
+	}
+}
+
+// HasAlertingConfigured reports whether at least one alert channel is set.
+func HasAlertingConfigured(a MonitorAlerting) bool {
+	return strings.TrimSpace(a.PagerDutyRoutingKey) != "" ||
+		(strings.TrimSpace(a.TelegramBotToken) != "" && strings.TrimSpace(a.TelegramChatID) != "") ||
+		strings.TrimSpace(a.DiscordWebhookURL) != "" ||
+		strings.TrimSpace(a.AlertWebhookURL) != ""
+}
+
+// ApplyMonitorAlertingEnvOverrides lets deployment env vars override TOML values.
+func ApplyMonitorAlertingEnvOverrides(a *MonitorAlerting) {
+	if v := os.Getenv("PD_ROUTING_KEY"); v != "" {
+		a.PagerDutyRoutingKey = v
+	}
+	if v := os.Getenv("TELEGRAM_ALERT_BOT_TOKEN"); v != "" {
+		a.TelegramBotToken = v
+	}
+	if v := os.Getenv("TELEGRAM_ALERT_CHAT_ID"); v != "" {
+		a.TelegramChatID = v
+	}
+	if v := os.Getenv("DISCORD_WEBHOOK_URL"); v != "" {
+		a.DiscordWebhookURL = v
+	}
+	if v := os.Getenv("ALERT_WEBHOOK_URL"); v != "" {
+		a.AlertWebhookURL = v
 	}
 }
 

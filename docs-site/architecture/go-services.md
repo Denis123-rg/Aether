@@ -62,9 +62,11 @@ EIP-1559 base fee prediction and priority fee estimation:
 - Suggests priority fee based on builder competition
 - Feeds into both arb transaction construction and profitability calculations
 
-## `cmd/risk/` — Risk Management
+## Risk management (`internal/risk/`, used by `cmd/executor/`)
 
-### System State Machine (`state.go`)
+Risk gates, circuit breakers, and the system state machine live in `internal/risk/` and are wired into the executor at startup. Pool discovery is handled exclusively by the Rust engine (`crates/discovery`).
+
+### System State Machine (`internal/risk/state.go`)
 
 The risk manager maintains a finite state machine:
 

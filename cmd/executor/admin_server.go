@@ -64,6 +64,7 @@ func startAdminServer(rm *risk.RiskManager, discoveryURL string, port int, pub a
 		mux.HandleFunc("/metrics/json", handleMetricsJSON)
 		mux.HandleFunc("/admin/pause", requireAdminAuth(handleAdminPause))
 		mux.HandleFunc("/admin/resume", requireAdminAuth(handleAdminResume))
+		mux.HandleFunc("/admin/reset", requireAdminAuth(handleAdminReset))
 		mux.HandleFunc("/admin/set_min_profit", requireAdminAuth(handleSetMinProfit))
 		mux.HandleFunc("/admin/backrun/promote", requireAdminAuth(handleBackrunPromote))
 		mux.HandleFunc("/health", handleHealthJSON)
@@ -142,6 +143,12 @@ func handleAdminPause(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := globalAdminDeps.riskMgr.Pause(reason); err != nil {
 		slog.Error("admin pause transition failed", "reason", reason, "err", err)
+		if strings.Contains(err.Error(), "invalid transition") {
+			http.Error(w, err.Error(), http.StatusConflict)
+			return
+		}
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
 	}
 	if globalAdminDeps.engineCtrl != nil {
 		if err := globalAdminDeps.engineCtrl.SetEngineState(r.Context(), true); err != nil {
@@ -161,13 +168,59 @@ func handleAdminPause(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write([]byte(`{"status":"paused"}`))
 }
 
+func handleAdminReset(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	confirm := strings.TrimSpace(r.Header.Get("X-Aether-Reset-Confirm"))
+	if confirm == "" {
+		confirm = extractAdminToken(r)
+	}
+	resetToken := strings.TrimSpace(os.Getenv("AETHER_RESET_CONFIRM_TOKEN"))
+	if resetToken != "" && confirm != resetToken && confirm != configuredAdminToken {
+		http.Error(w, "forbidden", http.StatusForbidden)
+		return
+	}
+	operator := "admin"
+	if err := globalAdminDeps.riskMgr.ResetFromHalted(operator); err != nil {
+		if strings.Contains(err.Error(), "only allowed from Halted") {
+			http.Error(w, err.Error(), http.StatusConflict)
+			return
+		}
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if globalAdminDeps.engineCtrl != nil {
+		if err := globalAdminDeps.engineCtrl.SetEngineState(r.Context(), false); err != nil {
+			slog.Warn("rust engine resume after reset failed", "err", err)
+		}
+	}
+	globalSnapshotStore.Update(func(s *metrics.Snapshot) {
+		s.BreakerOpen = false
+		s.BreakerReason = ""
+		s.SystemState = string(risk.StateRunning)
+		s.PnLToday = 0
+	})
+	if globalAdminDeps.eventPub != nil {
+		globalAdminDeps.eventPub.PublishBreakerStatus(false, "")
+	}
+	slog.Warn("admin reset from Halted completed", "operator", operator)
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write([]byte(`{"status":"running"}`))
+}
+
 func handleAdminResume(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 	if err := globalAdminDeps.riskMgr.Resume(); err != nil {
-		http.Error(w, err.Error(), http.StatusConflict)
+		if strings.Contains(err.Error(), "invalid transition") || strings.Contains(err.Error(), "Halted") {
+			http.Error(w, err.Error(), http.StatusConflict)
+			return
+		}
+		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 	if globalAdminDeps.engineCtrl != nil {
@@ -333,6 +386,11 @@ func setRedisHealthy(healthy bool) {
 	globalSnapshotStore.Update(func(s *metrics.Snapshot) {
 		s.RedisHealthy = healthy
 	})
+	if healthy {
+		redisConnectedGauge.Set(1)
+	} else {
+		redisConnectedGauge.Set(0)
+	}
 }
 
 // extractAdminToken reads the admin token from supported auth headers.

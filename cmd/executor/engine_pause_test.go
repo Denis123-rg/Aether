@@ -88,14 +88,20 @@ func TestAdminPause_Idempotent(t *testing.T) {
 	setAdminTokenForTest("tok")
 	handler := requireAdminAuth(handleAdminPause)
 
-	for i := 0; i < 2; i++ {
-		req := httptest.NewRequest(http.MethodPost, "/admin/pause", nil)
-		req.Header.Set("Authorization", "Bearer tok")
-		w := httptest.NewRecorder()
-		handler(w, req)
-		if w.Code != http.StatusOK {
-			t.Fatalf("iteration %d status %d", i, w.Code)
-		}
+	req := httptest.NewRequest(http.MethodPost, "/admin/pause", nil)
+	req.Header.Set("Authorization", "Bearer tok")
+	w := httptest.NewRecorder()
+	handler(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("first pause status %d", w.Code)
+	}
+
+	req2 := httptest.NewRequest(http.MethodPost, "/admin/pause", nil)
+	req2.Header.Set("Authorization", "Bearer tok")
+	w2 := httptest.NewRecorder()
+	handler(w2, req2)
+	if w2.Code != http.StatusConflict {
+		t.Fatalf("second pause should be 409, got %d", w2.Code)
 	}
 }
 

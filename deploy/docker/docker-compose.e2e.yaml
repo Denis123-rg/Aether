@@ -1,0 +1,99 @@
+# E2E stack for CI — Postgres, Redis, mock builder, Rust + Go services.
+# Health checks use Docker Compose `depends_on: condition: service_healthy`.
+version: "3.8"
+
+services:
+  postgres:
+    image: timescale/timescaledb:latest-pg16
+    environment:
+      POSTGRES_USER: aether
+      POSTGRES_PASSWORD: aether
+      POSTGRES_DB: aether
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U aether -d aether"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+
+  mock-builder:
+    image: golang:1.22-bookworm
+    working_dir: /app
+    command: ["go", "run", "/mock/main.go"]
+    volumes:
+      - ./mock-builder:/mock:ro
+    ports:
+      - "18545:18545"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:18545/health || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+
+  aether-rust:
+    build:
+      context: ../..
+      dockerfile: deploy/docker/Dockerfile.rust
+    depends_on:
+      redis:
+        condition: service_healthy
+    environment:
+      RUST_LOG: info
+      AETHER_CONFIG_DIR: /app/config
+      GRPC_ADDRESS: 0.0.0.0:50051
+      ETH_RPC_URL: ${ETH_RPC_URL:-http://host.docker.internal:8545}
+      REDIS_URL: redis://redis:6379
+    ports:
+      - "50051:50051"
+      - "9093:9093"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:9093/health || exit 0"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+
+  aether-go:
+    build:
+      context: ../..
+      dockerfile: deploy/docker/go.Dockerfile
+    depends_on:
+      aether-rust:
+        condition: service_started
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    environment:
+      GRPC_ADDRESS: aether-rust:50051
+      REDIS_URL: redis://redis:6379
+      DATABASE_URL: postgres://aether:aether@postgres:5432/aether?sslmode=disable
+      AETHER_ADMIN_TOKEN: e2e-test-token
+      AETHER_ENV: development
+      ALLOW_INSECURE_TCP: "true"
+      METRICS_PORT: "9090"
+      ADMIN_HTTP_PORT: "8080"
+    ports:
+      - "8080:8080"
+      - "9090:9090"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8080/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+
+networks:
+  default:
+    name: aether-e2e

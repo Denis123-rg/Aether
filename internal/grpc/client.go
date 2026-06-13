@@ -12,7 +12,6 @@ import (
 	"time"
 
 	"google.golang.org/grpc"
-	"google.golang.org/grpc/credentials/insecure"
 
 	pb "github.com/aether-arb/aether/internal/pb"
 )
@@ -71,14 +70,19 @@ func NewClientFromConn(conn *grpc.ClientConn) (*Client, error) {
 }
 
 func Dial(addr string) (*Client, error) {
+	return DialWithOptions(addr, LoadDialOptionsFromEnv())
+}
+
+// DialWithOptions creates a gRPC client with optional TLS settings.
+func DialWithOptions(addr string, opts DialOptions) (*Client, error) {
 	if err := validateDialTarget(addr); err != nil {
 		return nil, fmt.Errorf("invalid dial target: %w", err)
 	}
-	// grpc-go natively supports the unix:// scheme — UDS paths
-	// (e.g. "unix:///var/run/aether/engine.sock") work without a custom dialer.
-	conn, err := grpc.NewClient(addr,
-		grpc.WithTransportCredentials(insecure.NewCredentials()),
-	)
+	creds, err := buildTransportCredentials(addr, opts)
+	if err != nil {
+		return nil, err
+	}
+	conn, err := grpc.NewClient(addr, grpc.WithTransportCredentials(creds))
 	if err != nil {
 		return nil, fmt.Errorf("grpc new client %s: %w", addr, err)
 	}

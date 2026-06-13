@@ -138,6 +138,36 @@ groups:
           description: "EVM simulation p99 latency is {{ printf \"%.1f\" $value }}ms over the last 5m (target <50ms). revm fork state may be stale or the RPC provider is slow."
           runbook_url: "https://github.com/Pablosinyores/aether/blob/main/docs/runbooks/AetherHighSimulationLatency.md"
 
+      - alert: AetherRedisDown
+        expr: redis_connected == 0
+        for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Redis connection down"
+          description: "redis_connected has been 0 for >1m. Dashboard auto-refresh and event pub/sub are unavailable."
+
+      - alert: AetherBundleSubmissionFailureRateHigh
+        expr: |
+          sum(rate(bundle_submission_total{status="failure"}[10m]))
+          /
+          clamp_min(sum(rate(bundle_submission_total[10m])), 1e-9) > 0.05
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Bundle submission failure rate >5%"
+          description: "More than 5% of bundle submissions failed over 10m."
+
+      - alert: AetherNoProfitableArb
+        expr: increase(arb_profit_total{currency="eth"}[1h]) == 0 and sum(rate(aether_executor_bundles_submitted_total[1h])) > 0
+        for: 1h
+        labels:
+          severity: warning
+        annotations:
+          summary: "No profitable arb in 1 hour"
+          description: "Bundles submitted but arb_profit_total unchanged for 1h — detection may be stuck."
+
       - alert: AetherNegativeDailyPnL
         expr: aether_daily_pnl_eth < -0.05
         for: 30m

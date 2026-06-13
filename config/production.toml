@@ -15,6 +15,7 @@ url = "env:REDIS_URL"
 port = 8080
 # Set AETHER_ADMIN_TOKEN in production — required when AETHER_ENV=production.
 discovery_top_pools_url = "http://localhost:9093/top-pools"
+signer_connection_pool = true
 
 [monitor]
 # Dashboard HTTP port (distinct from executor admin to avoid :8080 conflicts).

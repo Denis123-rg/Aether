@@ -9,7 +9,19 @@ RUST_COVER_DIR := $(COVERAGE_DIR)/rust
 
 .PHONY: test-offchain test-offchain-go test-offchain-rust test-offchain-integration \
 	test-offchain-fuzz test-offchain-replay test-offchain-e2e test-offchain-coverage \
-	test-offchain-report clean-coverage
+	test-offchain-report clean-coverage build e2e issue1-check
+
+build:
+	cd "$(PROJECT_ROOT)" && cargo build --release -p aether-grpc-server
+	cd "$(PROJECT_ROOT)" && go build -o bin/aether-executor ./cmd/executor
+	cd "$(PROJECT_ROOT)" && go build -o bin/aether-monitor ./cmd/monitor
+	cd "$(PROJECT_ROOT)" && go build -o bin/aether-telebot ./cmd/telebot
+	cd "$(PROJECT_ROOT)" && go build -o bin/aether-signer ./cmd/signer
+
+e2e: test-offchain-e2e
+
+issue1-check:
+	bash "$(PROJECT_ROOT)scripts/test_issue1_references.sh"
 
 test-offchain: test-offchain-go test-offchain-rust test-offchain-integration
 	@echo "=== Off-chain suite complete (unit + integration) ==="

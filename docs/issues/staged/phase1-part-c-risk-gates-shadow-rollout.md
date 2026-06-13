@@ -6,7 +6,7 @@ The existing `AETHER_SHADOW=1` mechanism from PR #93 already blocks `eth_sendBun
 
 ## Scope
 
-### 1. Risk gates (`cmd/risk/manager.go` modify, `cmd/executor/bundle.go` calls)
+### 1. Risk gates (`internal/risk/manager.go` modify, `cmd/executor/bundle.go` calls)
 
 Existing gates per CLAUDE.md (kept):
 - Gas price > 300 gwei → HALT

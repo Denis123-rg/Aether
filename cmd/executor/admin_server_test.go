@@ -75,6 +75,91 @@ func TestHandleAdminPause(t *testing.T) {
 	}
 }
 
+func TestHandleAdminPause_AlreadyPaused_409(t *testing.T) {
+	resetAdminGlobals()
+	rm := risk.NewRiskManager(risk.DefaultRiskConfig())
+	_ = rm.Pause("first")
+	globalAdminDeps.riskMgr = rm
+
+	req := httptest.NewRequest(http.MethodPost, "/admin/pause", nil)
+	w := httptest.NewRecorder()
+	handleAdminPause(w, req)
+	if w.Code != http.StatusConflict {
+		t.Fatalf("status: %d", w.Code)
+	}
+}
+
+func TestHandleAdminPause_FromHalted_409(t *testing.T) {
+	resetAdminGlobals()
+	rm := risk.NewRiskManager(risk.DefaultRiskConfig())
+	rm.ForceStateForTest(risk.StateHalted)
+	globalAdminDeps.riskMgr = rm
+
+	req := httptest.NewRequest(http.MethodPost, "/admin/pause", nil)
+	w := httptest.NewRecorder()
+	handleAdminPause(w, req)
+	if w.Code != http.StatusConflict {
+		t.Fatalf("status: %d", w.Code)
+	}
+}
+
+func TestHandleAdminReset_FromHalted_200(t *testing.T) {
+	resetAdminGlobals()
+	rm := risk.NewRiskManager(risk.DefaultRiskConfig())
+	rm.ForceStateForTest(risk.StateHalted)
+	globalAdminDeps.riskMgr = rm
+
+	req := httptest.NewRequest(http.MethodPost, "/admin/reset", nil)
+	w := httptest.NewRecorder()
+	handleAdminReset(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status: %d body: %s", w.Code, w.Body.String())
+	}
+	if rm.State() != risk.StateRunning {
+		t.Fatalf("state: %s", rm.State())
+	}
+}
+
+func TestHandleAdminReset_NotHalted_409(t *testing.T) {
+	resetAdminGlobals()
+	rm := risk.NewRiskManager(risk.DefaultRiskConfig())
+	globalAdminDeps.riskMgr = rm
+
+	req := httptest.NewRequest(http.MethodPost, "/admin/reset", nil)
+	w := httptest.NewRecorder()
+	handleAdminReset(w, req)
+	if w.Code != http.StatusConflict {
+		t.Fatalf("status: %d", w.Code)
+	}
+}
+
+func TestHandleAdminResume_FromHalted_409(t *testing.T) {
+	resetAdminGlobals()
+	rm := risk.NewRiskManager(risk.DefaultRiskConfig())
+	rm.ForceStateForTest(risk.StateHalted)
+	globalAdminDeps.riskMgr = rm
+
+	req := httptest.NewRequest(http.MethodPost, "/admin/resume", nil)
+	w := httptest.NewRecorder()
+	handleAdminResume(w, req)
+	if w.Code != http.StatusConflict {
+		t.Fatalf("status: %d", w.Code)
+	}
+}
+
+func TestHandleAdminResume_AlreadyRunning_409(t *testing.T) {
+	resetAdminGlobals()
+	rm := risk.NewRiskManager(risk.DefaultRiskConfig())
+	globalAdminDeps.riskMgr = rm
+
+	req := httptest.NewRequest(http.MethodPost, "/admin/resume", nil)
+	w := httptest.NewRecorder()
+	handleAdminResume(w, req)
+	if w.Code != http.StatusConflict {
+		t.Fatalf("status: %d", w.Code)
+	}
+}
+
 func TestHandleAdminResume(t *testing.T) {
 	resetAdminGlobals()
 	rm := risk.NewRiskManager(risk.DefaultRiskConfig())

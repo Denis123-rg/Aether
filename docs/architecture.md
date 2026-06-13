@@ -103,11 +103,8 @@ Bundle construction and multi-builder submission.
 - Goroutine fan-out to Flashbots, Titan, Eden, rsync builders
 - Atomic nonce management with periodic sync
 
-### `cmd/risk/`
-Risk management and circuit breakers.
-- System state FSM: `Running → Degraded → Paused → Halted`
-- Circuit breakers: gas price, consecutive reverts, daily loss, balance
-- Position limits: max trade size, daily volume, min profit
+### Risk management (`internal/risk/`, embedded in `cmd/executor/`)
+Risk logic is **not** a standalone binary. The executor embeds `internal/risk` for preflight checks, circuit breakers, and the system state FSM (`Running → Degraded → Paused → Halted`). Pool discovery is **Rust-only** (`aether-grpc-server` / `crates/discovery`); there is no separate Go pool-discovery service.
 
 ### `cmd/monitor/`
 Monitoring and observability.
@@ -132,6 +129,15 @@ Monitoring and observability.
 5. **gRPC Handoff** (<1ms) — `ValidatedArb` sent to Go executor
 6. **Bundle Build** (<2ms) — EIP-1559 tx + tip tx, sign with searcher key
 7. **Submission** — Fan-out to all configured block builders
+
+## Configuration Ownership
+
+The files `pools.toml` and `discovery.toml` are read **only by the Rust engine** (`aether-grpc-server`). The Go executor does not load or hot-reload pools directly. To change pools:
+
+1. Edit `config/pools.toml` or `config/discovery.toml`
+2. Call the gRPC `ControlService.ReloadConfig` method, or restart the Rust process
+
+Pool loading errors appear in Rust engine logs (`aether-rust` / `aether-grpc-server`), not in the Go executor.
 
 ## Key Design Decisions
 

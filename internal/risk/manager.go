@@ -347,6 +347,27 @@ func (rm *RiskManager) RecordRevert(revertType RevertType) {
 	}
 }
 
+// ResetFromHalted clears daily counters and transitions Halted → Running.
+// Only valid when the system is currently Halted.
+func (rm *RiskManager) ResetFromHalted(operator string) error {
+	rm.mu.Lock()
+	defer rm.mu.Unlock()
+	if rm.state.Current() != StateHalted {
+		return fmt.Errorf("reset only allowed from Halted state (current: %s)", rm.state.Current())
+	}
+	rm.dailyVolume = big.NewInt(0)
+	rm.dailyPnL = big.NewInt(0)
+	rm.dailyResetTime = time.Now().Truncate(24 * time.Hour).Add(24 * time.Hour)
+	if err := rm.state.Transition(StateRunning); err != nil {
+		return err
+	}
+	if rm.metricsObs != nil {
+		rm.metricsObs.OnStateChange(StateRunning)
+	}
+	slog.Warn("system reset from Halted", "operator", operator)
+	return nil
+}
+
 // Resume transitions from Paused/Degraded back to Running. Returns an error
 // when the transition is invalid (e.g. from Halted without manual reset).
 func (rm *RiskManager) Resume() error {
@@ -495,6 +516,11 @@ func (rm *RiskManager) BundleMissRate() float64 {
 		}
 	}
 	return float64(rm.bundleResultCount-included) / float64(rm.bundleResultCount) * 100
+}
+
+// ForceStateForTest sets state without validation (tests only).
+func (rm *RiskManager) ForceStateForTest(s SystemState) {
+	rm.state.ForceState(s)
 }
 
 // State returns the current system state.

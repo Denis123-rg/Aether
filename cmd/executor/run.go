@@ -198,7 +198,12 @@ func run(ctx context.Context, cfg *Config, deps *Dependencies) error {
 	if eventPublisher == nil {
 		eventPublisher = events.NewPublisherFromEnv()
 	}
+	config.RequireRedisInProduction()
 	setRedisHealthy(eventPublisher.Enabled())
+
+	if prod, err := config.LoadProductionConfig(config.ProductionConfigPath()); err == nil {
+		config.ApplySignerConnectionPool(prod)
+	}
 
 	if !deps.SkipAdminHTTP {
 		adminPort, discoveryURL := loadAdminPort()

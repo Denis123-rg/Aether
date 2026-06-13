@@ -56,6 +56,9 @@ func main() {
 	if redisURL == "" {
 		redisURL = os.Getenv("REDIS_URL")
 	}
+	if redisURL == "" {
+		config.RequireRedisInProduction()
+	}
 
 	botAPI, err := tgbotapi.NewBotAPI(token)
 	if err != nil {
