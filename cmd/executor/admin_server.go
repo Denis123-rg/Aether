@@ -62,11 +62,11 @@ func startAdminServer(rm *risk.RiskManager, discoveryURL string, port int, pub a
 
 		mux := http.NewServeMux()
 		mux.HandleFunc("/metrics/json", handleMetricsJSON)
-		mux.HandleFunc("/admin/pause", requireAdminAuth(handleAdminPause))
-		mux.HandleFunc("/admin/resume", requireAdminAuth(handleAdminResume))
-		mux.HandleFunc("/admin/reset", requireAdminAuth(handleAdminReset))
-		mux.HandleFunc("/admin/set_min_profit", requireAdminAuth(handleSetMinProfit))
-		mux.HandleFunc("/admin/backrun/promote", requireAdminAuth(handleBackrunPromote))
+		mux.HandleFunc("/admin/pause", requireAdminAuthWithRateLimit(handleAdminPause))
+		mux.HandleFunc("/admin/resume", requireAdminAuthWithRateLimit(handleAdminResume))
+		mux.HandleFunc("/admin/reset", requireAdminAuthWithRateLimit(handleAdminReset))
+		mux.HandleFunc("/admin/set_min_profit", requireAdminAuthWithRateLimit(handleSetMinProfit))
+		mux.HandleFunc("/admin/backrun/promote", requireAdminAuthWithRateLimit(handleBackrunPromote))
 		mux.HandleFunc("/health", handleHealthJSON)
 
 		go func() {

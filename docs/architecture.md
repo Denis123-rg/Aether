@@ -6,7 +6,70 @@ Aether is a production-grade MEV arbitrage engine for Ethereum Mainnet. It detec
 
 ## Component Architecture
 
+```mermaid
+flowchart TB
+    subgraph External["External Dependencies"]
+        ETH["Ethereum Nodes<br/>WS / IPC"]
+        BUILDERS["Block Builders<br/>Flashbots / Titan / Eden / rsync"]
+        PG["PostgreSQL / TimescaleDB"]
+        REDIS["Redis Pub/Sub"]
+        SIGNER["Remote Signer<br/>UDS"]
+    end
+
+    subgraph Rust["Rust Core (Latency-Critical)"]
+        ING["ingestion<br/>event decode + node pool"]
+        DISC["discovery<br/>factory listeners + validator"]
+        POOLS["pools<br/>DEX adapters"]
+        STATE["state<br/>price graph + hot cache"]
+        DET["detector<br/>Bellman-Ford SPFA"]
+        SIM["simulator<br/>revm fork + backrun"]
+        GRPC_SRV["grpc-server<br/>StreamArbs / Health / Control"]
+        ING --> POOLS --> STATE --> DET --> SIM --> GRPC_SRV
+        DISC --> POOLS
+        ETH --> ING
+        ETH --> DISC
+        SIM --> PG
+    end
+
+    subgraph Go["Go Execution Layer"]
+        EXEC["executor<br/>bundle + submit + inclusion poll"]
+        RISK["internal/risk<br/>preflight + circuit breakers"]
+        AB["strategy/abtest<br/>A/B selector"]
+        EV["events<br/>Redis publisher"]
+        DBW["internal/db<br/>ledger writer"]
+        ADMIN["admin HTTP<br/>pause / resume / reset"]
+        MON["monitor<br/>Prometheus + alerts"]
+        TEL["telebot<br/>Telegram dashboard"]
+        REC["reconciler<br/>mempool predictions"]
+        GRPC_SRV -->|"gRPC UDS"| EXEC
+        EXEC --> RISK
+        EXEC --> AB
+        EXEC --> EV
+        EXEC --> DBW
+        EXEC --> ADMIN
+        EXEC --> BUILDERS
+        EXEC --> SIGNER
+        EV --> REDIS
+        TEL --> REDIS
+        TEL --> ADMIN
+        DBW --> PG
+        REC --> PG
+        REC --> ETH
+        MON --> EXEC
+    end
+
+    BUILDERS --> ETH
 ```
+
+### Hot Path (&lt;15 ms target)
+
+```
+Event Ingestion → Price Graph Update → Bellman-Ford → revm Simulation
+    → gRPC StreamArbs → Go Preflight → Bundle Sign → eth_sendBundle → Inclusion Poll
+```
+
+Legacy ASCII overview:
+
 Eth Nodes (WS/IPC)
     │
     ▼

@@ -49,9 +49,10 @@ type RedisConfig struct {
 
 // ExecutorHTTPConfig holds the executor admin/metrics HTTP server settings.
 type ExecutorHTTPConfig struct {
-	Port                 int    `toml:"port"`
-	DiscoveryTopPoolsURL string `toml:"discovery_top_pools_url"`
-	SignerConnectionPool bool   `toml:"signer_connection_pool"`
+	Port                 int     `toml:"port"`
+	DiscoveryTopPoolsURL string  `toml:"discovery_top_pools_url"`
+	SignerConnectionPool bool    `toml:"signer_connection_pool"`
+	AdminRateLimitRPS    float64 `toml:"admin_rate_limit_rps"`
 }
 
 // LoadProductionConfig reads config/production.toml (or the path given).

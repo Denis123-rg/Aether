@@ -17,6 +17,7 @@ use crate::scorer::{default_slippage_estimate, estimate_protocol_slippage};
 use crate::types::{PoolInfo, PoolScoreInputs, ValidationResult};
 use crate::metrics::DiscoveryMetrics;
 use crate::validator::{validate_pool_revm, validate_v2_reserves};
+use crate::volume::VolumeProvider;
 
 /// TVL / volume data source for scoring enrichment.
 pub trait PoolMetricsSource: Send + Sync {

@@ -9,7 +9,6 @@ use alloy::primitives::Address;
 use tracing::warn;
 
 use crate::metrics::DiscoveryMetrics;
-use crate::types::PoolScoreInputs;
 
 /// VolumeProvider fetches 24h USD volume for a pool.
 pub trait VolumeProvider: Send + Sync {

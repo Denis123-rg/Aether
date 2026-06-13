@@ -14,8 +14,6 @@ pub mod types;
 pub mod validator;
 pub mod volume;
 
-pub mod volume;
-
 pub use cache::DiscoveryCache;
 pub use config::{DiscoveryConfig, FactoryEntry, FactoryEventType};
 pub use service::DiscoveryService;

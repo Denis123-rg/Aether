@@ -75,6 +75,7 @@ func run(ctx context.Context, cfg *Config, deps *Dependencies) error {
 	if err := initAdminAuth(); err != nil {
 		return fmt.Errorf("admin auth: %w", err)
 	}
+	initAdminRateLimit()
 
 	if !deps.SkipMigrations {
 		if dbURL := os.Getenv("DATABASE_URL"); dbURL != "" {
