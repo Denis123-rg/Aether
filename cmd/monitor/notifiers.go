@@ -16,6 +16,7 @@ import (
 // PagerDutyNotifier sends events to the PagerDuty Events API v2.
 type PagerDutyNotifier struct {
 	routingKey string
+	enqueueURL string // optional override for tests; production uses PagerDuty default
 	client     *http.Client
 }
 
@@ -54,7 +55,11 @@ func (n *PagerDutyNotifier) Send(alert Alert) error {
 	})
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "https://events.pagerduty.com/v2/enqueue", bytes.NewReader(body))
+	url := n.enqueueURL
+	if url == "" {
+		url = "https://events.pagerduty.com/v2/enqueue"
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
 		return err
 	}
@@ -75,6 +80,7 @@ func (n *PagerDutyNotifier) Send(alert Alert) error {
 type TelegramNotifier struct {
 	botToken string
 	chatID   string
+	apiBase  string // optional override for tests; production uses api.telegram.org
 	client   *http.Client
 }
 
@@ -94,7 +100,11 @@ func (n *TelegramNotifier) Send(alert Alert) error {
 		return fmt.Errorf("telegram notifier not configured")
 	}
 	text := fmt.Sprintf("[%s] %s\n%s", alert.Severity, alert.Title, alert.Message)
-	url := fmt.Sprintf("https://api.telegram.org/bot%s/sendMessage", n.botToken)
+	base := n.apiBase
+	if base == "" {
+		base = "https://api.telegram.org"
+	}
+	url := fmt.Sprintf("%s/bot%s/sendMessage", base, n.botToken)
 	body, _ := json.Marshal(map[string]string{
 		"chat_id": n.chatID,
 		"text":    text,

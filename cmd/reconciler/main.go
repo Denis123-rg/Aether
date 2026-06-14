@@ -37,6 +37,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/ethereum/go-ethereum"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/ethclient"
@@ -64,6 +65,21 @@ const (
 	// not just one.
 	blockFetchTimeout = 5 * time.Second
 )
+
+// ethReconcilerClient is the chain RPC surface used by reconciliation loops.
+type ethReconcilerClient interface {
+	SubscribeNewHead(ctx context.Context, ch chan<- *types.Header) (ethereum.Subscription, error)
+	BlockByHash(ctx context.Context, hash common.Hash) (*types.Block, error)
+	TransactionReceipt(ctx context.Context, txHash common.Hash) (*types.Receipt, error)
+	BlockNumber(ctx context.Context) (uint64, error)
+}
+
+// mempoolReconWriter persists reconciliation outcomes.
+type mempoolReconWriter interface {
+	LookupPredictionByTxHash(ctx context.Context, txHash [32]byte) (db.PendingPrediction, bool, error)
+	InsertReconciliation(r db.NewReconciliation)
+	MarkStaleAsDropped(ctx context.Context, currentHead uint64) (int64, error)
+}
 
 func main() {
 	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, nil)))
@@ -176,8 +192,8 @@ func startMetricsServer(addr string, registry *prometheus.Registry) *http.Server
 // worse than a binary that exits and gets restarted.
 func runHeaderLoop(
 	ctx context.Context,
-	client *ethclient.Client,
-	recon *db.PgMempoolReconciliation,
+	client ethReconcilerClient,
+	recon mempoolReconWriter,
 	metrics *loopMetrics,
 ) {
 	headers := make(chan *types.Header, 8)
@@ -208,8 +224,8 @@ func runHeaderLoop(
 // good day) so the receipt fetches do not dominate.
 func handleHeader(
 	ctx context.Context,
-	client *ethclient.Client,
-	recon *db.PgMempoolReconciliation,
+	client ethReconcilerClient,
+	recon mempoolReconWriter,
 	metrics *loopMetrics,
 	header *types.Header,
 ) {
@@ -290,7 +306,7 @@ func handleHeader(
 // without changing the answer to "did we route to the pool we expected".
 func receiptHitsPool(
 	ctx context.Context,
-	client *ethclient.Client,
+	client ethReconcilerClient,
 	txHash common.Hash,
 	poolAddr [20]byte,
 ) (bool, error) {
@@ -315,8 +331,8 @@ func receiptHitsPool(
 // WS subscription does not freeze the dropped sweep.
 func runStaleSweepLoop(
 	ctx context.Context,
-	client *ethclient.Client,
-	recon *db.PgMempoolReconciliation,
+	client ethReconcilerClient,
+	recon mempoolReconWriter,
 ) {
 	ticker := time.NewTicker(staleSweepInterval)
 	defer ticker.Stop()

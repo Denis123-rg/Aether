@@ -9,14 +9,22 @@ edition = "2021"
 [package.metadata]
 cargo-fuzz = true
 
+[build-dependencies]
+tonic-build = "0.13"
+prost-build = "0.13"
+
 [dependencies]
 libfuzzer-sys = "0.4"
+prost = "0.13"
+toml = "0.8"
+serde_yaml = "0.9"
 aether-detector = { path = "../crates/detector" }
 aether-state = { path = "../crates/state" }
 aether-common = { path = "../crates/common" }
 aether-pools = { path = "../crates/pools" }
 aether-simulator = { path = "../crates/simulator" }
 aether-discovery = { path = "../crates/discovery" }
+aether-ingestion = { path = "../crates/ingestion" }
 alloy = { version = "1", features = ["full"] }
 
 [[bin]]
@@ -64,6 +72,41 @@ bench = false
 [[bin]]
 name = "mempool_backrun"
 path = "fuzz_targets/mempool_backrun.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "event_decoder"
+path = "fuzz_targets/event_decoder.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "curve_math"
+path = "fuzz_targets/curve_math.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "balancer_math"
+path = "fuzz_targets/balancer_math.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "config_parse"
+path = "fuzz_targets/config_parse.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "grpc_decode"
+path = "fuzz_targets/grpc_decode.rs"
 test = false
 doc = false
 bench = false

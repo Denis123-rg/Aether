@@ -3,6 +3,7 @@ package signer
 import (
 	"fmt"
 	"net"
+	"net/rpc"
 	"net/rpc/jsonrpc"
 	"os"
 	"strconv"
@@ -30,6 +31,7 @@ type PooledSignerClient struct {
 	socketPath string
 	mu         sync.Mutex
 	conn       net.Conn
+	rpc        *rpc.Client
 	reuseCount atomic.Uint64
 }
 
@@ -39,7 +41,7 @@ func NewPooledSignerClient(socketPath string) *PooledSignerClient {
 }
 
 func (c *PooledSignerClient) dialLocked() error {
-	if c.conn != nil {
+	if c.rpc != nil {
 		return nil
 	}
 	conn, err := net.Dial("unix", c.socketPath)
@@ -47,7 +49,16 @@ func (c *PooledSignerClient) dialLocked() error {
 		return fmt.Errorf("signer: dial %s: %w", c.socketPath, err)
 	}
 	c.conn = conn
+	c.rpc = jsonrpc.NewClient(conn)
 	return nil
+}
+
+func (c *PooledSignerClient) resetLocked() {
+	if c.conn != nil {
+		_ = c.conn.Close()
+	}
+	c.conn = nil
+	c.rpc = nil
 }
 
 func (c *PooledSignerClient) call(method string, args, reply any) error {
@@ -58,19 +69,15 @@ func (c *PooledSignerClient) call(method string, args, reply any) error {
 		return err
 	}
 	c.reuseCount.Add(1)
-	rc := jsonrpc.NewClient(c.conn)
-	err := rc.Call(method, args, reply)
+	err := c.rpc.Call(method, args, reply)
 	if err != nil {
-		_ = c.conn.Close()
-		c.conn = nil
+		c.resetLocked()
 		// Reconnect once and retry.
 		if dialErr := c.dialLocked(); dialErr != nil {
 			return err
 		}
-		rc = jsonrpc.NewClient(c.conn)
-		if retryErr := rc.Call(method, args, reply); retryErr != nil {
-			_ = c.conn.Close()
-			c.conn = nil
+		if retryErr := c.rpc.Call(method, args, reply); retryErr != nil {
+			c.resetLocked()
 			return retryErr
 		}
 		return nil
@@ -91,7 +98,7 @@ func (c *PooledSignerClient) Close() error {
 		return nil
 	}
 	err := c.conn.Close()
-	c.conn = nil
+	c.resetLocked()
 	return err
 }
 

@@ -1,0 +1,12 @@
+=== Go coverage (priority packages) ===
+pattern ./cmd/executor/...: directory prefix cmd/executor does not contain main module or its selected dependencies
+pattern ./cmd/monitor/...: directory prefix cmd/monitor does not contain main module or its selected dependencies
+pattern ./cmd/signer/...: directory prefix cmd/signer does not contain main module or its selected dependencies
+pattern ./internal/config/...: directory prefix internal/config does not contain main module or its selected dependencies
+pattern ./internal/db/...: directory prefix internal/db does not contain main module or its selected dependencies
+pattern ./internal/events/...: directory prefix internal/events does not contain main module or its selected dependencies
+pattern ./internal/grpc/...: directory prefix internal/grpc does not contain main module or its selected dependencies
+pattern ./internal/signer/...: directory prefix internal/signer does not contain main module or its selected dependencies
+pattern ./internal/risk/...: directory prefix internal/risk does not contain main module or its selected dependencies
+pattern ./internal/strategy/...: directory prefix internal/strategy does not contain main module or its selected dependencies
+pattern ./internal/metrics/...: directory prefix internal/metrics does not contain main module or its selected dependencies

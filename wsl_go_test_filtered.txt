@@ -1,0 +1,14 @@
+FAIL	github.com/aether-arb/aether/cmd/executor [build failed]
+ok  	github.com/aether-arb/aether/cmd/monitor	0.582s
+ok  	github.com/aether-arb/aether/cmd/reconciler	18.968s
+FAIL	github.com/aether-arb/aether/cmd/signer [build failed]
+ok  	github.com/aether-arb/aether/cmd/telebot	0.221s
+ok  	github.com/aether-arb/aether/internal/config	0.040s
+ok  	github.com/aether-arb/aether/internal/db	138.687s
+ok  	github.com/aether-arb/aether/internal/events	5.690s
+ok  	github.com/aether-arb/aether/internal/grpc	0.058s
+ok  	github.com/aether-arb/aether/internal/metrics	0.010s
+ok  	github.com/aether-arb/aether/internal/risk	0.029s
+FAIL	github.com/aether-arb/aether/internal/signer [build failed]
+ok  	github.com/aether-arb/aether/internal/strategy	0.024s
+FAIL

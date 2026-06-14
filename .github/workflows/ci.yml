@@ -106,6 +106,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Install protobuf compiler
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: fuzz
@@ -113,17 +116,45 @@ jobs:
       - name: Install cargo-fuzz
         run: cargo install cargo-fuzz
 
+      - name: Install nightly for libfuzzer
+        run: rustup toolchain install nightly --profile minimal
+
+      - name: Fuzz smoke (new targets, 1000 iterations)
+        working-directory: fuzz
+        run: |
+          for target in event_decoder curve_math balancer_math config_parse grpc_decode; do
+            cargo +nightly fuzz run "$target" -- -runs=1000 -max_total_time=10
+          done
+
       - name: Fuzz fee_on_transfer (5M iterations)
         working-directory: fuzz
-        run: cargo fuzz run fee_on_transfer -- -max_total_time=300 -runs=5000000 || true
+        run: cargo +nightly fuzz run fee_on_transfer -- -max_total_time=300 -runs=5000000 || true
 
       - name: Fuzz mempool_backrun (5M iterations)
         working-directory: fuzz
-        run: cargo fuzz run mempool_backrun -- -max_total_time=300 -runs=5000000 || true
+        run: cargo +nightly fuzz run mempool_backrun -- -max_total_time=300 -runs=5000000 || true
 
       - name: Fuzz check (compile-only smoke)
         working-directory: fuzz
         run: cargo check
+
+  load-test:
+    name: load-test
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Load test smoke
+        env:
+          LOAD_TEST_DURATION: 30s
+          LOAD_TEST_CLIENTS: "20"
+          LOAD_TEST_RPS: "10"
+        run: go test -tags=load ./tests/load/... -count=1 -timeout 5m -run TestLoadSmoke -v
 
   e2e:
     name: e2e-pipeline
