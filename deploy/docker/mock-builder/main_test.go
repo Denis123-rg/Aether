@@ -1,73 +1,70 @@
 package main
 
 import (
-	"bytes"
-	"encoding/json"
 	"io"
 	"net/http"
-	"net/http/httptest"
+	"os"
+	"os/exec"
+	"strings"
 	"testing"
+	"time"
 )
 
-func TestHealthHandler(t *testing.T) {
-	mux := setupHandlers()
-	req := httptest.NewRequest(http.MethodGet, "/health", nil)
-	rr := httptest.NewRecorder()
-	mux.ServeHTTP(rr, req)
-
-	if rr.Code != http.StatusOK {
-		t.Fatalf("expected status %d, got %d", http.StatusOK, rr.Code)
-	}
-	if rr.Body.String() != `{"status":"ok"}` {
-		t.Fatalf("unexpected body: %s", rr.Body.String())
-	}
+func TestMain(m *testing.M) {
+	os.Exit(m.Run())
 }
 
-func TestBundleHandler(t *testing.T) {
-	mux := setupHandlers()
-	body, _ := json.Marshal(map[string]any{"txs": []string{"0x01"}})
-	req := httptest.NewRequest(http.MethodPost, "/", bytes.NewReader(body))
-	rr := httptest.NewRecorder()
-	mux.ServeHTTP(rr, req)
+func TestMockBuilderEndpoints(t *testing.T) {
+	if os.Getenv("MOCK_BUILDER_HELPER") == "1" {
+		main()
+		return
+	}
 
-	if rr.Code != http.StatusOK {
-		t.Fatalf("expected status %d, got %d", http.StatusOK, rr.Code)
+	cmd := exec.Command(os.Args[0], "-test.run=^"+t.Name()+"$")
+	cmd.Env = append(os.Environ(), "MOCK_BUILDER_HELPER=1")
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("start helper: %v", err)
 	}
-	ct := rr.Header().Get("Content-Type")
-	if ct != "application/json" {
-		t.Fatalf("expected Content-Type application/json, got %q", ct)
-	}
-	var resp map[string]string
-	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
-		t.Fatalf("failed to decode response: %v", err)
-	}
-	if resp["bundleHash"] != "0xe2e" {
-		t.Fatalf("unexpected bundleHash: %v", resp["bundleHash"])
-	}
-}
 
-func TestBundleHandler_EmptyBody(t *testing.T) {
-	mux := setupHandlers()
-	req := httptest.NewRequest(http.MethodPost, "/", io.NopCloser(bytes.NewReader(nil)))
-	rr := httptest.NewRecorder()
-	mux.ServeHTTP(rr, req)
-
-	if rr.Code != http.StatusOK {
-		t.Fatalf("expected status %d, got %d", http.StatusOK, rr.Code)
+	// Wait for the server to come up, then exercise both endpoints.
+	var lastErr error
+	for i := 0; i < 50; i++ {
+		time.Sleep(50 * time.Millisecond)
+		resp, err := http.Get("http://127.0.0.1:18545/health")
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		_ = resp.Body.Close()
+		break
 	}
-}
+	if lastErr != nil {
+		_ = cmd.Process.Kill()
+		t.Fatalf("server did not start: %v", lastErr)
+	}
 
-func setupHandlers() *http.ServeMux {
-	mux := http.NewServeMux()
-	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte(`{"status":"ok"}`))
-	})
-	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		var body map[string]any
-		_ = json.NewDecoder(r.Body).Decode(&body)
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]string{"bundleHash": "0xe2e"})
-	})
-	return mux
+	resp, err := http.Get("http://127.0.0.1:18545/health")
+	if err != nil {
+		_ = cmd.Process.Kill()
+		t.Fatalf("health: %v", err)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	_ = resp.Body.Close()
+	if string(body) != `{"status":"ok"}` {
+		t.Fatalf("unexpected health body: %s", body)
+	}
+
+	resp, err = http.Post("http://127.0.0.1:18545/", "application/json", nil)
+	if err != nil {
+		_ = cmd.Process.Kill()
+		t.Fatalf("bundle: %v", err)
+	}
+	body, _ = io.ReadAll(resp.Body)
+	_ = resp.Body.Close()
+	if strings.TrimSpace(string(body)) != `{"bundleHash":"0xe2e"}` {
+		t.Fatalf("unexpected bundle body: %s", body)
+	}
+
+	_ = cmd.Process.Kill()
+	_, _ = cmd.Process.Wait()
 }
