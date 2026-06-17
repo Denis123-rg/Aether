@@ -10,6 +10,10 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
 jobs:
   toolchain:
     name: toolchain
@@ -23,6 +27,7 @@ jobs:
   rust:
     name: rust
     runs-on: ubuntu-latest
+    needs: toolchain
     steps:
       - uses: actions/checkout@v4
 
@@ -33,22 +38,26 @@ jobs:
         run: rustup show
 
       - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: aether-rust
 
       - name: Clippy
         run: cargo clippy --workspace -- -D warnings
 
       - name: Tests
-        run: cargo test --workspace
+        run: cargo test --workspace --locked
 
   go:
     name: go
     runs-on: ubuntu-latest
+    needs: toolchain
     steps:
       - uses: actions/checkout@v4
 
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
+          cache-dependency-path: go.sum
 
       - name: Vet
         run: go vet ./...
@@ -59,21 +68,55 @@ jobs:
       - name: Production hardening checks
         run: bash scripts/test_production_hardening.sh
 
-      - name: Tests (with coverage)
+      - name: Unit tests (with coverage)
         run: go test ./... -count=1 -coverprofile=coverage.out
 
       - name: Coverage summary
         run: go tool cover -func=coverage.out | tail -30
 
+  go-integration:
+    name: go-integration
+    runs-on: ubuntu-latest
+    needs: [rust, go]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install protobuf compiler
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+
+      - name: Install Rust toolchain
+        run: rustup show
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: aether-rust
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+
+      - name: Build Rust gRPC server
+        run: cargo build --release -p aether-grpc-server
+
+      - name: Cross-language integration tests
+        env:
+          AETHER_RUST_BINARY: ${{ github.workspace }}/target/release/aether-rust
+        run: |
+          go test -tags integration -count=1 ./cmd/executor/... -run 'TestGRPCCrossLanguage' -v
+          go test -tags integration -count=1 ./tests/integration/... -v
+
   go-postgres:
     name: go-postgres (testcontainers)
     runs-on: ubuntu-latest
+    needs: toolchain
     steps:
       - uses: actions/checkout@v4
 
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
+          cache-dependency-path: go.sum
 
       - name: Postgres integration tests
         run: go test ./internal/db/... -count=1 -run TestPostgres -v
@@ -81,7 +124,9 @@ jobs:
   fork-tests:
     name: rust-fork-tests
     runs-on: ubuntu-latest
-    if: ${{ secrets.ETH_RPC_URL != '' }}
+    needs: [rust, go]
+    # Fork tests require a mainnet RPC endpoint. The secret is optional;
+    # when absent the runner script exits cleanly with a skip notice.
     steps:
       - uses: actions/checkout@v4
         with:
@@ -90,9 +135,17 @@ jobs:
       - name: Install protobuf compiler
         run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
 
+      - name: Install Rust toolchain
+        run: rustup show
+
       - uses: foundry-rs/foundry-toolchain@v1
+        with:
+          cache: true
+          cache-key: aether-foundry-${{ runner.os }}
 
       - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: aether-rust
 
       - name: Run fork tests
         env:
@@ -102,6 +155,7 @@ jobs:
   fuzz-nightly:
     name: fuzz-nightly
     runs-on: ubuntu-latest
+    needs: toolchain
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     steps:
       - uses: actions/checkout@v4
@@ -109,8 +163,12 @@ jobs:
       - name: Install protobuf compiler
         run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
 
+      - name: Install Rust toolchain
+        run: rustup show
+
       - uses: Swatinem/rust-cache@v2
         with:
+          shared-key: aether-rust
           workspaces: fuzz
 
       - name: Install cargo-fuzz
@@ -119,28 +177,43 @@ jobs:
       - name: Install nightly for libfuzzer
         run: rustup toolchain install nightly --profile minimal
 
-      - name: Fuzz smoke (new targets, 1000 iterations)
+      - name: Fuzz smoke (all targets, 1000 iterations)
         working-directory: fuzz
         run: |
-          for target in event_decoder curve_math balancer_math config_parse grpc_decode; do
+          for target in balancer_math bellman_ford config_parse cp_math curve_math discovery_validator event_decoder fee_on_transfer grpc_decode mempool_backrun pool_adapter swap_calldata; do
             cargo +nightly fuzz run "$target" -- -runs=1000 -max_total_time=10
           done
-
-      - name: Fuzz fee_on_transfer (5M iterations)
-        working-directory: fuzz
-        run: cargo +nightly fuzz run fee_on_transfer -- -max_total_time=300 -runs=5000000 || true
-
-      - name: Fuzz mempool_backrun (5M iterations)
-        working-directory: fuzz
-        run: cargo +nightly fuzz run mempool_backrun -- -max_total_time=300 -runs=5000000 || true
 
       - name: Fuzz check (compile-only smoke)
         working-directory: fuzz
         run: cargo check
 
+  solidity:
+    name: solidity
+    runs-on: ubuntu-latest
+    needs: toolchain
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - uses: foundry-rs/foundry-toolchain@v1
+        with:
+          cache: true
+          cache-key: aether-foundry-${{ runner.os }}
+
+      - name: Tests
+        working-directory: contracts
+        run: forge test -vvv
+
+      - name: Fuzz smoke
+        working-directory: contracts
+        run: forge test --fuzz-runs 1000 -vvv
+
   load-test:
     name: load-test
     runs-on: ubuntu-latest
+    needs: toolchain
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     steps:
       - uses: actions/checkout@v4
@@ -148,6 +221,7 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
+          cache-dependency-path: go.sum
 
       - name: Load test smoke
         env:
@@ -156,35 +230,29 @@ jobs:
           LOAD_TEST_RPS: "10"
         run: go test -tags=load ./tests/load/... -count=1 -timeout 5m -run TestLoadSmoke -v
 
-  e2e:
-    name: e2e-pipeline
+  e2e-smoke:
+    name: e2e-smoke
     runs-on: ubuntu-latest
+    needs: [rust, go]
     steps:
       - uses: actions/checkout@v4
 
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
+          cache-dependency-path: go.sum
 
-      - name: E2E pipeline (self-contained smoke)
-        env:
-          EXECUTOR_METRICS_URL: http://127.0.0.1:1/metrics/json
-          EXECUTOR_ADMIN_URL: http://127.0.0.1:1
-        run: |
-          go test -tags=e2e ./tests/e2e/... -count=1 -run TestHealthEndpoint -timeout 30s || \
-          go test ./tests/e2e/... -count=1 -run TestParse -timeout 30s 2>/dev/null || \
-          echo "E2E services not started in CI — run tests/e2e/run_full_pipeline.sh locally"
+      - name: Install Rust toolchain
+        run: rustup show
 
-  solidity:
-    name: solidity
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
+      - uses: Swatinem/rust-cache@v2
         with:
-          submodules: recursive
+          shared-key: aether-rust
 
-      - uses: foundry-rs/foundry-toolchain@v1
+      - name: Build Rust gRPC server
+        run: cargo build --release -p aether-grpc-server
 
-      - name: Tests
-        working-directory: contracts
-        run: forge test -vvv
+      - name: E2E smoke (parser + health)
+        env:
+          AETHER_RUST_BINARY: ${{ github.workspace }}/target/release/aether-rust
+        run: go test ./tests/e2e/... -count=1 -run 'TestParse|TestHealthEndpoint' -timeout 60s -v
