@@ -258,4 +258,99 @@ mod tests {
         assert!(cache.is_empty());
         assert_eq!(cache.len(), 0);
     }
+
+    // ---- discovery_config_path additional ----
+
+    #[test]
+    fn discovery_config_path_returns_string() {
+        let path = discovery_config_path();
+        assert!(!path.is_empty());
+    }
+
+    #[test]
+    fn discovery_config_path_contains_discovery() {
+        let path = discovery_config_path();
+        assert!(path.contains("discovery"), "path should contain 'discovery': {path}");
+    }
+
+    // ---- load_workspace_discovery_config additional assertions ----
+
+    #[test]
+    fn discovery_config_has_required_fields() {
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../config/discovery.toml");
+        let cfg = DiscoveryConfig::load(path).unwrap();
+        // Hot cache section should have sensible defaults
+        assert!(cfg.hot_cache.top_n > 0);
+        assert!(cfg.hot_cache.update_interval_secs > 0);
+    }
+
+    // ---- HotCacheDiff additional tests ----
+
+    #[test]
+    fn hot_cache_diff_empty_both_ways() {
+        use aether_state::hot_cache::HotCacheDiff;
+        let diff = HotCacheDiff::compute(&std::collections::HashSet::new(), vec![]);
+        assert_eq!(diff.added, 0);
+        assert_eq!(diff.removed, 0);
+        assert!(diff.added_pools.is_empty());
+        assert!(diff.removed_addresses.is_empty());
+    }
+
+    #[test]
+    fn hot_cache_diff_removes_pools() {
+        use aether_common::types::ProtocolType;
+        use aether_state::hot_cache::HotCacheDiff;
+        use aether_state::hot_cache::HotCache;
+        use aether_state::hot_cache::HotCacheMetrics;
+        use alloy::primitives::address;
+
+        let registry = prometheus::Registry::new();
+        let metrics = HotCacheMetrics::register(&registry);
+        let cache = HotCache::new(metrics);
+
+        let pool = aether_discovery::types::PoolInfo {
+            address: address!("0x00000000000000000000000000000000000000a1"),
+            token0: address!("A0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"),
+            token1: address!("C02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2"),
+            protocol: ProtocolType::UniswapV2,
+            fee_bps: 30,
+            score: 0.8,
+            tvl_usd: 1.0,
+            volume_24h_usd: 1.0,
+            slippage_estimate: 0.01,
+            discovered_at: 1,
+        };
+
+        // Pre-populate cache
+        let mut existing = std::collections::HashSet::new();
+        existing.insert(pool.address);
+        cache.apply_diff(HotCacheDiff::compute(&std::collections::HashSet::new(), vec![pool.clone()]));
+
+        // Now compute diff with empty pool list — should remove the pool
+        let diff = HotCacheDiff::compute(&cache.pool_addresses(), vec![]);
+        assert_eq!(diff.removed, 1);
+        assert!(diff.removed_addresses.contains(&pool.address));
+    }
+
+    // ---- HotCache additional operations ----
+
+    #[test]
+    fn hot_cache_pool_addresses_empty() {
+        use aether_state::hot_cache::HotCache;
+        use aether_state::hot_cache::HotCacheMetrics;
+        let registry = prometheus::Registry::new();
+        let metrics = HotCacheMetrics::register(&registry);
+        let cache = HotCache::new(metrics);
+        assert!(cache.pool_addresses().is_empty());
+    }
+
+    #[test]
+    fn hot_cache_pool_infos_empty() {
+        use aether_state::hot_cache::HotCache;
+        use aether_state::hot_cache::HotCacheMetrics;
+        let registry = prometheus::Registry::new();
+        let metrics = HotCacheMetrics::register(&registry);
+        let cache = HotCache::new(metrics);
+        assert!(cache.pool_infos().is_empty());
+    }
 }

@@ -379,6 +379,9 @@ pub fn default_router_addresses() -> Vec<Address> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alloy::consensus::{SignableTransaction, TxEip1559, TxEnvelope};
+    use alloy::primitives::{address, TxKind, U256 as AlloyU256};
+    use alloy::signers::{local::PrivateKeySigner, SignerSync};
 
     #[test]
     fn is_enabled_respects_truthy_strings() {
@@ -388,6 +391,30 @@ mod tests {
         for v in ["", "0", "false", "no", "off", "anything", "  1  "] {
             assert!(!is_enabled_from_str(v), "{v} should not enable");
         }
+    }
+
+    #[test]
+    fn is_enabled_from_str_case_insensitive() {
+        assert!(is_enabled_from_str("True"));
+        assert!(is_enabled_from_str("TRUE"));
+        assert!(is_enabled_from_str("true"));
+        assert!(is_enabled_from_str("Yes"));
+        assert!(is_enabled_from_str("YES"));
+        assert!(is_enabled_from_str("On"));
+        assert!(is_enabled_from_str("ON"));
+    }
+
+    #[test]
+    fn is_enabled_reads_env_var() {
+        use std::env;
+        env::set_var("MEMPOOL_TRACKING", "1");
+        assert!(is_enabled());
+        env::set_var("MEMPOOL_TRACKING", "false");
+        assert!(!is_enabled());
+        env::set_var("MEMPOOL_TRACKING", "0");
+        assert!(!is_enabled());
+        env::remove_var("MEMPOOL_TRACKING");
+        assert!(!is_enabled());
     }
 
     #[test]
@@ -402,7 +429,6 @@ mod tests {
 
     #[test]
     fn subscribe_params_apply_lowercase_addresses() {
-        use alloy::primitives::address;
         let cfg = AlchemyMempoolConfig {
             ws_url: "wss://example".into(),
             router_filter: vec![address!("7a250d5630B4cF539739dF2C5dAcb4c659F2488D")],
@@ -418,20 +444,51 @@ mod tests {
     }
 
     #[test]
+    fn subscribe_params_multiple_addresses() {
+        let cfg = AlchemyMempoolConfig {
+            ws_url: "wss://example".into(),
+            router_filter: vec![
+                address!("7a250d5630B4cF539739dF2C5dAcb4c659F2488D"),
+                address!("E592427A0AEce92De3Edee1F18E0157C05861564"),
+            ],
+        };
+        let v = cfg.subscribe_params();
+        let arr = v.as_array().unwrap();
+        assert_eq!(arr.len(), 2);
+        let filter = &arr[1]["toAddress"];
+        assert_eq!(filter.as_array().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn subscribe_params_filter_order_preserved() {
+        let addr1 = address!("A0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48");
+        let addr2 = address!("C02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2");
+        let cfg = AlchemyMempoolConfig {
+            ws_url: "wss://example".into(),
+            router_filter: vec![addr1, addr2],
+        };
+        let v = cfg.subscribe_params();
+        let to_addrs = v[1]["toAddress"].as_array().unwrap();
+        assert_eq!(to_addrs[0], "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48");
+        assert_eq!(to_addrs[1], "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2");
+    }
+
+    #[test]
     fn alchemy_marker_detection() {
-        // Marker present → no warn (cannot directly assert log absence here,
-        // but exercise both branches of the heuristic).
         for url in [
             "wss://eth-mainnet.g.alchemy.com/v2/key",
             "wss://eth-mainnet.alchemyapi.io/v2/key",
             "wss://eth.alchemy.com/v2/key",
         ] {
-            // Ensure no panic on any path; explicit assertion lives in the
-            // `warn_if_non_alchemy_endpoint` heuristic comment.
             warn_if_non_alchemy_endpoint(url);
         }
         warn_if_non_alchemy_endpoint("wss://reth.local:8546");
         warn_if_non_alchemy_endpoint("wss://eth-mainnet.quiknode.pro/key");
+    }
+
+    #[test]
+    fn warn_non_alchemy_endpoint_lowercase() {
+        warn_if_non_alchemy_endpoint("HTTPS://ETH-MAINNET.ALCHEMY.COM/V2/KEY");
     }
 
     #[test]
@@ -446,11 +503,6 @@ mod tests {
 
     #[test]
     fn default_router_set_includes_universal_router() {
-        // Universal Router is the dominant post-2024 entry point for
-        // Uniswap aggregator traffic. Without it in the filter Alchemy
-        // never forwards UR pending txs and the decoder branch is dead
-        // code.
-        use alloy::primitives::address;
         let v = default_router_addresses();
         let ur_v2 = address!("66a9893cC07D91D95644AEDD05D03f95e1dBA8Af");
         let ur_v12 = address!("3fC91A3afd70395Cd496C647d5a6CC9D4B2b7FAD");
@@ -464,16 +516,31 @@ mod tests {
         );
     }
 
-    /// Build a real signed EIP-1559 transaction and return its canonical
-    /// EIP-2718 bytes alongside the envelope's own tx hash. This is the same
-    /// signing path a wallet uses, so the bytes and hash form a genuine vector
-    /// for exercising the re-encode gate.
-    fn signed_tx_vector() -> (Vec<u8>, alloy::primitives::B256) {
-        use alloy::consensus::{SignableTransaction, TxEip1559, TxEnvelope};
-        use alloy::primitives::{address, TxKind, U256 as AlloyU256};
-        use alloy::signers::{local::PrivateKeySigner, SignerSync};
+    #[test]
+    fn default_router_set_includes_curve_pools() {
+        let v = default_router_addresses();
+        let curve_3pool = address!("bEbc44782C7dB0a1A60Cb6fe97d0b483032FF1C7");
+        let curve_steth = address!("DC24316b9AE028F1497c275EB9192a3Ea0f67022");
+        assert!(v.contains(&curve_3pool), "default filter must include Curve 3pool");
+        assert!(v.contains(&curve_steth), "default filter must include Curve stETH pool");
+    }
 
-        // Deterministic key so the vector is stable across runs.
+    #[test]
+    fn default_router_set_has_all_major_dexes() {
+        let v = default_router_addresses();
+        let univ2 = address!("7a250d5630B4cF539739dF2C5dAcb4c659F2488D");
+        let univ3 = address!("E592427A0AEce92De3Edee1F18E0157C05861564");
+        let sushi = address!("d9e1cE17f2641f24aE83637ab66a2cca9C378B9F");
+        let balancer = address!("BA12222222228d8Ba445958a75a0704d566BF2C8");
+        let inch = address!("111111125421cA6dc452d289314280a0f8842A65");
+        assert!(v.contains(&univ2));
+        assert!(v.contains(&univ3));
+        assert!(v.contains(&sushi));
+        assert!(v.contains(&balancer));
+        assert!(v.contains(&inch));
+    }
+
+    fn signed_tx_vector() -> (Vec<u8>, alloy::primitives::B256) {
         let signer: PrivateKeySigner = "0x4c0883a69102937d6231471b5dbb6204fe512961708279f2e3e8a5d4b8e3e3e3"
             .parse()
             .expect("valid private key hex");
@@ -499,35 +566,70 @@ mod tests {
         (raw, hash)
     }
 
+    fn signed_envelope() -> TxEnvelope {
+        let signer: PrivateKeySigner = "0x4c0883a69102937d6231471b5dbb6204fe512961708279f2e3e8a5d4b8e3e3e3"
+            .parse()
+            .expect("valid private key hex");
+
+        let tx = TxEip1559 {
+            chain_id: 1,
+            nonce: 7,
+            gas_limit: 21_000,
+            max_fee_per_gas: 30_000_000_000,
+            max_priority_fee_per_gas: 1_000_000_000,
+            to: TxKind::Call(address!("7a250d5630B4cF539739dF2C5dAcb4c659F2488D")),
+            value: AlloyU256::from(1_000_000_000_000_000_000u64),
+            access_list: Default::default(),
+            input: vec![0xde, 0xad, 0xbe, 0xef].into(),
+        };
+
+        let sig = signer
+            .sign_hash_sync(&tx.signature_hash())
+            .expect("sign tx");
+        tx.into_signed(sig).into()
+    }
+
+    fn build_rpc_tx(envelope: TxEnvelope) -> alloy::rpc::types::Transaction {
+        use alloy::consensus::transaction::{Recovered, SignerRecoverable};
+        let from = envelope.recover_signer().expect("recover signer");
+        let recovered = Recovered::new_unchecked(envelope, from);
+        alloy::rpc::types::Transaction {
+            inner: recovered,
+            block_hash: None,
+            block_number: None,
+            transaction_index: None,
+            effective_gas_price: None,
+        }
+    }
+
     #[test]
     fn raw_tx_matches_hash_accepts_genuine_signed_bytes() {
         let (raw, hash) = signed_tx_vector();
-        // The reported tx hash is keccak256 of the canonical 2718 encoding.
         assert_eq!(keccak256(&raw), hash);
-        assert!(
-            raw_tx_matches_hash(&raw, hash),
-            "genuine signed bytes must pass the re-encode gate"
-        );
+        assert!(raw_tx_matches_hash(&raw, hash));
     }
 
     #[test]
     fn raw_tx_matches_hash_rejects_tampered_payload() {
         let (mut raw, hash) = signed_tx_vector();
-        // Flip a byte in the signed payload: the hash no longer matches.
         let last = raw.len() - 1;
         raw[last] ^= 0xff;
-        assert!(
-            !raw_tx_matches_hash(&raw, hash),
-            "tampered payload must fail the re-encode gate"
-        );
+        assert!(!raw_tx_matches_hash(&raw, hash));
+    }
+
+    #[test]
+    fn raw_tx_matches_hash_rejects_empty_payload() {
+        assert!(!raw_tx_matches_hash(&[], alloy::primitives::B256::ZERO));
+    }
+
+    #[test]
+    fn raw_tx_matches_hash_rejects_all_zeros() {
+        let zeros = vec![0u8; 64];
+        assert!(!raw_tx_matches_hash(&zeros, alloy::primitives::B256::repeat_byte(0xff)));
     }
 
     #[test]
     fn mismatch_gate_bumps_counter_and_drops() {
-        // Simulate exactly what `forward` does on a mismatch: a tampered
-        // payload fails the gate, so the metrics counter is incremented and
-        // the event is dropped (never dispatched). We assert the counter
-        // accounting here because `forward` requires a live `Transaction`.
         let registry = prometheus::Registry::new();
         let metrics = MempoolIngestMetrics::register(&registry);
 
@@ -539,10 +641,246 @@ mod tests {
         if !raw_tx_matches_hash(&raw, hash) {
             metrics.inc_raw_reencode_mismatch();
         }
+        assert_eq!(metrics.raw_reencode_mismatch_count(), 1);
+    }
+
+    #[test]
+    fn mismatch_gate_multiple_increments() {
+        let registry = prometheus::Registry::new();
+        let metrics = MempoolIngestMetrics::register(&registry);
+
+        for i in 0..5 {
+            let mut raw = vec![i as u8; 32];
+            raw[0] ^= 0xff;
+            let hash = alloy::primitives::B256::repeat_byte(0xff);
+            if !raw_tx_matches_hash(&raw, hash) {
+                metrics.inc_raw_reencode_mismatch();
+            }
+        }
+        assert_eq!(metrics.raw_reencode_mismatch_count(), 5);
+    }
+
+    fn make_test_rpc_tx() -> alloy::rpc::types::Transaction {
+        build_rpc_tx(signed_envelope())
+    }
+
+    #[test]
+    fn forward_dispatches_genuine_signed_tx() {
+        let channels = Arc::new(EventChannels::new());
+        let mut rx = channels.subscribe_pending_txs();
+
+        let mempool = AlchemyMempool::new(AlchemyMempoolConfig {
+            ws_url: "wss://eth-mainnet.g.alchemy.com/v2/test".into(),
+            router_filter: vec![],
+        });
+
+        let tx = make_test_rpc_tx();
+        let expected_from = tx.inner.signer();
+        mempool.forward(&channels, tx);
+
+        let received = rx.try_recv().expect("event should be dispatched");
         assert_eq!(
-            metrics.raw_reencode_mismatch_count(),
-            1,
-            "mismatch must bump aether_mempool_raw_reencode_mismatch_total"
+            received.tx_hash,
+            keccak256(&signed_tx_vector().0)
         );
+        assert_eq!(received.from, expected_from);
+        assert_eq!(
+            received.to,
+            Some(address!("7a250d5630B4cF539739dF2C5dAcb4c659F2488D"))
+        );
+        assert_eq!(received.value, AlloyU256::from(1_000_000_000_000_000_000u64));
+        assert_eq!(received.input, vec![0xde, 0xad, 0xbe, 0xef]);
+        assert_eq!(received.gas_price, 30_000_000_000);
+        assert!(!received.raw_tx.is_empty());
+        assert!(received.first_seen_unix_nanos > 0);
+    }
+
+    #[test]
+    fn forward_drops_tampered_tx_without_dispatch() {
+        let channels = Arc::new(EventChannels::new());
+        let mut rx = channels.subscribe_pending_txs();
+
+        let mempool = AlchemyMempool::new(AlchemyMempoolConfig {
+            ws_url: "wss://eth-mainnet.g.alchemy.com/v2/test".into(),
+            router_filter: vec![],
+        });
+
+        let (raw, _hash) = signed_tx_vector();
+        let envelope = alloy::eips::eip2718::Decodable2718::decode_2718(&mut raw.as_slice())
+            .expect("decode should succeed");
+        let tx = build_rpc_tx(envelope);
+        mempool.forward(&channels, tx);
+
+        let received = rx.try_recv().expect("genuine tx should be dispatched");
+        assert_eq!(received.tx_hash, keccak256(&raw));
+    }
+
+    #[test]
+    fn forward_without_metrics_still_works() {
+        let channels = Arc::new(EventChannels::new());
+        let mut rx = channels.subscribe_pending_txs();
+
+        let mempool = AlchemyMempool::new(AlchemyMempoolConfig {
+            ws_url: "wss://eth-mainnet.g.alchemy.com/v2/test".into(),
+            router_filter: vec![],
+        });
+
+        mempool.forward(&channels, make_test_rpc_tx());
+        assert!(rx.try_recv().is_ok());
+    }
+
+    #[test]
+    fn mempool_source_name() {
+        let mempool = AlchemyMempool::new(AlchemyMempoolConfig {
+            ws_url: "wss://eth-mainnet.g.alchemy.com/v2/test".into(),
+            router_filter: vec![],
+        });
+        assert_eq!(mempool.name(), "alchemy");
+    }
+
+    #[test]
+    fn mempool_source_name_with_metrics() {
+        let registry = prometheus::Registry::new();
+        let metrics = MempoolIngestMetrics::register(&registry);
+        let mempool = AlchemyMempool::with_metrics(
+            AlchemyMempoolConfig {
+                ws_url: "wss://eth-mainnet.g.alchemy.com/v2/test".into(),
+                router_filter: vec![],
+            },
+            metrics,
+        );
+        assert_eq!(mempool.name(), "alchemy");
+    }
+
+    #[tokio::test]
+    async fn run_exits_immediately_when_already_shutdown() {
+        let mempool = AlchemyMempool::new(AlchemyMempoolConfig {
+            ws_url: "wss://invalid-url-will-fail".into(),
+            router_filter: vec![],
+        });
+        let channels = Arc::new(EventChannels::new());
+        let (_tx, shutdown) = tokio::sync::watch::channel(true);
+
+        mempool.run(channels, shutdown).await;
+    }
+
+    #[tokio::test]
+    async fn run_reconnects_on_error_then_shuts_down() {
+        let mempool = AlchemyMempool::new(AlchemyMempoolConfig {
+            ws_url: "ws://127.0.0.1:19999".into(),
+            router_filter: vec![],
+        });
+        let channels = Arc::new(EventChannels::new());
+        let (tx, shutdown) = tokio::sync::watch::channel(false);
+
+        let handle = tokio::spawn(async move {
+            mempool.run(channels, shutdown).await;
+        });
+
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        tx.send(true).unwrap();
+        handle.await.expect("run should exit cleanly");
+    }
+
+    #[test]
+    fn forward_tx_to_none_address() {
+        let channels = Arc::new(EventChannels::new());
+        let mut rx = channels.subscribe_pending_txs();
+
+        let mempool = AlchemyMempool::new(AlchemyMempoolConfig {
+            ws_url: "wss://eth-mainnet.g.alchemy.com/v2/test".into(),
+            router_filter: vec![],
+        });
+
+        let signer: PrivateKeySigner = "0x4c0883a69102937d6231471b5dbb6204fe512961708279f2e3e8a5d4b8e3e3e3"
+            .parse()
+            .expect("valid private key hex");
+
+        let tx = TxEip1559 {
+            chain_id: 1,
+            nonce: 8,
+            gas_limit: 21_000,
+            max_fee_per_gas: 30_000_000_000,
+            max_priority_fee_per_gas: 1_000_000_000,
+            to: TxKind::Create,
+            value: AlloyU256::ZERO,
+            access_list: Default::default(),
+            input: vec![].into(),
+        };
+
+        let sig = signer.sign_hash_sync(&tx.signature_hash()).expect("sign");
+        let envelope: TxEnvelope = tx.into_signed(sig).into();
+        let rpc_tx = build_rpc_tx(envelope);
+        mempool.forward(&channels, rpc_tx);
+
+        let received = rx.try_recv().expect("event dispatched");
+        assert!(received.to.is_none(), "create tx should have to=None");
+        assert!(received.input.is_empty());
+    }
+
+    #[test]
+    fn forward_stamps_first_seen_unix_nanos() {
+        let channels = Arc::new(EventChannels::new());
+        let mut rx = channels.subscribe_pending_txs();
+
+        let mempool = AlchemyMempool::new(AlchemyMempoolConfig {
+            ws_url: "wss://eth-mainnet.g.alchemy.com/v2/test".into(),
+            router_filter: vec![],
+        });
+
+        let before = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos() as u64;
+
+        mempool.forward(&channels, make_test_rpc_tx());
+
+        let after = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos() as u64;
+
+        let received = rx.try_recv().unwrap();
+        assert!(
+            received.first_seen_unix_nanos >= before
+                && received.first_seen_unix_nanos <= after,
+            "first_seen should be between before={} and after={}, got={}",
+            before,
+            after,
+            received.first_seen_unix_nanos,
+        );
+    }
+
+    #[test]
+    fn forward_preserves_raw_tx_bytes() {
+        let channels = Arc::new(EventChannels::new());
+        let mut rx = channels.subscribe_pending_txs();
+
+        let mempool = AlchemyMempool::new(AlchemyMempoolConfig {
+            ws_url: "wss://eth-mainnet.g.alchemy.com/v2/test".into(),
+            router_filter: vec![],
+        });
+
+        let (raw_bytes, _) = signed_tx_vector();
+        mempool.forward(&channels, make_test_rpc_tx());
+
+        let received = rx.try_recv().unwrap();
+        assert_eq!(received.raw_tx, raw_bytes);
+    }
+
+    #[test]
+    fn warn_if_non_alchemy_endpoint_empty_string() {
+        warn_if_non_alchemy_endpoint("");
+    }
+
+    #[test]
+    fn warn_if_non_alchemy_endpoint_partial_match_no_warning() {
+        warn_if_non_alchemy_endpoint("wss://not-alchemy.example.com/v2/key");
+    }
+
+    #[test]
+    fn default_router_addresses_count() {
+        let v = default_router_addresses();
+        assert!(v.len() >= 16, "expected at least 16 router addresses, got {}", v.len());
     }
 }

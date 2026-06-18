@@ -447,9 +447,31 @@ mod tests {
     use super::*;
     use alloy::primitives::Address;
 
+    fn sample_score() -> NewProfitabilityScore {
+        NewProfitabilityScore {
+            prediction_id: Uuid::new_v4(),
+            scored_at: Utc::now(),
+            cycle_path: serde_json::json!([
+                {"pool":"0x0000000000000000000000000000000000000001","token_in":"0x0","token_out":"0x0","protocol":"uni_v2"}
+            ]),
+            realized_profit_wei: U256::from(1_000_000_000_000_000u64),
+            gas_estimate_wei: U256::from(50_000_000_000_000u64),
+            net_profit_wei: 950_000_000_000_000,
+            decision: DECISION_PROFITABLE,
+            reason: REASON_U256_WALKER,
+            scoring_engine_git_sha: Some("deadbeef".to_string()),
+        }
+    }
+
     #[test]
     fn noop_sink_silently_accepts_writes() {
         let sink = NoopProfitabilitySink::new();
+        sink.insert_score(sample_score());
+    }
+
+    #[test]
+    fn noop_sink_default_trait() {
+        let sink = NoopProfitabilitySink::default();
         sink.insert_score(sample_score());
     }
 
@@ -460,10 +482,6 @@ mod tests {
 
     #[test]
     fn decision_constants_match_check_constraint() {
-        // Pinned to the CHECK constraint in
-        // migrations/0005_mempool_profitability.sql. A rename here without
-        // a matching migration would make every insert fail with
-        // SQLSTATE 23514.
         assert_eq!(DECISION_PROFITABLE, "profitable");
         assert_eq!(DECISION_UNPROFITABLE, "unprofitable");
         assert_eq!(DECISION_REVERTED, "reverted");
@@ -472,9 +490,6 @@ mod tests {
 
     #[test]
     fn reason_constants_are_stable_wire_labels() {
-        // Pinned because dashboards (Grafana mempool.json from PR #146)
-        // hard-code these strings in PromQL queries that sum by
-        // `reason`. Renames break the panels silently.
         assert_eq!(REASON_NA, "n/a");
         assert_eq!(REASON_U256_WALKER, "u256_walker");
         assert_eq!(REASON_ABSURDITY_FLOOR, "absurdity_floor");
@@ -520,29 +535,261 @@ mod tests {
         }
     }
 
-    fn sample_score() -> NewProfitabilityScore {
-        NewProfitabilityScore {
+    #[test]
+    fn metrics_register_all_reason_labels() {
+        let registry = Registry::new();
+        let m = ProfitabilityWriterMetrics::register(&registry);
+        for reason in [
+            REASON_NA,
+            REASON_U256_WALKER,
+            REASON_ABSURDITY_FLOOR,
+            REASON_REVM_REVERT,
+            REASON_REVM_VERDICT,
+        ] {
+            m.scored_total
+                .with_label_values(&[DECISION_PROFITABLE, reason])
+                .inc();
+        }
+        let output = prometheus::TextEncoder::new()
+            .encode_to_string(&registry.gather())
+            .unwrap();
+        assert!(output.contains("aether_mempool_profit_scored_total"));
+    }
+
+    #[test]
+    fn metrics_write_latency_err_label() {
+        let registry = Registry::new();
+        let m = ProfitabilityWriterMetrics::register(&registry);
+        m.write_latency_ms.with_label_values(&["err"]).observe(42.5);
+        let output = prometheus::TextEncoder::new()
+            .encode_to_string(&registry.gather())
+            .unwrap();
+        assert!(output.contains("aether_mempool_profit_writer_write_latency_ms"));
+    }
+
+    #[test]
+    fn metrics_drops_counter_increments() {
+        let registry = Registry::new();
+        let m = ProfitabilityWriterMetrics::register(&registry);
+        m.drops_total.inc();
+        m.drops_total.inc();
+        let output = prometheus::TextEncoder::new()
+            .encode_to_string(&registry.gather())
+            .unwrap();
+        assert!(output.contains("aether_mempool_profit_writer_drops_total 2"));
+    }
+
+    #[test]
+    fn metrics_queue_depth_gauge_tracks_values() {
+        let registry = Registry::new();
+        let m = ProfitabilityWriterMetrics::register(&registry);
+        assert_eq!(m.queue_depth.get(), 0);
+        m.queue_depth.set(10);
+        assert_eq!(m.queue_depth.get(), 10);
+        m.queue_depth.dec();
+        assert_eq!(m.queue_depth.get(), 9);
+    }
+
+    #[test]
+    fn default_reason_returns_na() {
+        assert_eq!(default_reason(), REASON_NA);
+    }
+
+    #[test]
+    fn new_profitability_score_fields() {
+        let score = sample_score();
+        assert_eq!(score.decision, DECISION_PROFITABLE);
+        assert_eq!(score.reason, REASON_U256_WALKER);
+        assert_eq!(score.net_profit_wei, 950_000_000_000_000);
+        assert!(score.scoring_engine_git_sha.is_some());
+    }
+
+    #[test]
+    fn new_profitability_score_default_reason() {
+        let score = NewProfitabilityScore {
             prediction_id: Uuid::new_v4(),
             scored_at: Utc::now(),
-            cycle_path: serde_json::json!([
-                {"pool":"0x0000000000000000000000000000000000000001","token_in":"0x0","token_out":"0x0","protocol":"uni_v2"}
-            ]),
-            realized_profit_wei: U256::from(1_000_000_000_000_000u64),
-            gas_estimate_wei: U256::from(50_000_000_000_000u64),
-            net_profit_wei: 950_000_000_000_000,
-            decision: DECISION_PROFITABLE,
-            reason: REASON_U256_WALKER,
-            scoring_engine_git_sha: Some("deadbeef".to_string()),
-        }
+            cycle_path: serde_json::json!([]),
+            realized_profit_wei: U256::ZERO,
+            gas_estimate_wei: U256::ZERO,
+            net_profit_wei: 0,
+            decision: DECISION_NO_PATH,
+            reason: REASON_NA,
+            scoring_engine_git_sha: None,
+        };
+        assert_eq!(score.reason, REASON_NA);
+        assert!(score.scoring_engine_git_sha.is_none());
+    }
+
+    #[test]
+    fn new_profitability_score_clone() {
+        let score = sample_score();
+        let cloned = score.clone();
+        assert_eq!(cloned.prediction_id, score.prediction_id);
+        assert_eq!(cloned.decision, score.decision);
+    }
+
+    #[test]
+    fn new_profitability_score_serialize() {
+        let score = sample_score();
+        let json = serde_json::to_string(&score).expect("serialize");
+        assert!(json.contains("profitable"));
+        assert!(json.contains("u256_walker"));
+        assert!(json.contains("deadbeef"));
+    }
+
+    #[test]
+    fn new_profitability_score_debug() {
+        let score = sample_score();
+        let debug = format!("{:?}", score);
+        assert!(debug.contains("NewProfitabilityScore"));
+    }
+
+    #[test]
+    fn u256_to_decimal_zero() {
+        let d = u256_to_decimal(U256::ZERO);
+        assert_eq!(d, BigDecimal::from(0u64));
+    }
+
+    #[test]
+    fn u256_to_decimal_one_ether() {
+        let one_eth = U256::from(1_000_000_000_000_000_000u64);
+        let d = u256_to_decimal(one_eth);
+        assert_eq!(d.to_string(), "1000000000000000000");
+    }
+
+    #[test]
+    fn u256_to_decimal_large_value() {
+        let v = U256::from(u64::MAX);
+        let d = u256_to_decimal(v);
+        assert_eq!(d.to_string(), u64::MAX.to_string());
+    }
+
+    #[test]
+    fn u256_to_decimal_u256_max() {
+        let v = U256::MAX;
+        let d = u256_to_decimal(v);
+        assert!(!d.to_string().is_empty());
+        assert_eq!(d.to_string(), v.to_string());
+    }
+
+    #[test]
+    fn u256_to_decimal_small() {
+        let d = u256_to_decimal(U256::from(1u64));
+        assert_eq!(d, BigDecimal::from(1u64));
+    }
+
+    #[test]
+    fn profit_writer_from_env_no_dsn_returns_noop() {
+        std::env::remove_var("MEMPOOL_LEDGER_DSN");
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let registry = Registry::new();
+        let metrics = ProfitabilityWriterMetrics::register(&registry);
+        let sink = rt.block_on(profit_writer_from_env(metrics));
+        sink.insert_score(sample_score());
+    }
+
+    #[test]
+    fn profit_writer_from_env_empty_dsn_returns_noop() {
+        std::env::set_var("MEMPOOL_LEDGER_DSN", "");
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let registry = Registry::new();
+        let metrics = ProfitabilityWriterMetrics::register(&registry);
+        let sink = rt.block_on(profit_writer_from_env(metrics));
+        sink.insert_score(sample_score());
+        std::env::remove_var("MEMPOOL_LEDGER_DSN");
+    }
+
+    #[test]
+    fn profit_writer_from_env_invalid_dsn_returns_noop() {
+        std::env::set_var("MEMPOOL_LEDGER_DSN", "postgres://invalid-host:5432/noexist");
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let registry = Registry::new();
+        let metrics = ProfitabilityWriterMetrics::register(&registry);
+        let sink = rt.block_on(profit_writer_from_env(metrics));
+        sink.insert_score(sample_score());
+        std::env::remove_var("MEMPOOL_LEDGER_DSN");
+    }
+
+    #[test]
+    fn pg_writer_channel_full_drops_score() {
+        let registry = Registry::new();
+        let metrics = ProfitabilityWriterMetrics::register(&registry);
+        let (tx, _rx) = mpsc::channel::<NewProfitabilityScore>(1);
+        let writer = PgProfitabilityWriter {
+            tx,
+            metrics: Arc::clone(&metrics),
+        };
+
+        // Fill the channel (capacity 1).
+        writer.insert_score(sample_score());
+        // Second insert should hit Full and bump drops_total.
+        writer.insert_score(sample_score());
+
+        let output = prometheus::TextEncoder::new()
+            .encode_to_string(&registry.gather())
+            .unwrap();
+        assert!(
+            output.contains("aether_mempool_profit_writer_drops_total 1"),
+            "expected drops=1, got: {output}"
+        );
+    }
+
+    #[test]
+    fn pg_writer_channel_closed_drops_score() {
+        let registry = Registry::new();
+        let metrics = ProfitabilityWriterMetrics::register(&registry);
+        let (tx, rx) = mpsc::channel::<NewProfitabilityScore>(2);
+        drop(rx); // Close receiver.
+        let writer = PgProfitabilityWriter {
+            tx,
+            metrics: Arc::clone(&metrics),
+        };
+
+        // Insert should hit Closed path — drops_total stays 0, no panic.
+        writer.insert_score(sample_score());
+        let output = prometheus::TextEncoder::new()
+            .encode_to_string(&registry.gather())
+            .unwrap();
+        assert!(
+            !output.contains("aether_mempool_profit_writer_drops_total 1"),
+            "Closed path should not increment drops"
+        );
+    }
+
+    #[test]
+    fn pg_writer_channel_ok_increments_scored_and_queue() {
+        let registry = Registry::new();
+        let metrics = ProfitabilityWriterMetrics::register(&registry);
+        let (tx, _rx) = mpsc::channel::<NewProfitabilityScore>(256);
+        let writer = PgProfitabilityWriter {
+            tx,
+            metrics: Arc::clone(&metrics),
+        };
+
+        writer.insert_score(NewProfitabilityScore {
+            prediction_id: Uuid::new_v4(),
+            scored_at: Utc::now(),
+            cycle_path: serde_json::json!([]),
+            realized_profit_wei: U256::ZERO,
+            gas_estimate_wei: U256::ZERO,
+            net_profit_wei: 0,
+            decision: DECISION_UNPROFITABLE,
+            reason: REASON_NA,
+            scoring_engine_git_sha: None,
+        });
+
+        let output = prometheus::TextEncoder::new()
+            .encode_to_string(&registry.gather())
+            .unwrap();
+        assert!(
+            output.contains(r#"aether_mempool_profit_scored_total{decision="unprofitable",reason="n/a"} 1"#),
+            "expected scored_total inc, got: {output}"
+        );
     }
 
     #[test]
     fn unscored_from_raw_handles_bytea_widths() {
-        // RawUnscored.pool_address etc. are Vec<u8> from pgx; the From
-        // impl must handle the 20-byte case and gracefully fall back on
-        // anything else without panicking (a defensive guard against a
-        // future schema migration that widens / narrows the bytea
-        // columns).
         let raw = RawUnscored {
             prediction_id: Uuid::new_v4(),
             protocol: "uni_v2".to_string(),
@@ -555,7 +802,120 @@ mod tests {
         let conv: UnscoredConfirmedPrediction = raw.into();
         assert_eq!(conv.actual_target_block, 100);
         assert_eq!(conv.amount_in, U256::from(123_456u64));
-        let expected_pool = Address::from([0xab; 20]);
-        assert_eq!(conv.pool_address, expected_pool);
+        assert_eq!(conv.pool_address, Address::from([0xab; 20]));
+    }
+
+    #[test]
+    fn unscored_from_raw_short_bytea_zeros() {
+        let raw = RawUnscored {
+            prediction_id: Uuid::new_v4(),
+            protocol: "curve".to_string(),
+            pool_address: vec![0xaa; 10],
+            token_in: vec![0xbb; 5],
+            token_out: vec![],
+            amount_in: BigDecimal::from(0u64),
+            actual_target_block: 500,
+        };
+        let conv: UnscoredConfirmedPrediction = raw.into();
+        assert_eq!(conv.pool_address, Address::ZERO);
+        assert_eq!(conv.token_in, Address::ZERO);
+        assert_eq!(conv.token_out, Address::ZERO);
+        assert_eq!(conv.amount_in, U256::ZERO);
+    }
+
+    #[test]
+    fn unscored_from_raw_long_bytea_truncates_to_zeros() {
+        let raw = RawUnscored {
+            prediction_id: Uuid::new_v4(),
+            protocol: "sushiswap".to_string(),
+            pool_address: vec![0xcc; 32],
+            token_in: vec![0xdd; 40],
+            token_out: vec![0xee; 64],
+            amount_in: BigDecimal::from(999u64),
+            actual_target_block: 1,
+        };
+        let conv: UnscoredConfirmedPrediction = raw.into();
+        // Non-20-byte → zeros (defensive fallback).
+        assert_eq!(conv.pool_address, Address::ZERO);
+        assert_eq!(conv.amount_in, U256::from(999u64));
+    }
+
+    #[test]
+    fn unscored_from_raw_negative_block_clamps_to_zero() {
+        let raw = RawUnscored {
+            prediction_id: Uuid::new_v4(),
+            protocol: "uni_v2".to_string(),
+            pool_address: vec![0xaa; 20],
+            token_in: vec![0xbb; 20],
+            token_out: vec![0xcc; 20],
+            amount_in: BigDecimal::from(500u64),
+            actual_target_block: -10,
+        };
+        let conv: UnscoredConfirmedPrediction = raw.into();
+        assert_eq!(conv.actual_target_block, 0);
+    }
+
+    #[test]
+    fn unscored_from_raw_zero_block() {
+        let raw = RawUnscored {
+            prediction_id: Uuid::new_v4(),
+            protocol: "balancer_v2".to_string(),
+            pool_address: vec![0xaa; 20],
+            token_in: vec![0xbb; 20],
+            token_out: vec![0xcc; 20],
+            amount_in: BigDecimal::from(0u64),
+            actual_target_block: 0,
+        };
+        let conv: UnscoredConfirmedPrediction = raw.into();
+        assert_eq!(conv.actual_target_block, 0);
+    }
+
+    #[test]
+    fn channel_capacity_constant() {
+        assert_eq!(WRITER_CHANNEL_CAPACITY, 256);
+    }
+
+    #[test]
+    fn writer_pool_size_constant() {
+        assert_eq!(WRITER_POOL_SIZE, 4);
+    }
+
+    #[test]
+    fn net_profit_wei_negative_value() {
+        let mut score = sample_score();
+        score.net_profit_wei = -1_000_000;
+        assert_eq!(score.net_profit_wei, -1_000_000);
+        let json = serde_json::to_string(&score).expect("serialize");
+        assert!(json.contains("-1000000"));
+    }
+
+    #[test]
+    fn net_profit_wei_large_positive() {
+        let mut score = sample_score();
+        score.net_profit_wei = i128::MAX;
+        assert_eq!(score.net_profit_wei, i128::MAX);
+        let json = serde_json::to_string(&score).expect("serialize");
+        assert!(!json.is_empty());
+    }
+
+    #[test]
+    fn net_profit_wei_large_negative() {
+        let mut score = sample_score();
+        score.net_profit_wei = i128::MIN;
+        assert_eq!(score.net_profit_wei, i128::MIN);
+    }
+
+    #[test]
+    fn noop_sink_multiple_writes() {
+        let sink = NoopProfitabilitySink::new();
+        for _ in 0..100 {
+            sink.insert_score(sample_score());
+        }
+    }
+
+    #[test]
+    fn trait_object_multiple_implementations() {
+        let noop: Box<dyn ProfitabilitySink> = Box::new(NoopProfitabilitySink::new());
+        noop.insert_score(sample_score());
     }
 }

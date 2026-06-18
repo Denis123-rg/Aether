@@ -4482,4 +4482,357 @@ fee_bps = 30
         // even though the hot cache carries pool addresses.
         engine.run_detection_cycle().await;
     }
+
+    // ---- token_label tests ----
+
+    #[test]
+    fn test_token_label_known_tokens() {
+        use alloy::primitives::address;
+        assert_eq!(token_label(&address!("C02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2")), "WETH");
+        assert_eq!(token_label(&address!("A0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48")), "USDC");
+        assert_eq!(token_label(&address!("dAC17F958D2ee523a2206206994597C13D831ec7")), "USDT");
+        assert_eq!(token_label(&address!("6B175474E89094C44Da98b954EedeAC495271d0F")), "DAI");
+        assert_eq!(token_label(&address!("2260FAC5E5542a773Aa44fBCfeDf7C193bc2C599")), "WBTC");
+        assert_eq!(token_label(&address!("7Fc66500c84A76Ad7e9c93437bFc5Ac33E2DDaE9")), "AAVE");
+    }
+
+    #[test]
+    fn test_token_label_unknown_truncated() {
+        let addr = Address::repeat_byte(0xAB);
+        let label = token_label(&addr);
+        assert!(label.ends_with('…'));
+        assert!(label.starts_with("0xabab"));
+    }
+
+    // ---- arb_path_labels tests ----
+
+    #[test]
+    fn test_arb_path_labels_empty_hops() {
+        let opp = ArbOpportunity {
+            id: "test".into(),
+            hops: vec![],
+            total_profit_wei: U256::ZERO,
+            total_gas: 0,
+            gas_cost_wei: U256::ZERO,
+            net_profit_wei: U256::ZERO,
+            block_number: 0,
+            timestamp_ns: 0,
+        };
+        assert_eq!(arb_path_labels(&opp), "");
+    }
+
+    #[test]
+    fn test_arb_path_labels_single_hop() {
+        let opp = ArbOpportunity {
+            id: "test".into(),
+            hops: vec![ArbHop {
+                protocol: ProtocolType::UniswapV2,
+                pool_address: Address::repeat_byte(0x11),
+                token_in: Address::repeat_byte(0x01),
+                token_out: Address::repeat_byte(0x02),
+                amount_in: U256::ZERO,
+                expected_out: U256::ZERO,
+                estimated_gas: 0,
+            }],
+            total_profit_wei: U256::ZERO,
+            total_gas: 0,
+            gas_cost_wei: U256::ZERO,
+            net_profit_wei: U256::ZERO,
+            block_number: 0,
+            timestamp_ns: 0,
+        };
+        let label = arb_path_labels(&opp);
+        // Should have 2 parts: token_in -> token_out
+        assert!(label.contains(" -> "));
+    }
+
+    // ---- arb_id_for_opp tests ----
+
+    #[test]
+    fn test_arb_id_for_opp_deterministic() {
+        let id1 = arb_id_for_opp("arb-18000000-0-1-2");
+        let id2 = arb_id_for_opp("arb-18000000-0-1-2");
+        assert_eq!(id1, id2);
+    }
+
+    #[test]
+    fn test_arb_id_for_opp_different_inputs() {
+        let id1 = arb_id_for_opp("arb-1");
+        let id2 = arb_id_for_opp("arb-2");
+        assert_ne!(id1, id2);
+    }
+
+    // ---- build_new_arb tests ----
+
+    #[test]
+    fn test_build_new_arb_basic() {
+        let opp = ArbOpportunity {
+            id: "test-arb-1".into(),
+            hops: vec![
+                ArbHop {
+                    protocol: ProtocolType::UniswapV2,
+                    pool_address: Address::repeat_byte(0x11),
+                    token_in: Address::repeat_byte(0x01),
+                    token_out: Address::repeat_byte(0x02),
+                    amount_in: U256::from(1000u64),
+                    expected_out: U256::from(990u64),
+                    estimated_gas: 150000,
+                },
+                ArbHop {
+                    protocol: ProtocolType::UniswapV2,
+                    pool_address: Address::repeat_byte(0x22),
+                    token_in: Address::repeat_byte(0x02),
+                    token_out: Address::repeat_byte(0x01),
+                    amount_in: U256::from(990u64),
+                    expected_out: U256::from(1010u64),
+                    estimated_gas: 150000,
+                },
+            ],
+            total_profit_wei: U256::from(10u64),
+            total_gas: 300000,
+            gas_cost_wei: U256::from(5000u64),
+            net_profit_wei: U256::from(5u64),
+            block_number: 18_000_000,
+            timestamp_ns: 1_700_000_000_000_000_000,
+        };
+        let new_arb = build_new_arb(
+            &opp,
+            Address::repeat_byte(0x01),
+            U256::from(1000u64),
+            5,
+            9000,
+            500,
+            "WETH -> USDC -> WETH",
+        );
+        assert_eq!(new_arb.target_block, 18_000_000);
+        assert_eq!(new_arb.hops, 2);
+        assert_eq!(new_arb.gross_profit_wei, U256::from(10u64));
+        assert_eq!(new_arb.net_profit_wei, U256::from(5u64));
+        assert_eq!(new_arb.tip_bps, 9000);
+        assert_eq!(new_arb.sim_us, Some(500));
+        assert!(!new_arb.protocols.is_null());
+    }
+
+    // ---- bootstrap_pools additional edge cases ----
+
+    #[tokio::test]
+    async fn test_bootstrap_pools_zero_token1_address() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_path = dir.path().join("pools.toml");
+        let toml_content = r#"
+[[pools]]
+protocol = "uniswap_v2"
+address = "0x1111111111111111111111111111111111111111"
+token0 = "0x0101010101010101010101010101010101010101"
+token1 = "0x0000000000000000000000000000000000000000"
+fee_bps = 30
+"#;
+        tokio::fs::write(&config_path, toml_content).await.unwrap();
+
+        let (tx, _rx) = broadcast::channel(100);
+        let engine = AetherEngine::new(EngineConfig::default(), tx);
+        let loaded = engine.bootstrap_pools(config_path.to_str().unwrap()).await;
+        assert_eq!(loaded, 0, "Pool with zero token1 should be skipped");
+    }
+
+    #[tokio::test]
+    async fn test_bootstrap_pools_balancer_v3_protocol() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_path = dir.path().join("pools.toml");
+        let toml_content = r#"
+[[pools]]
+protocol = "balancer_v3"
+address = "0x1111111111111111111111111111111111111111"
+token0 = "0x0101010101010101010101010101010101010101"
+token1 = "0x0202020202020202020202020202020202020202"
+fee_bps = 30
+"#;
+        tokio::fs::write(&config_path, toml_content).await.unwrap();
+
+        let (tx, _rx) = broadcast::channel(100);
+        let engine = AetherEngine::new(EngineConfig::default(), tx);
+        let loaded = engine.bootstrap_pools(config_path.to_str().unwrap()).await;
+        assert_eq!(loaded, 1, "Balancer V3 should be accepted");
+    }
+
+    // ---- pool_ready_for_simulation with mark_pool_bytecode_warmed ----
+
+    #[tokio::test]
+    async fn test_pool_ready_for_simulation_not_registered() {
+        let (tx, _rx) = broadcast::channel(100);
+        let engine = AetherEngine::new(EngineConfig::default(), tx);
+        assert!(!engine.pool_ready_for_simulation(Address::repeat_byte(0xFF)));
+    }
+
+    #[tokio::test]
+    async fn test_mark_pool_bytecode_warmed_on_registered_pool() {
+        let (tx, _rx) = broadcast::channel(100);
+        let engine = AetherEngine::new(EngineConfig::default(), tx);
+        let pool = Address::repeat_byte(0x55);
+        let token0 = Address::repeat_byte(0x01);
+        let token1 = Address::repeat_byte(0x02);
+        engine.register_pool(pool, token0, token1, ProtocolType::UniswapV2, 30).await;
+        // Without bytecode cache, bytecode_warmed starts true
+        assert!(engine.pool_ready_for_simulation(pool));
+
+        engine.mark_pool_bytecode_warmed(pool).await;
+        assert!(engine.pool_ready_for_simulation(pool));
+    }
+
+    #[tokio::test]
+    async fn test_mark_pool_bytecode_warmed_nonexistent_noop() {
+        let (tx, _rx) = broadcast::channel(100);
+        let engine = AetherEngine::new(EngineConfig::default(), tx);
+        // Should not panic
+        engine.mark_pool_bytecode_warmed(Address::repeat_byte(0xFF)).await;
+    }
+
+    // ---- hot_cache tests ----
+
+    #[tokio::test]
+    async fn test_hot_cache_none_initially() {
+        let (tx, _rx) = broadcast::channel(100);
+        let engine = AetherEngine::new(EngineConfig::default(), tx);
+        assert!(engine.hot_cache().is_none());
+    }
+
+    #[tokio::test]
+    async fn test_hot_cache_set_and_get() {
+        let (tx, _rx) = broadcast::channel(100);
+        let engine = AetherEngine::new(EngineConfig::default(), tx);
+        let registry = prometheus::Registry::new();
+        let metrics = aether_state::hot_cache::HotCacheMetrics::register(&registry);
+        let cache = Arc::new(HotCache::new(metrics));
+        engine.set_hot_cache(cache);
+        assert!(engine.hot_cache().is_some());
+        assert!(engine.hot_cache().unwrap().is_empty());
+    }
+
+    // ---- accessor tests ----
+
+    #[test]
+    fn test_pool_states_empty_initially() {
+        let (tx, _rx) = broadcast::channel(100);
+        let engine = AetherEngine::new(EngineConfig::default(), tx);
+        assert!(engine.pool_states().is_empty());
+    }
+
+    #[test]
+    fn test_rpc_provider_none_without_config() {
+        let (tx, _rx) = broadcast::channel(100);
+        let engine = AetherEngine::new(EngineConfig::default(), tx);
+        assert!(engine.rpc_provider().is_none());
+    }
+
+    #[test]
+    fn test_bytecode_cache_none_without_env() {
+        let (tx, _rx) = broadcast::channel(100);
+        let engine = AetherEngine::new(EngineConfig::default(), tx);
+        assert!(engine.bytecode_cache().is_none());
+    }
+
+    #[test]
+    fn test_token_index_empty_initially() {
+        let (tx, _rx) = broadcast::channel(100);
+        let engine = AetherEngine::new(EngineConfig::default(), tx);
+        assert_eq!(engine.token_index().load().len(), 0);
+    }
+
+    #[test]
+    fn test_pool_registry_empty_initially() {
+        let (tx, _rx) = broadcast::channel(100);
+        let engine = AetherEngine::new(EngineConfig::default(), tx);
+        assert!(engine.pool_registry().load().is_empty());
+    }
+
+    #[test]
+    fn test_v2_reserves_cache_accessible() {
+        let (tx, _rx) = broadcast::channel(100);
+        let engine = AetherEngine::new(EngineConfig::default(), tx);
+        let _cache = engine.v2_reserves_cache();
+    }
+
+    // ---- remove_pool tests ----
+
+    #[tokio::test]
+    async fn test_remove_pool_returns_early_for_nonexistent() {
+        let (tx, _rx) = broadcast::channel(100);
+        let engine = AetherEngine::new(EngineConfig::default(), tx);
+        engine.remove_pool(Address::repeat_byte(0xFF)).await;
+        assert!(engine.pool_registry().load().is_empty());
+    }
+
+    // ---- fetch_reserves_for_addresses tests ----
+
+    #[tokio::test]
+    async fn test_fetch_reserves_empty_addresses() {
+        let (tx, _rx) = broadcast::channel(100);
+        let engine = AetherEngine::new(EngineConfig::default(), tx);
+        // Should return immediately without panicking
+        engine.fetch_reserves_for_addresses(&[]).await;
+    }
+
+    // ---- sync_hot_cache_pools tests ----
+
+    #[tokio::test]
+    async fn test_sync_hot_cache_pools_removes_pool() {
+        let (tx, _rx) = broadcast::channel(100);
+        let engine = AetherEngine::new(EngineConfig::default(), tx);
+        let pool_addr = Address::repeat_byte(0xAA);
+        let pool = sample_pool_info(0xAA);
+
+        engine.sync_hot_cache_pools(&[pool], &[]).await;
+        assert!(engine.pool_registry().load().contains_key(&pool_addr));
+
+        engine.sync_hot_cache_pools(&[], &[pool_addr]).await;
+        assert!(!engine.pool_registry().load().contains_key(&pool_addr));
+    }
+
+    #[tokio::test]
+    async fn test_sync_hot_cache_pools_noop_empty() {
+        let (tx, _rx) = broadcast::channel(100);
+        let engine = AetherEngine::new(EngineConfig::default(), tx);
+        engine.sync_hot_cache_pools(&[], &[]).await;
+        assert!(engine.pool_registry().load().is_empty());
+    }
+
+    // ---- pool_metadata fee_factor edge cases ----
+
+    #[test]
+    fn test_pool_metadata_fee_factor_zero_fee() {
+        let meta = PoolMetadata {
+            token0_idx: 0,
+            token1_idx: 1,
+            token0: Address::ZERO,
+            token1: Address::repeat_byte(1),
+            pool_id: PoolId {
+                address: Address::repeat_byte(2),
+                protocol: ProtocolType::UniswapV2,
+            },
+            protocol: ProtocolType::UniswapV2,
+            fee_bps: 0,
+            tick_spacing: None,
+            bytecode_warmed: false,
+        };
+        assert!((meta.fee_factor() - 1.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_pool_metadata_fee_factor_high_fee() {
+        let meta = PoolMetadata {
+            token0_idx: 0,
+            token1_idx: 1,
+            token0: Address::ZERO,
+            token1: Address::repeat_byte(1),
+            pool_id: PoolId {
+                address: Address::repeat_byte(2),
+                protocol: ProtocolType::UniswapV2,
+            },
+            protocol: ProtocolType::UniswapV2,
+            fee_bps: 10000,
+            tick_spacing: None,
+            bytecode_warmed: false,
+        };
+        assert!((meta.fee_factor() - 0.0).abs() < 1e-10);
+    }
 }

@@ -1,0 +1,140 @@
+Prompt 2: Go – Increase Test Coverage for Specific Functions
+Objective
+You are a senior Go testing engineer. Your task is to increase the test coverage for the following specific functions (listed per package) to at least 95% (preferably 100%) without modifying the production logic or architecture. You will work with sub‑agents to write unit tests (using the standard testing package, and where appropriate, testify or gomock) that exercise all uncovered branches, error paths, and edge cases. All tests must pass. At the end, provide a comprehensive report detailing the work.
+
+Scope – Functions to Cover
+The coverage report (from go test -coverprofile) shows these functions have coverage below 95%. Focus on these exact functions – do not worry about other functions in the same files that already have high coverage.
+
+Package / File	Function	Current Coverage
+cmd/executor		
+admin_server.go	handleAdminPause	92.0%
+admin_server.go	handleAdminReset	93.3%
+admin_server.go	handleAdminResume	90.5%
+bundle.go	BuildBundle	92.9%
+flashbots.go	NewFlashbotsSigner	90.0%
+flashbots.go	Sign	83.3%
+main.go	main	0.0%
+metrics.go	addBigIntCounter	87.5%
+remote_signer.go	NewRemoteSigner	90.9%
+remote_signer.go	SignTx	87.5%
+remote_signer.go	Ping	66.7%
+remote_signer.go	SignFlashbotsPayload	75.0%
+run.go	run	82.5%
+signer.go	NewTransactionSigner	92.3%
+signer.go	SignAndMarshal	71.4%
+startup.go	buildExecutorDeps	83.7%
+cmd/monitor		
+alerter.go	NewAlerter	80.0%
+notifiers.go	Send (DiscordNotifier)	93.8%
+process.go	runMonitorService	92.9%
+setup.go	runMonitorSetup	69.7%
+cmd/signer		
+main.go	runEncrypt	94.4%
+cmd/telebot		
+main.go	main	92.9%
+main.go	start	77.1%
+internal/config		
+production.go	LoadProductionConfig	91.7%
+production.go	expandEnvProduction	93.8%
+internal/db		
+ledger.go	InsertBundle	0.0%
+ledger.go	InsertInclusion	0.0%
+ledger.go	UpsertPnLDaily	0.0%
+ledger_pg.go	NewPgLedger	94.7%
+ledger_pg.go	dispatch	93.3%
+ledger_pg.go	insertBundleInner	88.9%
+mempool_reconciliation_pg.go	NewPgMempoolReconciliation	94.7%
+migrate.go	RunMigrations	90.9%
+migrate.go	applyMigrationFile	92.0%
+timescale.go	Record (noop)	0.0%
+timescale.go	Close (noop)	0.0%
+timescale.go	NewPgMetricsStore	94.7%
+internal/events		
+publisher.go	publish	80.0%
+subscriber.go	run	80.0%
+internal/grpc		
+client.go	DialWithOptions	77.8%
+tls.go	buildTransportCredentials	92.3%
+internal/pb (generated)		
+aether.pb.go	ProtoMessage (all 11 occurrences)	0.0%
+aether.pb.go	file_proto_aether_proto_init	85.7%
+aether_grpc.pb.go	StreamArbs (client)	80.0%
+aether_grpc.pb.go	mustEmbedUnimplemented* (3 functions)	0.0%
+aether_grpc.pb.go	testEmbeddedByValue (3 functions)	0.0%
+aether_grpc.pb.go	_ArbService_SubmitArb_Handler	88.9%
+aether_grpc.pb.go	_ArbService_StreamArbs_Handler	75.0%
+aether_grpc.pb.go	_HealthService_Check_Handler	88.9%
+aether_grpc.pb.go	_ControlService_SetState_Handler	88.9%
+aether_grpc.pb.go	_ControlService_ReloadConfig_Handler	88.9%
+internal/risk		
+manager.go	ResetFromHalted	84.6%
+manager.go	Resume	90.9%
+manager.go	Pause	80.0%
+internal/signer		
+key_loader.go	LoadKey	93.9%
+key_loader.go	Encrypt	82.6%
+key_loader.go	newGCM	85.7%
+signer_server.go	NewServer	83.3%
+internal/strategy		
+abtest.go	score	85.7%
+abtest.go	Pick	92.9%
+deploy/docker/mock-builder		
+main.go	main	0.0%
+
+General Guidelines
+Do not change production code – only write tests. If a function is unexported and hard to test, you may add a test-only exported wrapper or use //go:build test files, but prefer testing through exported APIs.
+
+Use table‑driven tests where appropriate to cover multiple scenarios concisely.
+
+Mock external dependencies – use interfaces and dependency injection to replace real RPC clients, databases, and signers with test doubles. Use gomock or testify/mock as needed.
+
+Test error paths – many uncovered branches are error handling (e.g., database failures, network timeouts). Simulate these errors using mocks.
+
+Zero‑coverage functions: For main() functions (e.g., in cmd/executor/main.go, deploy/docker/mock-builder/main.go), consider refactoring the logic into a separate function that can be tested (e.g., runMain()). The test can then call that function with controlled arguments and verify behaviour.
+
+Generated code: For internal/pb, the ProtoMessage methods are trivial; they can be tested by simply creating a message and calling ProtoReflect().Descriptor() or by using the generated code in an integration test that marshals/unmarshals.
+
+All new tests must pass – no existing tests should break.
+
+Sub‑agent division: Assign each package (or set of related packages) to a sub‑agent. They should share mocks and test utilities to avoid duplication.
+
+Specific Recommendations
+cmd/executor: Many functions interact with external services (Flashbots, remote signer, admin endpoints). Use httptest, gRPC test servers, and mock clients to simulate all responses.
+
+internal/db: The NoopLedger methods (InsertBundle, etc.) are trivial – add tests that call them and verify they return nil/do nothing. For NewPgLedger, test both success and failure cases (invalid DSN, connection errors).
+
+internal/events: Test publisher/subscriber with mock Redis or use in‑memory substitutes.
+
+internal/grpc: Test DialWithOptions with invalid addresses, TLS misconfigurations.
+
+internal/risk: Test state transitions, circuit breaker, and daily reset logic with mocked time.
+
+internal/signer: Test encryption/decryption with known key pairs, and error handling when files are missing or corrupted.
+
+Deliverables
+New test files (or additions to existing *_test.go files) that cover the listed functions.
+
+Updated coverage report – run go test -coverprofile=cover.out ./... and go tool cover -func=cover.out to verify that each function now meets the ≥95% target.
+
+A final report (in Markdown) containing:
+
+A summary table with initial and final coverage for every function listed.
+
+For each function, a brief description of added test cases (e.g., “added test for timeout error”, “tested edge case when DB connection is nil”).
+
+Total number of new tests and lines of test code added.
+
+Any challenges encountered (e.g., mocking complex dependencies, testing main functions) and how they were resolved.
+
+Recommendations for future coverage maintenance.
+
+Acceptance Criteria
+All tests pass (go test ./... succeeds).
+
+Each listed function has coverage ≥95% (or 100% where feasible).
+
+No production code is broken or altered.
+
+The final report is thorough and clearly demonstrates the work done.
+
+Good luck! Your work will directly improve the reliability of the Go components and help us maintain a high‑quality codebase.

@@ -109,6 +109,7 @@ mod tests {
             "AETHER_TEST_KEY_XYZ" => Some("hello".to_string()),
             "AETHER_A" => Some("1".to_string()),
             "AETHER_B" => Some("2".to_string()),
+            "AETHER_URL" => Some("wss://alchemy.example.com/v2/key".to_string()),
             _ => None,
         }
     }
@@ -138,6 +139,76 @@ mod tests {
     }
 
     #[test]
+    fn test_expand_env_vars_dollar_not_followed_by_brace() {
+        let result = expand_env_vars_with("price is $5.00", test_resolver);
+        assert_eq!(result, "price is $5.00");
+    }
+
+    #[test]
+    fn test_expand_env_vars_dollar_at_end_of_string() {
+        let result = expand_env_vars_with("price$", test_resolver);
+        assert_eq!(result, "price$");
+    }
+
+    #[test]
+    fn test_expand_env_vars_empty_var_name() {
+        let result = expand_env_vars_with("${}", test_resolver);
+        assert_eq!(result, "${}");
+    }
+
+    #[test]
+    fn test_expand_env_vars_unclosed_brace() {
+        let result = expand_env_vars_with("${UNCLOSED", test_resolver);
+        assert_eq!(result, "${UNCLOSED}");
+    }
+
+    #[test]
+    fn test_expand_env_vars_adjacent_vars() {
+        let result = expand_env_vars_with("${AETHER_A}${AETHER_B}", test_resolver);
+        assert_eq!(result, "12");
+    }
+
+    #[test]
+    fn test_expand_env_vars_empty_string() {
+        let result = expand_env_vars_with("", test_resolver);
+        assert_eq!(result, "");
+    }
+
+    #[test]
+    fn test_expand_env_vars_only_dollar_sign() {
+        let result = expand_env_vars_with("$", test_resolver);
+        assert_eq!(result, "$");
+    }
+
+    #[test]
+    fn test_expand_env_vars_mixed_known_and_unknown() {
+        let result =
+            expand_env_vars_with("${AETHER_A}-${UNKNOWN}-${AETHER_B}", test_resolver);
+        assert_eq!(result, "1-${UNKNOWN}-2");
+    }
+
+    #[test]
+    fn test_expand_env_vars_real_env() {
+        std::env::set_var("AETHER_TEST_EXPAND_MARKER", "expanded_value");
+        let result = expand_env_vars("prefix/${AETHER_TEST_EXPAND_MARKER}/suffix");
+        assert_eq!(result, "prefix/expanded_value/suffix");
+        std::env::remove_var("AETHER_TEST_EXPAND_MARKER");
+    }
+
+    #[test]
+    fn test_expand_env_vars_real_env_unset() {
+        std::env::remove_var("AETHER_TEST_UNSET_MARKER_98765");
+        let result = expand_env_vars("${AETHER_TEST_UNSET_MARKER_98765}");
+        assert_eq!(result, "${AETHER_TEST_UNSET_MARKER_98765}");
+    }
+
+    #[test]
+    fn test_expand_env_vars_url_with_env() {
+        let result = expand_env_vars_with("wss://example.com/${AETHER_URL}", test_resolver);
+        assert_eq!(result, "wss://example.com/wss://alchemy.example.com/v2/key");
+    }
+
+    #[test]
     fn test_parse_node_type_variants() {
         assert_eq!(parse_node_type("websocket"), NodeType::WebSocket);
         assert_eq!(parse_node_type("ws"), NodeType::WebSocket);
@@ -146,7 +217,20 @@ mod tests {
         assert_eq!(parse_node_type("http"), NodeType::Http);
         assert_eq!(parse_node_type("https"), NodeType::Http);
         assert_eq!(parse_node_type("WEBSOCKET"), NodeType::WebSocket);
-        assert_eq!(parse_node_type("unknown"), NodeType::Http); // default fallback
+        assert_eq!(parse_node_type("unknown"), NodeType::Http);
+    }
+
+    #[test]
+    fn test_parse_node_type_empty_string() {
+        assert_eq!(parse_node_type(""), NodeType::Http);
+    }
+
+    #[test]
+    fn test_parse_node_type_mixed_case() {
+        assert_eq!(parse_node_type("WebSocket"), NodeType::WebSocket);
+        assert_eq!(parse_node_type("WS"), NodeType::WebSocket);
+        assert_eq!(parse_node_type("IPC"), NodeType::Ipc);
+        assert_eq!(parse_node_type("HTTP"), NodeType::Http);
     }
 
     #[test]
@@ -192,6 +276,81 @@ min_healthy_nodes: 2
     }
 
     #[test]
+    fn test_load_nodes_config_default_min_healthy() {
+        use std::io::Write;
+        let dir = std::env::temp_dir().join("aether_test_config_default_min");
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let path = dir.join("test_nodes_default.yaml");
+
+        let yaml = r#"
+nodes:
+  - name: "test-ws"
+    url: "wss://example.com"
+    type: "websocket"
+"#;
+        let mut f = std::fs::File::create(&path).expect("create");
+        f.write_all(yaml.as_bytes()).expect("write");
+
+        let (_configs, min_healthy) =
+            load_nodes_config(path.to_str().expect("path")).expect("load");
+        assert_eq!(min_healthy, 1, "default min_healthy_nodes should be 1");
+
+        std::fs::remove_file(&path).ok();
+        std::fs::remove_dir(&dir).ok();
+    }
+
+    #[test]
+    fn test_load_nodes_config_default_priority() {
+        use std::io::Write;
+        let dir = std::env::temp_dir().join("aether_test_config_default_priority");
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let path = dir.join("test_nodes_prio.yaml");
+
+        let yaml = r#"
+nodes:
+  - name: "test-ws"
+    url: "wss://example.com"
+    type: "websocket"
+"#;
+        let mut f = std::fs::File::create(&path).expect("create");
+        f.write_all(yaml.as_bytes()).expect("write");
+
+        let (configs, _) =
+            load_nodes_config(path.to_str().expect("path")).expect("load");
+        assert_eq!(configs[0].priority, 10, "default priority should be 10");
+
+        std::fs::remove_file(&path).ok();
+        std::fs::remove_dir(&dir).ok();
+    }
+
+    #[test]
+    fn test_load_nodes_config_with_env_var_expansion() {
+        use std::io::Write;
+        std::env::set_var("AETHER_TEST_NODE_URL", "wss://env-expanded.example.com");
+
+        let dir = std::env::temp_dir().join("aether_test_config_env");
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let path = dir.join("test_nodes_env.yaml");
+
+        let yaml = r#"
+nodes:
+  - name: "env-ws"
+    url: "${AETHER_TEST_NODE_URL}"
+    type: "ws"
+"#;
+        let mut f = std::fs::File::create(&path).expect("create");
+        f.write_all(yaml.as_bytes()).expect("write");
+
+        let (configs, _) =
+            load_nodes_config(path.to_str().expect("path")).expect("load");
+        assert_eq!(configs[0].url, "wss://env-expanded.example.com");
+
+        std::env::remove_var("AETHER_TEST_NODE_URL");
+        std::fs::remove_file(&path).ok();
+        std::fs::remove_dir(&dir).ok();
+    }
+
+    #[test]
     fn test_load_nodes_config_invalid_yaml() {
         use std::io::Write;
         let dir = std::env::temp_dir().join("aether_test_config_invalid");
@@ -220,5 +379,75 @@ min_healthy_nodes: 2
             err.to_string().contains("No such file") || err.to_string().contains("os error"),
             "expected file-not-found error, got: {err}"
         );
+    }
+
+    #[test]
+    fn test_load_nodes_config_empty_nodes_list() {
+        use std::io::Write;
+        let dir = std::env::temp_dir().join("aether_test_config_empty");
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let path = dir.join("empty_nodes.yaml");
+
+        let yaml = "nodes: []\n";
+        let mut f = std::fs::File::create(&path).expect("create");
+        f.write_all(yaml.as_bytes()).expect("write");
+
+        let (configs, _) =
+            load_nodes_config(path.to_str().expect("path")).expect("load");
+        assert!(configs.is_empty());
+
+        std::fs::remove_file(&path).ok();
+        std::fs::remove_dir(&dir).ok();
+    }
+
+    #[test]
+    fn test_load_nodes_config_preserves_max_retries_and_health_check() {
+        use std::io::Write;
+        let dir = std::env::temp_dir().join("aether_test_config_defaults");
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let path = dir.join("test_defaults.yaml");
+
+        let yaml = r#"
+nodes:
+  - name: "test-ws"
+    url: "wss://example.com"
+    type: "ws"
+"#;
+        let mut f = std::fs::File::create(&path).expect("create");
+        f.write_all(yaml.as_bytes()).expect("write");
+
+        let (configs, _) =
+            load_nodes_config(path.to_str().expect("path")).expect("load");
+        assert_eq!(configs[0].max_retries, 5);
+        assert_eq!(
+            configs[0].health_check_interval,
+            Duration::from_secs(30)
+        );
+
+        std::fs::remove_file(&path).ok();
+        std::fs::remove_dir(&dir).ok();
+    }
+
+    #[test]
+    fn test_nodes_file_config_defaults() {
+        let yaml = r#"
+nodes:
+  - name: "n"
+    url: "wss://x"
+    type: "ws"
+"#;
+        let config: NodesFileConfig = serde_yml::from_str(yaml).unwrap();
+        assert_eq!(config.min_healthy_nodes, 1);
+        assert_eq!(config.nodes[0].priority, 10);
+    }
+
+    #[test]
+    fn test_default_min_healthy_value() {
+        assert_eq!(default_min_healthy(), 1);
+    }
+
+    #[test]
+    fn test_default_priority_value() {
+        assert_eq!(default_priority(), 10);
     }
 }

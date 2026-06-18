@@ -1,0 +1,102 @@
+Prompt 1: Rust – Increase Test Coverage for Low-Coverage Files
+Objective
+You are a senior Rust testing engineer. Your task is to increase the line coverage for the following Rust source files (listed below) to at least 95%, without changing the existing architecture or business logic. You will work with sub‑agents (one per file or group) to write new unit and integration tests that exercise the uncovered code paths. All tests must pass (be “green”). At the end, produce a detailed report summarizing the work done, coverage improvements, and any challenges encountered.
+
+Scope – Files to Improve
+The coverage data (from cargo tarpaulin or llvm-cov) shows these files are below 95% line coverage. Your goal is to raise each file’s line coverage to ≥95% (or as high as reasonably possible; 100% is ideal).
+
+File	Current Coverage
+discovery/src/events.rs	59.97%
+discovery/src/service.rs	61.43%
+discovery/src/validator.rs	49.83%
+discovery/src/volume.rs	91.27%
+grpc-server/src/bin/aether_profit_scorer.rs	44.11%
+grpc-server/src/bin/aether_replay.rs	7.45%
+grpc-server/src/discovery_integration.rs	41.76%
+grpc-server/src/engine.rs	76.50%
+grpc-server/src/first_seen_tracker.rs	71.64%
+grpc-server/src/historical.rs	63.91%
+grpc-server/src/main.rs	27.05%
+grpc-server/src/mempool_pipeline.rs	55.21%
+grpc-server/src/mempool_writer.rs	59.07%
+grpc-server/src/metrics.rs	80.66%
+grpc-server/src/pool_admission.rs	92.89%
+grpc-server/src/profitability_writer.rs	49.48%
+grpc-server/src/provider.rs	87.56%
+grpc-server/src/tracing_init.rs	0.00%
+ingestion/src/config.rs	94.52%
+ingestion/src/mempool.rs	63.98%
+pools/src/lib.rs	86.29%
+simulator/src/fee_on_transfer.rs	66.47%
+simulator/src/fork.rs	94.96%
+simulator/src/lib.rs	50.90%
+simulator/src/mempool_backrun.rs	86.59%
+simulator/src/post_state_replay.rs	79.19%
+simulator/src/slot_prefetch.rs	81.65%
+state/src/hot_cache/updater.rs	91.21%
+General Guidelines
+Do not modify the production code except if absolutely necessary to expose internal functionality for testing (e.g., add #[cfg(test)] helpers, or make some items pub(crate)). Prefer testing through public interfaces.
+
+Write idiomatic Rust tests using the built‑in #[test] attribute. Use assert_eq!, assert!, assert_matches!, and where appropriate, use proptest for property‑based testing or mockall for mocking external dependencies.
+
+Leverage existing test infrastructure – many crates already have test modules; add new tests there or create new test files under tests/ if integration tests are needed.
+
+Focus on coverage gaps: use the coverage report to identify specific functions, branches, and error paths that are not exercised. Write tests that trigger those paths.
+
+Ensure all new tests pass – they must compile and run successfully without introducing failures in existing tests.
+
+Keep tests realistic – use real‑world‑like inputs (e.g., actual Ethereum addresses, pool data, simulation parameters) but avoid relying on external network calls unless absolutely necessary; use mocks or in‑memory stubs.
+
+Sub‑agent coordination: Assign each file to a sub‑agent. Each sub‑agent is responsible for that file’s test coverage. They should communicate to avoid duplication and ensure consistent testing style.
+
+Specific Recommendations Per File (Non‑Exhaustive)
+High‑priority files (very low coverage)
+grpc-server/src/bin/aether_replay.rs (7.45%) – This is a binary. Ensure the main function and all sub‑commands are tested, possibly by extracting logic into a separate module and testing that.
+
+grpc-server/src/main.rs (27.05%) – Similar; refactor the main function into a run function that can be tested with mocked dependencies.
+
+grpc-server/src/tracing_init.rs (0%) – Add tests for initialisation, especially error paths and environment variable handling.
+
+discovery/src/validator.rs (49.83%) – Many validation branches, especially those that interact with RPC or REVM. Mock the external calls and test all error conditions.
+
+discovery/src/service.rs and discovery/src/events.rs – Focus on event handling, WebSocket reconnection, and cache updates.
+
+Medium priority
+simulator/src/lib.rs (50.90%) – Cover all public functions, especially the simulation entry points and fallback logic.
+
+simulator/src/fee_on_transfer.rs (66.47%) – There are many edge cases (different fee percentages, honeypot detection). Use property‑based tests.
+
+grpc-server/src/mempool_pipeline.rs (55.21%) – Test the entire pipeline with various transaction inputs and error scenarios.
+
+grpc-server/src/engine.rs (76.50%) – Many methods are not covered; focus on pool management, cycle detection, and optimisation.
+
+Low‑hanging fruit (already close to 95%)
+ingestion/src/config.rs (94.52%) – Add a few more tests for edge cases (missing fields, invalid environment variables) to reach 95%.
+
+simulator/src/fork.rs (94.96%) – Already very close; add one or two tests for uncovered branches.
+
+grpc-server/src/pool_admission.rs (92.89%) – Cover the remaining branches.
+
+Deliverables
+New test code – either added to existing #[cfg(test)] modules or in separate test files.
+
+Updated coverage report – after all changes, run the coverage tool and confirm that each file now meets the ≥95% target (or provide justification if impossible).
+
+A final report (in Markdown) that includes:
+
+For each file: initial coverage, final coverage, list of newly added test cases, and any challenges faced.
+
+Overall summary of total lines added, total new tests, and any architectural changes made (if any).
+
+A section on lessons learned and recommendations for maintaining high coverage in the future.
+
+Acceptance Criteria
+All tests pass (cargo test succeeds).
+
+Each file’s line coverage is ≥95% (or the highest feasible, with a clear explanation if not reached).
+
+The production code remains stable and no functionality is altered.
+
+The final report is clear, concise, and actionable.
+
+Good luck! Your efforts will significantly improve the reliability and maintainability of the Aether Rust codebase.

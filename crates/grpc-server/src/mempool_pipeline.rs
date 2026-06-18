@@ -3568,7 +3568,508 @@ mod tests {
         assert_eq!(filtered_count(&metrics, "not_in_registry"), 1);
     }
 
-    /// The optimizer sizes a genuinely profitable two-venue WETH/USDC cycle
+    // ----- canonical_pair -----
+
+    #[test]
+    fn canonical_pair_orders_addresses() {
+        let a = address!("0000000000000000000000000000000000000001");
+        let b = address!("0000000000000000000000000000000000000002");
+        assert_eq!(canonical_pair(a, b), (a, b));
+        assert_eq!(canonical_pair(b, a), (a, b));
+        assert_eq!(canonical_pair(a, a), (a, a));
+    }
+
+    // ----- build_pair_index -----
+
+    #[test]
+    fn build_pair_index_empty_registry() {
+        let registry = HashMap::new();
+        let idx = build_pair_index(&registry);
+        assert!(idx.is_empty());
+    }
+
+    #[test]
+    fn build_pair_index_single_pool() {
+        let meta = PoolMetadata {
+            token0_idx: 0, token1_idx: 1,
+            token0: address!("C02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2"),
+            token1: address!("A0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"),
+            pool_id: PoolId { address: address!("0000000000000000000000000000000000000011"), protocol: ProtocolType::UniswapV2 },
+            protocol: ProtocolType::UniswapV2, fee_bps: 30, tick_spacing: None, bytecode_warmed: true,
+        };
+        let mut registry = HashMap::new();
+        registry.insert(address!("0000000000000000000000000000000000000011"), meta);
+        let idx = build_pair_index(&registry);
+        assert_eq!(idx.len(), 1);
+    }
+
+    // ----- now_unix_secs -----
+
+    #[test]
+    fn now_unix_secs_returns_reasonable_value() {
+        let now = now_unix_secs();
+        assert!(now > 1_577_836_800);
+        assert!(now < 1_893_456_000);
+    }
+
+    // ----- predict_v2_post_state additional -----
+
+    #[test]
+    fn predict_v2_post_state_no_fee() {
+        let (post_in, post_out) = predict_v2_post_state(1000.0, 1000.0, 100.0, 1.0);
+        assert!((post_in - 1100.0).abs() < 1e-6);
+        assert!(post_out > 0.0);
+    }
+
+    #[test]
+    fn predict_v2_post_state_negative_inputs() {
+        assert_eq!(predict_v2_post_state(-1.0, 1000.0, 100.0, 0.997), (0.0, 0.0));
+        assert_eq!(predict_v2_post_state(1000.0, -1.0, 100.0, 0.997), (0.0, 0.0));
+    }
+
+    // ----- profit_bucket edge cases -----
+
+    #[test]
+    fn profit_bucket_zero_profit() {
+        assert_eq!(profit_bucket(0.0), "lt_10bps");
+    }
+
+    #[test]
+    fn profit_bucket_very_large() {
+        assert_eq!(profit_bucket(1000.0), "gt_200bps");
+    }
+
+    // ----- u256_to_f64_saturating edge cases -----
+
+    #[test]
+    fn u256_to_f64_saturating_overflow_yields_finite() {
+        let huge = U256::from(u128::MAX) * U256::from(u128::MAX);
+        let v = u256_to_f64_saturating(huge);
+        assert!(v.is_finite());
+    }
+
+    // ----- u256_from_f64_saturating -----
+
+    #[test]
+    fn u256_from_f64_negative_yields_zero() {
+        assert_eq!(u256_from_f64_saturating(-1.0), U256::ZERO);
+    }
+
+    #[test]
+    fn u256_from_f64_nan_yields_zero() {
+        assert_eq!(u256_from_f64_saturating(f64::NAN), U256::ZERO);
+    }
+
+    #[test]
+    fn u256_from_f64_inf_yields_zero() {
+        assert_eq!(u256_from_f64_saturating(f64::INFINITY), U256::ZERO);
+    }
+
+    #[test]
+    fn u256_from_f64_huge_clamps() {
+        let v = u256_from_f64_saturating(f64::MAX);
+        assert!(v > U256::ZERO);
+    }
+
+    // ----- saturating_u256_to_i128 -----
+
+    #[test]
+    fn saturating_u256_to_i128_zero() {
+        assert_eq!(saturating_u256_to_i128(U256::ZERO), 0);
+    }
+
+    #[test]
+    fn saturating_u256_to_i128_overflow_clamps() {
+        let v = U256::from(u128::MAX);
+        assert_eq!(saturating_u256_to_i128(v), i128::MAX);
+    }
+
+    // ----- victim_post_reserves additional -----
+
+    #[test]
+    fn victim_post_reserves_nan_yields_none() {
+        let pool = UniswapV2Pool::new(address!("0000000000000000000000000000000000000011"),
+            address!("C02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2"),
+            address!("A0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"), 30);
+        assert!(victim_post_reserves(&pool, address!("C02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2"), f64::NAN, 1.0).is_none());
+    }
+
+    #[test]
+    fn victim_post_reserves_infinity_yields_none() {
+        let pool = UniswapV2Pool::new(address!("0000000000000000000000000000000000000011"),
+            address!("C02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2"),
+            address!("A0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"), 30);
+        assert!(victim_post_reserves(&pool, address!("C02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2"), f64::INFINITY, 1.0).is_none());
+    }
+
+    // ----- protocol_label additional -----
+
+    #[test]
+    fn protocol_label_covers_curve_bancor_oneinch() {
+        assert_eq!(protocol_label(Protocol::Curve), "curve");
+        assert_eq!(protocol_label(Protocol::BancorV3), "bancor_v3");
+        assert_eq!(protocol_label(Protocol::OneInchV6), "one_inch_v6");
+    }
+
+    // ----- SimContext builder methods -----
+
+    #[test]
+    fn sim_context_with_bytecode_cache_none() {
+        let ctx = unwrap_empty_sim_ctx().with_bytecode_cache(None);
+        assert!(ctx.bytecode_cache.is_none());
+    }
+
+    #[test]
+    fn sim_context_with_v2_reserves_cache_none() {
+        let ctx = unwrap_empty_sim_ctx().with_v2_reserves_cache(None);
+        assert!(ctx.v2_reserves_cache.is_none());
+    }
+
+    #[test]
+    fn sim_context_with_engine_git_sha() {
+        let ctx = unwrap_empty_sim_ctx();
+        assert!(ctx.engine_git_sha.is_none());
+    }
+
+    #[test]
+    fn sim_context_with_post_state_replay_true() {
+        let ctx = unwrap_empty_sim_ctx().with_post_state_replay(true);
+        assert!(ctx.post_state_replay_enabled);
+    }
+
+    #[test]
+    fn sim_context_v2_reserves_cache_none_by_default() {
+        let ctx = unwrap_empty_sim_ctx();
+        assert!(ctx.v2_reserves_cache.is_none());
+    }
+
+    #[test]
+    fn sim_context_defaults_from_unwrap() {
+        let ctx = unwrap_empty_sim_ctx();
+        assert!(ctx.engine_git_sha.is_none());
+        assert!(!ctx.post_state_replay_enabled);
+    }
+
+    #[test]
+    fn sim_context_lookup_pool_reverse_direction() {
+        use aether_pools::new_pool_state_cache;
+        use crate::mempool_writer::NoopMempoolSink;
+        use std::collections::HashMap;
+        let meta = PoolMetadata {
+            token0_idx: 0, token1_idx: 1,
+            token0: address!("C02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2"),
+            token1: address!("A0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"),
+            pool_id: PoolId { address: address!("0000000000000000000000000000000000000011"), protocol: ProtocolType::UniswapV2 },
+            protocol: ProtocolType::UniswapV2, fee_bps: 30, tick_spacing: None, bytecode_warmed: true,
+        };
+        let mut registry = HashMap::new();
+        registry.insert(address!("0000000000000000000000000000000000000011"), meta);
+        let mut ti = TokenIndex::default();
+        ti.get_or_insert(address!("C02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2"));
+        ti.get_or_insert(address!("A0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"));
+        let ctx = Arc::new(SimContext::new(
+            Arc::new(ArcSwap::from_pointee(registry)),
+            Arc::new(ArcSwap::from_pointee(ti)),
+            Arc::new(SnapshotManager::new(PriceGraph::new(2))),
+            BellmanFord::new(3, 1_000),
+            new_pool_state_cache(),
+            Arc::new(NoopMempoolSink::new()),
+            None,
+        ));
+        // Reverse direction should still find the pool via canonical pair
+        let result = ctx.lookup_pool(
+            address!("A0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"),
+            address!("C02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2"),
+            ProtocolType::UniswapV2,
+        );
+        assert!(result.is_some());
+    }
+
+    // ----- handle_event additional paths -----
+
+    #[test]
+    fn handle_event_empty_input_to_router() {
+        let metrics = Arc::new(EngineMetrics::new());
+        let to = address!("7a250d5630B4cF539739dF2C5dAcb4c659F2488D");
+        handle_event(&metrics, None, pending_event(Some(to), vec![]));
+    }
+
+    #[test]
+    fn handle_event_with_eth_value_backfill() {
+        let metrics = Arc::new(EngineMetrics::new());
+        let ctx = empty_sim_ctx();
+        let to = address!("7a250d5630B4cF539739dF2C5dAcb4c659F2488D");
+        let mut event = pending_event(Some(to), vec![]);
+        event.value = U256::from(1_000_000_000_000_000_000u128);
+        handle_event(&metrics, Some(&ctx), event);
+    }
+
+    // ----- pre_sim_filter additional -----
+
+    #[test]
+    fn pre_sim_filter_oneinch_v6_passes() {
+        let metrics = EngineMetrics::new();
+        let ctx = empty_sim_ctx();
+        let swap = fake_swap(Protocol::OneInchV6,
+            address!("C02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2"),
+            address!("A0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"),
+            U256::from(1_000u64));
+        assert!(pre_sim_filter(&metrics, &ctx, &swap));
+    }
+
+    #[test]
+    fn pre_sim_filter_sushiswap_not_in_registry() {
+        let metrics = EngineMetrics::new();
+        let ctx = empty_sim_ctx();
+        let swap = fake_swap(Protocol::SushiSwap,
+            address!("C02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2"),
+            address!("A0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"),
+            U256::from(1_000u64));
+        assert!(!pre_sim_filter(&metrics, &ctx, &swap));
+        assert_eq!(filtered_count(&metrics, "not_in_registry"), 1);
+    }
+
+    #[test]
+    fn pre_sim_filter_curve_not_in_registry() {
+        let metrics = EngineMetrics::new();
+        let ctx = empty_sim_ctx();
+        let swap = fake_swap(Protocol::Curve,
+            address!("C02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2"),
+            address!("A0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"),
+            U256::from(1_000u64));
+        assert!(!pre_sim_filter(&metrics, &ctx, &swap));
+    }
+
+    #[test]
+    fn pre_sim_filter_bancor_single_leg_not_in_registry() {
+        let metrics = EngineMetrics::new();
+        let ctx = empty_sim_ctx();
+        let bnt = address!("1F573D6Fb3F13d689FF844B4cE37794d79a7FF1C");
+        let swap = fake_swap(Protocol::BancorV3,
+            address!("C02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2"),
+            bnt,
+            U256::from(1_000u64));
+        assert!(!pre_sim_filter(&metrics, &ctx, &swap));
+    }
+
+    // ----- decode_error_label additional -----
+
+    #[test]
+    fn decode_error_label_curve_unsupported() {
+        assert_eq!(
+            decode_error_label(&DecodeError::CurveUnsupported(address!("0000000000000000000000000000000000000001"))),
+            "curve_unsupported"
+        );
+    }
+
+    #[test]
+    fn decode_error_label_abi_decode() {
+        assert_eq!(
+            decode_error_label(&DecodeError::AbiDecode("bad abi".into())),
+            "abi_decode"
+        );
+    }
+
+    // ----- try_post_state_replay additional -----
+
+    #[test]
+    fn try_post_state_replay_bancor_unimplemented() {
+        let metrics = EngineMetrics::new();
+        let ctx = empty_sim_ctx();
+        let pool_state = synthetic_v3_pool_state();
+        let result = try_post_state_replay(
+            &metrics, &ctx, ReplayProtocol::Bancor,
+            address!("0000000000000000000000000000000000000001"),
+            &pool_state,
+            address!("C02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2"),
+            address!("A0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"),
+            &fake_pending_event(address!("7a250d5630B4cF539739dF2C5dAcb4c659F2488D")),
+            18_000_000,
+        );
+        assert!(result.is_none());
+        assert_eq!(metrics.mempool_post_state_replay_count("unimplemented_protocol"), 1);
+    }
+
+    #[test]
+    fn try_post_state_replay_curve_wrong_state_variant() {
+        let metrics = EngineMetrics::new();
+        let ctx = Arc::new(
+            unwrap_empty_sim_ctx()
+                .with_backrun_validator(dummy_backrun_cfg())
+                .with_post_state_replay(true),
+        );
+        let pool_state = synthetic_v3_pool_state(); // Wrong variant for Curve
+        let usdc = address!("A0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48");
+        let usdt = address!("dAC17F958D2ee523a2206206994597C13D831ec7");
+        let result = try_post_state_replay(
+            &metrics, &ctx, ReplayProtocol::Curve,
+            address!("0000000000000000000000000000000000000001"),
+            &pool_state, usdc, usdt,
+            &fake_pending_event(address!("7a250d5630B4cF539739dF2C5dAcb4c659F2488D")),
+            18_000_000,
+        );
+        // dummy_backrun_cfg() has provider=None, so cfg.provider.as_ref()? returns None
+        // before reaching the PoolState::Curve match. No metric is incremented.
+        assert!(result.is_none());
+        assert_eq!(metrics.mempool_post_state_replay_count("decode_failed"), 0);
+    }
+
+    #[test]
+    fn try_post_state_replay_balancer_wrong_state_variant() {
+        let metrics = EngineMetrics::new();
+        let ctx = Arc::new(
+            unwrap_empty_sim_ctx()
+                .with_backrun_validator(dummy_backrun_cfg())
+                .with_post_state_replay(true),
+        );
+        let pool_state = synthetic_v3_pool_state(); // Wrong variant for Balancer
+        let usdc = address!("A0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48");
+        let usdt = address!("dAC17F958D2ee523a2206206994597C13D831ec7");
+        let result = try_post_state_replay(
+            &metrics, &ctx, ReplayProtocol::Balancer,
+            address!("0000000000000000000000000000000000000001"),
+            &pool_state, usdc, usdt,
+            &fake_pending_event(address!("7a250d5630B4cF539739dF2C5dAcb4c659F2488D")),
+            18_000_000,
+        );
+        // dummy_backrun_cfg() has provider=None, so cfg.provider.as_ref()? returns None
+        // before reaching the PoolState::Balancer match. No metric is incremented.
+        assert!(result.is_none());
+        assert_eq!(metrics.mempool_post_state_replay_count("decode_failed"), 0);
+    }
+
+    // ----- gross_profit_bucket tests -----
+
+    #[test]
+    fn gross_profit_bucket_all_ranges() {
+        assert_eq!(gross_profit_bucket(U256::ZERO), "lt_10bps");
+        assert_eq!(gross_profit_bucket(U256::from(500_000_000_000_000u64)), "lt_10bps");
+        assert_eq!(gross_profit_bucket(U256::from(5_000_000_000_000_000u64)), "10_50bps");
+        assert_eq!(gross_profit_bucket(U256::from(50_000_000_000_000_000u64)), "50_200bps");
+        assert_eq!(gross_profit_bucket(U256::from(500_000_000_000_000_000u128)), "gt_200bps");
+    }
+
+    // ----- protocol_to_proto tests -----
+
+    #[test]
+    fn protocol_to_proto_all_variants() {
+        assert_eq!(protocol_to_proto(ProtocolType::UniswapV2) as i32, aether_proto::ProtocolType::UniswapV2 as i32);
+        assert_eq!(protocol_to_proto(ProtocolType::UniswapV3) as i32, aether_proto::ProtocolType::UniswapV3 as i32);
+        assert_eq!(protocol_to_proto(ProtocolType::SushiSwap) as i32, aether_proto::ProtocolType::Sushiswap as i32);
+        assert_eq!(protocol_to_proto(ProtocolType::Curve) as i32, aether_proto::ProtocolType::Curve as i32);
+        assert_eq!(protocol_to_proto(ProtocolType::BancorV3) as i32, aether_proto::ProtocolType::BancorV3 as i32);
+        assert_eq!(protocol_to_proto(ProtocolType::BalancerV2) as i32, aether_proto::ProtocolType::BalancerV2 as i32);
+        assert_eq!(protocol_to_proto(ProtocolType::BalancerV3) as i32, aether_proto::ProtocolType::BalancerV2 as i32);
+    }
+
+    // ----- u256_bytes tests -----
+
+    #[test]
+    fn u256_bytes_roundtrip() {
+        let v = U256::from(42u64);
+        let bytes = u256_bytes(v);
+        assert_eq!(bytes.len(), 32);
+        let recovered = U256::from_be_slice(&bytes);
+        assert_eq!(recovered, v);
+    }
+
+    #[test]
+    fn u256_bytes_zero() {
+        let bytes = u256_bytes(U256::ZERO);
+        assert_eq!(bytes, vec![0u8; 32]);
+    }
+
+    // ----- swap_step_to_proto tests -----
+
+    #[test]
+    fn swap_step_to_proto_fields() {
+        use aether_common::types::SwapStep;
+        let step = SwapStep {
+            protocol: ProtocolType::UniswapV2,
+            pool_address: address!("0000000000000000000000000000000000000011"),
+            token_in: address!("C02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2"),
+            token_out: address!("A0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"),
+            amount_in: U256::from(1_000_000u64),
+            min_amount_out: U256::from(990_000u64),
+            calldata: vec![0xde, 0xad],
+        };
+        let proto = swap_step_to_proto(step);
+        assert_eq!(proto.amount_in.len(), 32);
+        assert_eq!(proto.min_amount_out.len(), 32);
+        assert_eq!(proto.calldata, vec![0xde, 0xad]);
+    }
+
+    // ----- optimize_cycle_input additional -----
+
+    #[test]
+    fn optimize_cycle_input_empty_steps() {
+        use aether_pools::new_pool_state_cache;
+        let pool_states = new_pool_state_cache();
+        let outcome = optimize_cycle_input(
+            &[],
+            &pool_states,
+            Address::ZERO, Address::ZERO, 0.0, 0.0, 30.0, U256::ZERO,
+        );
+        assert!(matches!(outcome, SizingOutcome::Fallback));
+    }
+
+    #[test]
+    fn optimize_cycle_input_missing_pool_state() {
+        use aether_pools::new_pool_state_cache;
+        let weth = address!("C02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2");
+        let usdc = address!("A0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48");
+        let pool_states = new_pool_state_cache();
+        // No pool state inserted — should fallback
+        let steps = vec![aether_common::types::SwapStep {
+            protocol: ProtocolType::UniswapV2,
+            pool_address: address!("0000000000000000000000000000000000000011"),
+            token_in: weth, token_out: usdc,
+            amount_in: U256::ZERO, min_amount_out: U256::ZERO, calldata: vec![],
+        }];
+        let outcome = optimize_cycle_input(
+            &steps, &pool_states,
+            Address::ZERO, weth, 0.0, 0.0, 30.0, U256::ZERO,
+        );
+        assert!(matches!(outcome, SizingOutcome::Fallback));
+    }
+
+    // ----- cycle_to_swap_steps tests -----
+
+    #[test]
+    fn cycle_to_swap_steps_short_path() {
+        let graph = PriceGraph::new(2);
+        let ti = TokenIndex::default();
+        let cycle = aether_detector::opportunity::DetectedCycle {
+            path: vec![0],
+            total_weight: 0.0,
+        };
+        assert!(cycle_to_swap_steps(&graph, &ti, &cycle, U256::from(1000u64)).is_none());
+    }
+
+    // ----- BackrunValidatorConfig clone -----
+
+    #[test]
+    fn backrun_validator_config_clone() {
+        let cfg = BackrunValidatorConfig {
+            executor_address: address!("00000000000000000000000000000000000000aa"),
+            searcher_caller: address!("00000000000000000000000000000000000000bb"),
+            profit_token: address!("C02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2"),
+            balance_slot: U256::from(8u64),
+            chain_id: 1,
+            min_profit_wei: U256::from(1_000_000_000u64),
+            input_amount_wei: U256::from(1_000_000_000_000_000_000u128),
+            gas_price_gwei: 30.0,
+            sim_semaphore: Arc::new(Semaphore::new(4)),
+            provider: None,
+            mempool_prewarm: Arc::new(ArcSwap::from_pointee(None)),
+            executor_bytecode: None,
+        };
+        let cloned = cfg.clone();
+        assert_eq!(cloned.executor_address, address!("00000000000000000000000000000000000000aa"));
+        assert_eq!(cloned.chain_id, 1);
+    }
+
+    // ----- The optimizer sizes a genuinely profitable two-venue WETH/USDC cycle
     /// to a positive net-profit input (exercises pool resolution, the AMM
     /// profit_fn, ternary search, per-hop expected-out, and the gate).
     #[test]

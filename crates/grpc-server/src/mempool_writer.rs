@@ -630,4 +630,173 @@ mod tests {
             }
         }
     }
+
+    #[tokio::test]
+    async fn mempool_writer_from_env_falls_back_on_empty_dsn() {
+        let prev = std::env::var("MEMPOOL_LEDGER_DSN").ok();
+        unsafe {
+            std::env::set_var("MEMPOOL_LEDGER_DSN", "");
+        }
+
+        let registry = Registry::new();
+        let metrics = MempoolWriterMetrics::register(&registry);
+        let sink = mempool_writer_from_env(metrics).await;
+        sink.insert_prediction(sample_prediction());
+
+        if let Some(v) = prev {
+            unsafe {
+                std::env::set_var("MEMPOOL_LEDGER_DSN", v);
+            }
+        } else {
+            unsafe {
+                std::env::remove_var("MEMPOOL_LEDGER_DSN");
+            }
+        }
+    }
+
+    // ---- u256_to_decimal tests ----
+
+    #[test]
+    fn u256_to_decimal_zero() {
+        let d = u256_to_decimal(U256::ZERO);
+        assert_eq!(d.to_string(), "0");
+    }
+
+    #[test]
+    fn u256_to_decimal_one() {
+        let d = u256_to_decimal(U256::from(1u64));
+        assert_eq!(d.to_string(), "1");
+    }
+
+    #[test]
+    fn u256_to_decimal_large() {
+        let d = u256_to_decimal(U256::from(1_000_000_000_000_000_000u128));
+        assert_eq!(d.to_string(), "1000000000000000000");
+    }
+
+    // ---- PredictedPostState OneInchV6 variant ----
+
+    #[test]
+    fn predicted_post_state_oneinchv6_round_trip() {
+        let original = PredictedPostState::OneInchV6 {
+            reserve_in: 100.5,
+            reserve_out: 200.5,
+        };
+        let json = serde_json::to_value(&original).expect("serialize");
+        let kind = json.get("kind").and_then(|v| v.as_str()).expect("kind present");
+        assert_eq!(kind, "one_inch_v6");
+        let parsed: PredictedPostState = serde_json::from_value(json).expect("deserialize");
+        assert_eq!(
+            serde_json::to_string(&parsed).unwrap(),
+            serde_json::to_string(&original).unwrap(),
+        );
+    }
+
+    // ---- NoopMempoolSink default ----
+
+    #[test]
+    fn noop_sink_default_trait() {
+        let sink = NoopMempoolSink::default();
+        sink.insert_prediction(sample_prediction());
+    }
+
+    // ---- CapturingSink additional ----
+
+    #[test]
+    fn capturing_sink_many_predictions() {
+        let sink = CapturingSink::new();
+        for _ in 0..100 {
+            sink.insert_prediction(sample_prediction());
+        }
+        assert_eq!(sink.seen.lock().unwrap().len(), 100);
+    }
+
+    // ---- NewMempoolPrediction fields ----
+
+    #[test]
+    fn new_mempool_prediction_sample_fields() {
+        let p = sample_prediction();
+        assert_eq!(p.protocol, PROTOCOL_UNI_V2);
+        assert!(p.predicted_target_block > 0);
+        assert!(p.engine_git_sha.is_some());
+        assert!(p.profit_factor_predicted.is_some());
+        assert!(p.detection_lead_ms.is_none());
+    }
+
+    // ---- MempoolPredictionSink trait object safety ----
+    // Note: noop_sink_is_object_safe test already exists above
+
+    // ---- Metrics additional operations ----
+
+    #[test]
+    fn metrics_multiple_protocol_labels() {
+        let registry = Registry::new();
+        let m = MempoolWriterMetrics::register(&registry);
+        m.persisted_total.with_label_values(&[PROTOCOL_UNI_V2]).inc();
+        m.persisted_total.with_label_values(&[PROTOCOL_SUSHI]).inc();
+        m.persisted_total.with_label_values(&[PROTOCOL_UNI_V3]).inc();
+        m.persisted_total.with_label_values(&[PROTOCOL_BALANCER]).inc();
+    }
+
+    #[test]
+    fn metrics_queue_depth_inc_dec() {
+        let registry = Registry::new();
+        let m = MempoolWriterMetrics::register(&registry);
+        m.queue_depth.set(0);
+        m.queue_depth.inc();
+        m.queue_depth.inc();
+        assert_eq!(m.queue_depth.get(), 2);
+        m.queue_depth.dec();
+        assert_eq!(m.queue_depth.get(), 1);
+    }
+
+    #[test]
+    fn metrics_write_latency_multiple_buckets() {
+        let registry = Registry::new();
+        let m = MempoolWriterMetrics::register(&registry);
+        m.write_latency_ms.with_label_values(&["ok"]).observe(0.5);
+        m.write_latency_ms.with_label_values(&["ok"]).observe(50.0);
+        m.write_latency_ms.with_label_values(&["err"]).observe(100.0);
+    }
+
+    #[test]
+    fn metrics_drops_total() {
+        let registry = Registry::new();
+        let m = MempoolWriterMetrics::register(&registry);
+        m.drops_total.inc();
+        m.drops_total.inc();
+        m.drops_total.inc();
+        // No panic, counter increments
+    }
+
+    // ---- PredictedPostState all variants into_json ----
+
+    #[test]
+    fn predicted_post_state_all_variants_into_json() {
+        for variant in [
+            PredictedPostState::V2 { reserve_in: 1.0, reserve_out: 2.0 },
+            PredictedPostState::V3 { reserve_in: 3.0, reserve_out: 4.0 },
+            PredictedPostState::Balancer { reserve_in: 5.0, reserve_out: 6.0 },
+            PredictedPostState::Curve { reserve_in: 7.0, reserve_out: 8.0 },
+            PredictedPostState::Bancor { reserve_in: 9.0, reserve_out: 10.0 },
+            PredictedPostState::OneInchV6 { reserve_in: 11.0, reserve_out: 12.0 },
+        ] {
+            let json = variant.into_json();
+            assert!(json.is_object());
+            assert!(json.get("kind").is_some());
+        }
+    }
+
+    // ---- protocol constants are correct strings ----
+
+    #[test]
+    fn protocol_constants_values() {
+        assert_eq!(PROTOCOL_UNI_V2, "uni_v2");
+        assert_eq!(PROTOCOL_SUSHI, "sushi");
+        assert_eq!(PROTOCOL_UNI_V3, "uni_v3");
+        assert_eq!(PROTOCOL_CURVE, "curve");
+        assert_eq!(PROTOCOL_BALANCER, "balancer");
+        assert_eq!(PROTOCOL_BANCOR, "bancor");
+        assert_eq!(PROTOCOL_ONE_INCH_V6, "one_inch_v6");
+    }
 }

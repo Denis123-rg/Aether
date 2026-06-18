@@ -263,7 +263,6 @@ mod tests {
 
     #[test]
     fn rejects_when_too_few_qualified_venues() {
-        // Two venues but only one clears the liquidity floor.
         let venues = vec![
             venue(ProtocolType::UniswapV2, 1, 100_000.0),
             venue(ProtocolType::SushiSwap, 2, 1_000.0),
@@ -304,7 +303,6 @@ mod tests {
         assert!(toml.contains("fee_bps = 30"));
         assert!(toml.contains("tier = \"warm\""));
         assert!(!toml.contains("tick_spacing"));
-        // Round-trips through the same parser bootstrap_pools uses.
         #[derive(serde::Deserialize)]
         struct P {
             pools: Vec<Entry>,
@@ -343,7 +341,6 @@ mod tests {
     #[test]
     fn append_dedups_against_file_and_batch() {
         let tmp = tempfile::NamedTempFile::new().unwrap();
-        // Seed the file with one existing pool (lower-cased address on disk).
         let existing = addr(0x11);
         std::fs::write(
             tmp.path(),
@@ -357,7 +354,6 @@ mod tests {
         .unwrap();
 
         let entries = vec![
-            // Already present (different case) -> skipped.
             PoolEntryToml {
                 protocol: ProtocolType::UniswapV2,
                 address: existing,
@@ -367,7 +363,6 @@ mod tests {
                 tick_spacing: None,
                 tier: "warm".into(),
             },
-            // New -> appended.
             PoolEntryToml {
                 protocol: ProtocolType::SushiSwap,
                 address: addr(0x22),
@@ -377,7 +372,6 @@ mod tests {
                 tick_spacing: None,
                 tier: "warm".into(),
             },
-            // Duplicate of the new one within the same batch -> skipped.
             PoolEntryToml {
                 protocol: ProtocolType::SushiSwap,
                 address: addr(0x22),
@@ -392,7 +386,6 @@ mod tests {
         let n = append_admitted_pools(tmp.path(), &entries).unwrap();
         assert_eq!(n, 1, "only the one genuinely-new pool should be appended");
 
-        // Second run with the same input appends nothing (idempotent).
         let n2 = append_admitted_pools(tmp.path(), &entries).unwrap();
         assert_eq!(n2, 0);
 
@@ -402,5 +395,336 @@ mod tests {
             2,
             "file should hold exactly the original + one admitted pool"
         );
+    }
+
+    #[test]
+    fn protocol_toml_str_all_variants() {
+        assert_eq!(protocol_toml_str(ProtocolType::UniswapV2), "uniswap_v2");
+        assert_eq!(protocol_toml_str(ProtocolType::UniswapV3), "uniswap_v3");
+        assert_eq!(protocol_toml_str(ProtocolType::SushiSwap), "sushiswap");
+        assert_eq!(protocol_toml_str(ProtocolType::Curve), "curve");
+        assert_eq!(protocol_toml_str(ProtocolType::BalancerV2), "balancer_v2");
+        assert_eq!(protocol_toml_str(ProtocolType::BalancerV3), "balancer_v3");
+        assert_eq!(protocol_toml_str(ProtocolType::BancorV3), "bancor_v3");
+    }
+
+    #[test]
+    fn admission_config_default_values() {
+        let d = AdmissionConfig::default();
+        assert_eq!(d.min_venues, 2);
+        assert_eq!(d.min_liquidity_usd, 25_000.0);
+        assert!(d.require_fot_clean);
+        assert_eq!(d.tier, "warm");
+    }
+
+    #[test]
+    fn evaluate_fot_not_clean_honeypot() {
+        let venues = vec![
+            venue(ProtocolType::UniswapV2, 1, 100_000.0),
+            venue(ProtocolType::SushiSwap, 2, 100_000.0),
+        ];
+        let out = evaluate(&venues, &FotVerdict::Honeypot { reason: "transfer failed".into() }, &cfg());
+        assert!(matches!(out, AdmissionOutcome::Reject { .. }));
+    }
+
+    #[test]
+    fn evaluate_fot_not_clean_inconclusive() {
+        let venues = vec![
+            venue(ProtocolType::UniswapV2, 1, 100_000.0),
+            venue(ProtocolType::SushiSwap, 2, 100_000.0),
+        ];
+        let out = evaluate(
+            &venues,
+            &FotVerdict::Inconclusive { reason: "slot not found".into() },
+            &cfg(),
+        );
+        assert!(matches!(out, AdmissionOutcome::Reject { .. }));
+    }
+
+    #[test]
+    fn evaluate_fot_clean_bypasses_requirement() {
+        let mut c = cfg();
+        c.require_fot_clean = false;
+        // Only 1 venue above threshold — would normally reject, but let's
+        // give it 2 venues both below the liquidity floor to test the
+        // liquidity path separately.
+        let venues = vec![
+            venue(ProtocolType::UniswapV2, 1, 100_000.0),
+            venue(ProtocolType::SushiSwap, 2, 100_000.0),
+        ];
+        let out = evaluate(&venues, &FotVerdict::FeeOnTransfer { tax_bps: 100 }, &c);
+        // fot_clean=false means FOT check is skipped; both venues are above
+        // the liquidity floor so we should get Admit.
+        assert!(matches!(out, AdmissionOutcome::Admit(_)));
+    }
+
+    #[test]
+    fn evaluate_zero_venues() {
+        let out = evaluate(&[], &FotVerdict::Clean { observed_tax_bps: 0 }, &cfg());
+        match out {
+            AdmissionOutcome::Reject { reason } => {
+                assert!(reason.contains("0 venue"));
+            }
+            other => panic!("expected reject, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn evaluate_all_venues_below_liquidity_floor() {
+        let venues = vec![
+            venue(ProtocolType::UniswapV2, 1, 100.0),
+            venue(ProtocolType::SushiSwap, 2, 200.0),
+            venue(ProtocolType::Curve, 3, 50.0),
+        ];
+        let out = evaluate(&venues, &FotVerdict::Clean { observed_tax_bps: 0 }, &cfg());
+        match out {
+            AdmissionOutcome::Reject { reason } => {
+                assert!(reason.contains("0 venue"));
+                assert!(reason.contains("25000"));
+            }
+            other => panic!("expected reject, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn evaluate_exactly_min_venues_just_above_floor() {
+        let mut c = cfg();
+        c.min_venues = 1;
+        c.min_liquidity_usd = 10_000.0;
+        let venues = vec![
+            venue(ProtocolType::UniswapV2, 1, 10_000.0),
+            venue(ProtocolType::SushiSwap, 2, 5_000.0),
+        ];
+        let out = evaluate(&venues, &FotVerdict::Clean { observed_tax_bps: 0 }, &c);
+        // Only 1 venue exactly at the floor qualifies.
+        match out {
+            AdmissionOutcome::Admit(entries) => assert_eq!(entries.len(), 1),
+            other => panic!("expected admit with 1 entry, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn candidate_venue_to_entry_preserves_fields() {
+        let v = CandidateVenue {
+            protocol: ProtocolType::Curve,
+            address: addr(0x42),
+            token0: addr(0x01),
+            token1: addr(0x02),
+            fee_bps: 400,
+            tick_spacing: None,
+            liquidity_usd: 50_000.0,
+        };
+        let entry = v.to_entry("hot");
+        assert_eq!(entry.protocol, ProtocolType::Curve);
+        assert_eq!(entry.address, addr(0x42));
+        assert_eq!(entry.token0, addr(0x01));
+        assert_eq!(entry.token1, addr(0x02));
+        assert_eq!(entry.fee_bps, 400);
+        assert_eq!(entry.tier, "hot");
+        assert!(entry.tick_spacing.is_none());
+    }
+
+    #[test]
+    fn candidate_venue_to_entry_with_tick_spacing() {
+        let v = CandidateVenue {
+            protocol: ProtocolType::UniswapV3,
+            address: addr(0x55),
+            token0: addr(0x03),
+            token1: addr(0x04),
+            fee_bps: 5,
+            tick_spacing: Some(60),
+            liquidity_usd: 100_000.0,
+        };
+        let entry = v.to_entry("cold");
+        assert_eq!(entry.tick_spacing, Some(60));
+        assert_eq!(entry.tier, "cold");
+    }
+
+    #[test]
+    fn format_entry_all_protocols() {
+        for proto in [
+            ProtocolType::UniswapV2,
+            ProtocolType::UniswapV3,
+            ProtocolType::SushiSwap,
+            ProtocolType::Curve,
+            ProtocolType::BalancerV2,
+            ProtocolType::BalancerV3,
+            ProtocolType::BancorV3,
+        ] {
+            let e = PoolEntryToml {
+                protocol: proto,
+                address: addr(0x11),
+                token0: addr(0xAA),
+                token1: addr(0xBB),
+                fee_bps: 30,
+                tick_spacing: None,
+                tier: "warm".into(),
+            };
+            let toml = format_pool_entry(&e);
+            assert!(
+                toml.contains(&format!("protocol = \"{}\"", protocol_toml_str(proto))),
+                "missing protocol for {proto:?}"
+            );
+            assert!(toml.contains("[[pools]]"));
+        }
+    }
+
+    #[test]
+    fn format_pool_entry_starts_with_pools_block() {
+        let e = PoolEntryToml {
+            protocol: ProtocolType::UniswapV2,
+            address: addr(0x01),
+            token0: addr(0xAA),
+            token1: addr(0xBB),
+            fee_bps: 30,
+            tick_spacing: None,
+            tier: "hot".into(),
+        };
+        let toml = format_pool_entry(&e);
+        assert!(toml.starts_with("[[pools]]\n"));
+    }
+
+    #[test]
+    fn append_to_new_file_creates_and_writes() {
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let path = tmp.path().with_extension("toml");
+        let entries = vec![
+            PoolEntryToml {
+                protocol: ProtocolType::UniswapV2,
+                address: addr(0x01),
+                token0: addr(0xAA),
+                token1: addr(0xBB),
+                fee_bps: 30,
+                tick_spacing: None,
+                tier: "warm".into(),
+            },
+            PoolEntryToml {
+                protocol: ProtocolType::SushiSwap,
+                address: addr(0x02),
+                token0: addr(0xAA),
+                token1: addr(0xBB),
+                fee_bps: 30,
+                tick_spacing: None,
+                tier: "warm".into(),
+            },
+        ];
+        let n = append_admitted_pools(&path, &entries).unwrap();
+        assert_eq!(n, 2);
+        let contents = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(contents.matches("[[pools]]").count(), 2);
+        assert!(contents.contains("Auto-discovered pools"));
+    }
+
+    #[test]
+    fn append_empty_entries_noop() {
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let original = std::fs::read_to_string(tmp.path()).unwrap();
+        let n = append_admitted_pools(tmp.path(), &[]).unwrap();
+        assert_eq!(n, 0);
+        assert_eq!(std::fs::read_to_string(tmp.path()).unwrap(), original);
+    }
+
+    #[test]
+    fn read_existing_addresses_nonexistent_file() {
+        let set = read_existing_addresses(Path::new("/tmp/nonexistent_pools_file_aether_test.toml"));
+        assert!(set.is_empty());
+    }
+
+    #[test]
+    fn read_existing_addresses_malformed_lines() {
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(
+            tmp.path(),
+            "random text\nno quotes here\naddress = \"0xABC\"\naddress no quotes\n",
+        )
+        .unwrap();
+        let set = read_existing_addresses(tmp.path());
+        assert_eq!(set.len(), 1);
+        assert!(set.contains("0xabc"));
+    }
+
+    #[test]
+    fn read_existing_addresses_empty_file() {
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(tmp.path(), "").unwrap();
+        let set = read_existing_addresses(tmp.path());
+        assert!(set.is_empty());
+    }
+
+    #[test]
+    fn evaluate_fot_clean_observed_tax_bps_preserved() {
+        let venues = vec![
+            venue(ProtocolType::UniswapV2, 1, 100_000.0),
+            venue(ProtocolType::SushiSwap, 2, 100_000.0),
+        ];
+        let fot = FotVerdict::Clean { observed_tax_bps: 15 };
+        let out = evaluate(&venues, &fot, &cfg());
+        assert!(matches!(out, AdmissionOutcome::Admit(_)));
+    }
+
+    #[test]
+    fn evaluate_fot_fee_on_transfer_tax_bps_in_reject_reason() {
+        let venues = vec![
+            venue(ProtocolType::UniswapV2, 1, 100_000.0),
+            venue(ProtocolType::SushiSwap, 2, 100_000.0),
+        ];
+        let out = evaluate(
+            &venues,
+            &FotVerdict::FeeOnTransfer { tax_bps: 300 },
+            &cfg(),
+        );
+        match out {
+            AdmissionOutcome::Reject { reason } => {
+                assert!(reason.contains("fee-on-transfer"));
+            }
+            other => panic!("expected reject, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn evaluate_venues_with_varied_liquidity() {
+        let mut c = cfg();
+        c.min_venues = 3;
+        c.min_liquidity_usd = 10_000.0;
+        let venues = vec![
+            venue(ProtocolType::UniswapV2, 1, 50_000.0),
+            venue(ProtocolType::SushiSwap, 2, 30_000.0),
+            venue(ProtocolType::Curve, 3, 10_000.0),
+            venue(ProtocolType::BalancerV2, 4, 5_000.0),
+        ];
+        let out = evaluate(&venues, &FotVerdict::Clean { observed_tax_bps: 0 }, &c);
+        match out {
+            AdmissionOutcome::Admit(entries) => assert_eq!(entries.len(), 3),
+            other => panic!("expected admit with 3, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn pool_entry_toml_partial_eq() {
+        let a = PoolEntryToml {
+            protocol: ProtocolType::UniswapV2,
+            address: addr(0x01),
+            token0: addr(0xAA),
+            token1: addr(0xBB),
+            fee_bps: 30,
+            tick_spacing: None,
+            tier: "warm".into(),
+        };
+        let b = a.clone();
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    fn admission_outcome_clone() {
+        let admit = AdmissionOutcome::Admit(vec![PoolEntryToml {
+            protocol: ProtocolType::UniswapV2,
+            address: addr(0x01),
+            token0: addr(0xAA),
+            token1: addr(0xBB),
+            fee_bps: 30,
+            tick_spacing: None,
+            tier: "warm".into(),
+        }]);
+        let _cloned = admit.clone();
     }
 }

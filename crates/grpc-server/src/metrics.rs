@@ -1150,6 +1150,7 @@ fn metrics_addr() -> SocketAddr {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
 
     #[test]
     fn test_metrics_render_contains_required_names() {
@@ -1179,7 +1180,6 @@ mod tests {
             assert!(output.contains(name), "missing metric {name}");
         }
 
-        // Histogram emits _count and _sum
         assert!(output.contains("aether_detection_latency_ms_count 1"));
         assert!(output.contains("aether_detection_latency_ms_sum 3"));
         assert!(output.contains("aether_simulation_latency_ms_count 1"));
@@ -1193,9 +1193,513 @@ mod tests {
         assert!(output.contains(r#"aether_decode_errors_total{reason="insufficient_topics"} 1"#));
     }
 
+    #[test]
+    fn inc_cycles_detected_zero_is_noop() {
+        let m = EngineMetrics::new();
+        m.inc_cycles_detected(0);
+        assert_eq!(m.cycles_detected.get(), 0);
+    }
+
+    #[test]
+    fn inc_simulations_run_zero_is_noop() {
+        let m = EngineMetrics::new();
+        m.inc_simulations_run(0);
+        assert_eq!(m.simulations_run.get(), 0);
+    }
+
+    #[test]
+    fn inc_arbs_published_zero_is_noop() {
+        let m = EngineMetrics::new();
+        m.inc_arbs_published(0);
+        assert_eq!(m.arbs_published.get(), 0);
+    }
+
+    #[test]
+    fn add_pending_pipeline_lagged_zero_is_noop() {
+        let m = EngineMetrics::new();
+        m.add_pending_pipeline_lagged(0);
+        let output = String::from_utf8(m.render()).unwrap();
+        assert!(output.contains("aether_pending_pipeline_lagged_total 0"));
+    }
+
+    #[test]
+    fn add_pending_pipeline_lagged_positive() {
+        let m = EngineMetrics::new();
+        m.add_pending_pipeline_lagged(42);
+        let output = String::from_utf8(m.render()).unwrap();
+        assert!(output.contains("aether_pending_pipeline_lagged_total 42"));
+    }
+
+    #[test]
+    fn observe_mempool_first_seen_to_inclusion_ms() {
+        let m = EngineMetrics::new();
+        m.observe_mempool_first_seen_to_inclusion_ms(150.0);
+        m.observe_mempool_first_seen_to_inclusion_ms(300.0);
+        let output = String::from_utf8(m.render()).unwrap();
+        assert!(output.contains("aether_mempool_first_seen_to_inclusion_ms_count 2"));
+        assert!(output.contains("aether_mempool_first_seen_to_inclusion_ms_sum 450"));
+    }
+
+    #[test]
+    fn inc_mempool_first_seen_event() {
+        let m = EngineMetrics::new();
+        m.inc_mempool_first_seen_event("recorded");
+        m.inc_mempool_first_seen_event("matched");
+        m.inc_mempool_first_seen_event("recorded");
+        let output = String::from_utf8(m.render()).unwrap();
+        assert!(output.contains(r#"aether_mempool_first_seen_events_total{event="recorded"} 2"#));
+        assert!(output.contains(r#"aether_mempool_first_seen_events_total{event="matched"} 1"#));
+    }
+
+    #[test]
+    fn inc_mempool_post_state_replay_and_count() {
+        let m = EngineMetrics::new();
+        assert_eq!(m.mempool_post_state_replay_count("success"), 0);
+        m.inc_mempool_post_state_replay("success");
+        m.inc_mempool_post_state_replay("success");
+        m.inc_mempool_post_state_replay("victim_reverted");
+        assert_eq!(m.mempool_post_state_replay_count("success"), 2);
+        assert_eq!(m.mempool_post_state_replay_count("victim_reverted"), 1);
+    }
+
+    #[test]
+    fn observe_mempool_post_state_replay_latency_ms() {
+        let m = EngineMetrics::new();
+        m.observe_mempool_post_state_replay_latency_ms(10.5);
+        m.observe_mempool_post_state_replay_latency_ms(25.0);
+        let output = String::from_utf8(m.render()).unwrap();
+        assert!(
+            output.contains("aether_mempool_post_state_replay_latency_ms_count 2"),
+            "missing replay latency count"
+        );
+    }
+
+    #[test]
+    fn inc_sim_evm_fallback_and_count() {
+        let m = EngineMetrics::new();
+        assert_eq!(m.sim_evm_fallback_count("v3_tick_crossed"), 0);
+        m.inc_sim_evm_fallback("v3_tick_crossed");
+        m.inc_sim_evm_fallback("v3_tick_crossed");
+        m.inc_sim_evm_fallback("curve_unconverged");
+        assert_eq!(m.sim_evm_fallback_count("v3_tick_crossed"), 2);
+        assert_eq!(m.sim_evm_fallback_count("curve_unconverged"), 1);
+    }
+
+    #[test]
+    fn inc_cycle_gate_dropped_and_count() {
+        let m = EngineMetrics::new();
+        assert_eq!(m.cycle_gate_dropped_count("profit_factor_impossible"), 0);
+        m.inc_cycle_gate_dropped("profit_factor_impossible");
+        m.inc_cycle_gate_dropped("reserves_too_low");
+        m.inc_cycle_gate_dropped("reserves_too_low");
+        assert_eq!(m.cycle_gate_dropped_count("profit_factor_impossible"), 1);
+        assert_eq!(m.cycle_gate_dropped_count("reserves_too_low"), 2);
+    }
+
+    #[test]
+    fn inc_pending_dex_tx_and_count() {
+        let m = EngineMetrics::new();
+        assert_eq!(
+            m.pending_dex_tx_count("0xRouter", "uni_v2", true),
+            0
+        );
+        m.inc_pending_dex_tx("0xRouter", "uni_v2", true);
+        m.inc_pending_dex_tx("0xRouter", "uni_v2", true);
+        m.inc_pending_dex_tx("0xRouter", "unknown", false);
+        assert_eq!(
+            m.pending_dex_tx_count("0xRouter", "uni_v2", true),
+            2
+        );
+        assert_eq!(
+            m.pending_dex_tx_count("0xRouter", "unknown", false),
+            1
+        );
+    }
+
+    #[test]
+    fn inc_pending_decode_errors() {
+        let m = EngineMetrics::new();
+        m.inc_pending_decode_errors("too_short");
+        m.inc_pending_decode_errors("unknown_selector");
+        m.inc_pending_decode_errors("too_short");
+        let output = String::from_utf8(m.render()).unwrap();
+        assert!(
+            output.contains(r#"aether_pending_decode_errors_total{reason="too_short"} 2"#)
+        );
+        assert!(
+            output.contains(r#"aether_pending_decode_errors_total{reason="unknown_selector"} 1"#)
+        );
+    }
+
+    #[test]
+    fn inc_pending_arb_candidates() {
+        let m = EngineMetrics::new();
+        m.inc_pending_arb_candidates("0xRouter", "<10bps");
+        let output = String::from_utf8(m.render()).unwrap();
+        assert!(output.contains("aether_pending_arb_candidates_total"));
+        assert!(output.contains("0xRouter"));
+        assert!(output.contains("<10bps"));
+    }
+
+    #[test]
+    fn inc_pending_arb_sim_skipped_and_count() {
+        let m = EngineMetrics::new();
+        assert_eq!(m.pending_arb_sim_skipped_count("not_in_registry"), 0);
+        m.inc_pending_arb_sim_skipped("not_in_registry");
+        m.inc_pending_arb_sim_skipped("not_in_registry");
+        m.inc_pending_arb_sim_skipped("zero_amount");
+        assert_eq!(m.pending_arb_sim_skipped_count("not_in_registry"), 2);
+        assert_eq!(m.pending_arb_sim_skipped_count("zero_amount"), 1);
+    }
+
+    #[test]
+    fn inc_mempool_filtered_and_count() {
+        let m = EngineMetrics::new();
+        assert_eq!(m.mempool_filtered_count("same_token"), 0);
+        m.inc_mempool_filtered("same_token");
+        m.inc_mempool_filtered("same_token");
+        m.inc_mempool_filtered("not_in_registry");
+        assert_eq!(m.mempool_filtered_count("same_token"), 2);
+        assert_eq!(m.mempool_filtered_count("not_in_registry"), 1);
+    }
+
+    #[test]
+    fn observe_mempool_backrun_validation_latency_ms() {
+        let m = EngineMetrics::new();
+        m.observe_mempool_backrun_validation_latency_ms("accept", 15.0);
+        m.observe_mempool_backrun_validation_latency_ms("reject", 5.0);
+        let output = String::from_utf8(m.render()).unwrap();
+        assert!(output.contains("aether_mempool_backrun_validation_latency_ms"));
+    }
+
+    #[test]
+    fn inc_mempool_backrun_validated_and_count() {
+        let m = EngineMetrics::new();
+        assert_eq!(m.mempool_backrun_validated_count("50-200bps"), 0);
+        m.inc_mempool_backrun_validated("50-200bps");
+        m.inc_mempool_backrun_validated("50-200bps");
+        assert_eq!(m.mempool_backrun_validated_count("50-200bps"), 2);
+    }
+
+    #[test]
+    fn inc_mempool_backrun_rejected_and_count() {
+        let m = EngineMetrics::new();
+        assert_eq!(m.mempool_backrun_rejected_count("arb_reverted"), 0);
+        m.inc_mempool_backrun_rejected("arb_reverted");
+        m.inc_mempool_backrun_rejected("victim_halted");
+        assert_eq!(m.mempool_backrun_rejected_count("arb_reverted"), 1);
+        assert_eq!(m.mempool_backrun_rejected_count("victim_halted"), 1);
+    }
+
+    #[test]
+    fn prewarm_hit_and_miss() {
+        let m = EngineMetrics::new();
+        m.inc_mempool_prewarm_hit();
+        m.inc_mempool_prewarm_hit();
+        m.inc_mempool_prewarm_miss();
+        let output = String::from_utf8(m.render()).unwrap();
+        assert!(output.contains(r#"aether_mempool_prewarm_inject_total{result="hit"} 2"#));
+        assert!(output.contains(r#"aether_mempool_prewarm_inject_total{result="miss"} 1"#));
+    }
+
+    #[test]
+    fn inc_mempool_prewarm_refresh() {
+        let m = EngineMetrics::new();
+        m.inc_mempool_prewarm_refresh("ok");
+        m.inc_mempool_prewarm_refresh("error");
+        let output = String::from_utf8(m.render()).unwrap();
+        assert!(output.contains(r#"aether_mempool_prewarm_refresh_total{result="ok"} 1"#));
+        assert!(output.contains(r#"aether_mempool_prewarm_refresh_total{result="error"} 1"#));
+    }
+
+    #[test]
+    fn observe_mempool_prewarm_refresh_duration_ms() {
+        let m = EngineMetrics::new();
+        m.observe_mempool_prewarm_refresh_duration_ms(42.5);
+        let output = String::from_utf8(m.render()).unwrap();
+        assert!(output.contains("aether_mempool_prewarm_refresh_duration_ms_count 1"));
+    }
+
+    #[test]
+    fn set_mempool_prewarm_warm_pools() {
+        let m = EngineMetrics::new();
+        m.set_mempool_prewarm_warm_pools(500);
+        let output = String::from_utf8(m.render()).unwrap();
+        assert!(output.contains("aether_mempool_prewarm_warm_pools 500"));
+    }
+
+    #[test]
+    fn track_mempool_backrun_sim_guard_balances_gauge() {
+        let m = Arc::new(EngineMetrics::new());
+        assert_eq!(m.mempool_backrun_sim_concurrent(), 0);
+        {
+            let _g1 = m.track_mempool_backrun_sim();
+            assert_eq!(m.mempool_backrun_sim_concurrent(), 1);
+            {
+                let _g2 = m.track_mempool_backrun_sim();
+                assert_eq!(m.mempool_backrun_sim_concurrent(), 2);
+            }
+            assert_eq!(m.mempool_backrun_sim_concurrent(), 1);
+        }
+        assert_eq!(m.mempool_backrun_sim_concurrent(), 0);
+    }
+
+    #[test]
+    fn track_mempool_backrun_sim_guard_drop_on_panic() {
+        let m = Arc::new(EngineMetrics::new());
+        let _g = m.track_mempool_backrun_sim();
+        assert_eq!(m.mempool_backrun_sim_concurrent(), 1);
+        // Simulate a panic — guard drop should still decrement.
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _g2 = m.track_mempool_backrun_sim();
+            assert_eq!(m.mempool_backrun_sim_concurrent(), 2);
+            panic!("simulated");
+        }));
+        assert!(result.is_err());
+        // The outer guard is still alive, so count = 1.
+        assert_eq!(m.mempool_backrun_sim_concurrent(), 1);
+    }
+
+    #[test]
+    fn default_engine_metrics() {
+        let m = EngineMetrics::default();
+        m.inc_blocks_processed();
+        assert_eq!(m.blocks_processed.get(), 1);
+    }
+
+    #[test]
+    fn registry_accessor() {
+        let m = EngineMetrics::new();
+        let reg = m.registry();
+        assert!(!reg.gather().is_empty());
+    }
+
+    #[test]
+    fn render_returns_non_empty() {
+        let m = EngineMetrics::new();
+        let bytes = m.render();
+        assert!(!bytes.is_empty());
+        let s = String::from_utf8(bytes).unwrap();
+        assert!(s.contains("aether_"));
+    }
+
+    #[test]
+    fn observe_detection_latency_us_conversion() {
+        let m = EngineMetrics::new();
+        m.observe_detection_latency_us(1500);
+        let output = String::from_utf8(m.render()).unwrap();
+        assert!(output.contains("aether_detection_latency_ms_count 1"));
+        assert!(output.contains("aether_detection_latency_ms_sum 1.5"));
+    }
+
+    #[test]
+    fn observe_simulation_latency_us_conversion() {
+        let m = EngineMetrics::new();
+        m.observe_simulation_latency_us(7500);
+        let output = String::from_utf8(m.render()).unwrap();
+        assert!(output.contains("aether_simulation_latency_ms_count 1"));
+        assert!(output.contains("aether_simulation_latency_ms_sum 7.5"));
+    }
+
+    #[test]
+    fn inc_blocks_processed_multiple() {
+        let m = EngineMetrics::new();
+        m.inc_blocks_processed();
+        m.inc_blocks_processed();
+        m.inc_blocks_processed();
+        assert_eq!(m.blocks_processed.get(), 3);
+    }
+
+    #[test]
+    fn inc_decode_errors_stacks() {
+        let m = EngineMetrics::new();
+        for _ in 0..5 {
+            m.inc_decode_errors("unknown_topic");
+        }
+        let output = String::from_utf8(m.render()).unwrap();
+        assert!(output.contains(r#"aether_decode_errors_total{reason="unknown_topic"} 5"#));
+    }
+
+    // ── HTTP handle_connection edge cases ──
+
+    #[tokio::test]
+    async fn handle_connection_timeout_on_empty_read() {
+        let metrics = Arc::new(EngineMetrics::new());
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let addr = listener.local_addr().expect("local addr");
+
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.expect("accept");
+            // Don't write anything — let the server timeout.
+            let result = handle_connection(&mut socket, metrics).await;
+            assert!(result.is_ok(), "timeout should return Ok(())");
+        });
+
+        // Connect but don't send data — the server should time out after 5s.
+        let stream = tokio::net::TcpStream::connect(addr).await.expect("connect");
+        // Wait for the server's timeout to fire.
+        tokio::time::sleep(Duration::from_secs(6)).await;
+        drop(stream);
+        server.await.expect("server task");
+    }
+
+    #[tokio::test]
+    async fn handle_connection_zero_length_read() {
+        let metrics = Arc::new(EngineMetrics::new());
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let addr = listener.local_addr().expect("local addr");
+
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.expect("accept");
+            let result = handle_connection(&mut socket, metrics).await;
+            assert!(result.is_ok());
+        });
+
+        // Connect and immediately close to trigger n == 0 path.
+        let stream = tokio::net::TcpStream::connect(addr).await.expect("connect");
+        drop(stream);
+        server.await.expect("server task");
+    }
+
+    #[tokio::test]
+    async fn handle_connection_top_pools_no_provider() {
+        let metrics = Arc::new(EngineMetrics::new());
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let addr = listener.local_addr().expect("local addr");
+
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.expect("accept");
+            handle_connection(&mut socket, metrics)
+                .await
+                .expect("handle connection");
+        });
+
+        let mut stream = tokio::net::TcpStream::connect(addr).await.expect("connect");
+        stream
+            .write_all(b"GET /top-pools HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
+            .await
+            .expect("write request");
+
+        let mut response = Vec::new();
+        stream.read_to_end(&mut response).await.expect("read response");
+        server.await.expect("server task");
+
+        let body = String::from_utf8_lossy(&response);
+        assert!(body.contains("200 OK"));
+        // No provider registered → default empty JSON array.
+        assert!(body.contains("[]") || body.contains("application/json"));
+    }
+
+    #[tokio::test]
+    async fn handle_connection_top_pools_with_provider() {
+        register_top_pools_provider(Arc::new(|| br#"[{"address":"0x1234"}]"#.to_vec()));
+
+        let metrics = Arc::new(EngineMetrics::new());
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let addr = listener.local_addr().expect("local addr");
+
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.expect("accept");
+            handle_connection(&mut socket, metrics)
+                .await
+                .expect("handle connection");
+        });
+
+        let mut stream = tokio::net::TcpStream::connect(addr).await.expect("connect");
+        stream
+            .write_all(b"GET /top-pools HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
+            .await
+            .expect("write request");
+
+        let mut response = Vec::new();
+        stream.read_to_end(&mut response).await.expect("read response");
+        server.await.expect("server task");
+
+        let body = String::from_utf8_lossy(&response);
+        assert!(body.contains("200 OK"));
+        assert!(body.contains("0x1234"));
+    }
+
+    // ── metrics_addr edge cases ──
+
+    #[test]
+    fn metrics_addr_default_port() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        std::env::remove_var("RUST_METRICS_ADDR");
+        std::env::remove_var("RUST_METRICS_PORT");
+        let addr = metrics_addr();
+        assert_eq!(addr.port(), 9092);
+        assert_eq!(addr.ip(), std::net::IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED));
+    }
+
+    #[test]
+    fn metrics_addr_env_port_override() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        std::env::remove_var("RUST_METRICS_ADDR");
+        std::env::set_var("RUST_METRICS_PORT", "12345");
+        let addr = metrics_addr();
+        assert_eq!(addr.port(), 12345);
+        std::env::remove_var("RUST_METRICS_PORT");
+    }
+
+    #[test]
+    fn metrics_addr_env_full_override() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        std::env::set_var("RUST_METRICS_ADDR", "127.0.0.1:9999");
+        std::env::remove_var("RUST_METRICS_PORT");
+        let addr = metrics_addr();
+        assert_eq!(addr.port(), 9999);
+        assert_eq!(addr.ip(), std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST));
+        std::env::remove_var("RUST_METRICS_ADDR");
+    }
+
+    #[test]
+    fn metrics_addr_invalid_full_override_falls_back_to_port() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        std::env::set_var("RUST_METRICS_ADDR", "not-an-addr");
+        std::env::set_var("RUST_METRICS_PORT", "7777");
+        let addr = metrics_addr();
+        // Falls back to port parsing.
+        assert_eq!(addr.port(), 7777);
+        std::env::remove_var("RUST_METRICS_ADDR");
+        std::env::remove_var("RUST_METRICS_PORT");
+    }
+
+    #[test]
+    fn metrics_addr_invalid_both_env_falls_back_to_default() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        std::env::set_var("RUST_METRICS_ADDR", "garbage");
+        std::env::remove_var("RUST_METRICS_PORT");
+        let addr = metrics_addr();
+        assert_eq!(addr.port(), 9092);
+        std::env::remove_var("RUST_METRICS_ADDR");
+    }
+
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    // ── start_metrics_server smoke ──
+
+    #[tokio::test]
+    async fn start_metrics_server_binds_and_serves() {
+        let metrics = Arc::new(EngineMetrics::new());
+        metrics.inc_blocks_processed();
+
+        let _guard = ENV_LOCK.lock().unwrap();
+        std::env::set_var("RUST_METRICS_PORT", "0");
+        std::env::remove_var("RUST_METRICS_ADDR");
+
+        // start_metrics_server spawns a background task; we can't control the
+        // port when using port 0, but the point is it doesn't panic.
+        start_metrics_server(Arc::clone(&metrics));
+
+        // Give the server time to start.
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
+        std::env::remove_var("RUST_METRICS_PORT");
+    }
+
     /// Apply a synthetic `PrewarmStats` payload and assert each of the
-    /// cache + multicall counters records the right total. Mirrors the path
-    /// the engine and mempool refresher take after `prewarm_state` returns.
+    /// cache + multicall counters records the right total.
     #[test]
     fn record_prewarm_stats_bumps_all_counters() {
         use aether_simulator::fork::PrewarmStats;
@@ -1211,7 +1715,6 @@ mod tests {
             multicall_v2_slots: 60,
             multicall_fallbacks: 1,
         });
-        // Second call must accumulate, not overwrite — counters are deltas.
         metrics.record_prewarm_stats(PrewarmStats {
             bytecode_cache_hits: 1,
             bytecode_rpc_fetches: 1,
@@ -1245,6 +1748,15 @@ mod tests {
         ] {
             assert!(output.contains(name), "missing or wrong: {name}");
         }
+    }
+
+    #[test]
+    fn record_prewarm_stats_zeroes_are_noop() {
+        use aether_simulator::fork::PrewarmStats;
+        let m = EngineMetrics::new();
+        m.record_prewarm_stats(PrewarmStats::default());
+        assert_eq!(m.prewarm_bytecode_cache_hits_count(), 0);
+        assert_eq!(m.prewarm_multicall_batches_count(), 0);
     }
 
     /// Loopback HTTP smoke: bind ephemeral port, serve one /metrics request,

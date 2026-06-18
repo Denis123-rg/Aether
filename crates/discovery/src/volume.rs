@@ -218,4 +218,110 @@ mod tests {
         );
         assert!((vol - 400.0).abs() < 0.01);
     }
+
+    #[test]
+    fn subgraph_volume_provider_with_metrics() {
+        let metrics = DiscoveryMetrics::noop();
+        let provider = SubgraphVolumeProvider::new(String::new(), Some(metrics));
+        let vol = provider.volume_24h_usd(
+            address!("0x0000000000000000000000000000000000000001"),
+            Address::ZERO,
+            Address::ZERO,
+            ProtocolType::UniswapV2,
+            50_000.0,
+        );
+        assert!((vol - 2_500.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn subgraph_volume_cache_overwrite() {
+        let pool = address!("0x00000000000000000000000000000000000000dd");
+        let provider = SubgraphVolumeProvider::new(String::new(), None);
+        provider.inject_cache(pool, 100_000.0);
+        provider.inject_cache(pool, 200_000.0);
+        let vol = provider.volume_24h_usd(
+            pool,
+            Address::ZERO,
+            Address::ZERO,
+            ProtocolType::UniswapV2,
+            10_000.0,
+        );
+        assert!((vol - 200_000.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn volume_source_from_config_subgraph() {
+        let src = VolumeSource::from_config("subgraph", String::new(), None);
+        let vol = src.volume_24h_usd(
+            address!("0x0000000000000000000000000000000000000001"),
+            Address::ZERO,
+            Address::ZERO,
+            ProtocolType::UniswapV2,
+            100_000.0,
+        );
+        assert!((vol - 5_000.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn volume_source_from_config_unknown_defaults_to_proxy() {
+        let src = VolumeSource::from_config("unknown_source", String::new(), None);
+        let vol = src.volume_24h_usd(
+            address!("0x0000000000000000000000000000000000000001"),
+            Address::ZERO,
+            Address::ZERO,
+            ProtocolType::UniswapV2,
+            100_000.0,
+        );
+        assert!((vol - 5_000.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn proxy_volume_all_protocols() {
+        let p = ProxyVolumeProvider;
+        for proto in [
+            ProtocolType::UniswapV2,
+            ProtocolType::UniswapV3,
+            ProtocolType::SushiSwap,
+            ProtocolType::Curve,
+            ProtocolType::BalancerV2,
+            ProtocolType::BalancerV3,
+            ProtocolType::BancorV3,
+        ] {
+            let vol = p.volume_24h_usd(
+                address!("0x0000000000000000000000000000000000000001"),
+                Address::ZERO,
+                Address::ZERO,
+                proto,
+                100_000.0,
+            );
+            assert!((vol - 5_000.0).abs() < 0.01);
+        }
+    }
+
+    #[test]
+    fn proxy_volume_zero_tvl() {
+        let p = ProxyVolumeProvider;
+        let vol = p.volume_24h_usd(
+            address!("0x0000000000000000000000000000000000000001"),
+            Address::ZERO,
+            Address::ZERO,
+            ProtocolType::UniswapV2,
+            0.0,
+        );
+        assert_eq!(vol, 0.0);
+    }
+
+    #[test]
+    fn volume_source_subgraph_with_metrics() {
+        let metrics = DiscoveryMetrics::noop();
+        let src = VolumeSource::from_config("subgraph", "http://example.com".into(), Some(metrics));
+        let vol = src.volume_24h_usd(
+            address!("0x0000000000000000000000000000000000000001"),
+            Address::ZERO,
+            Address::ZERO,
+            ProtocolType::UniswapV2,
+            80_000.0,
+        );
+        assert!((vol - 4_000.0).abs() < 0.01);
+    }
 }

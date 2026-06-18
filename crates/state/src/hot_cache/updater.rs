@@ -191,6 +191,7 @@ mod tests {
     use aether_discovery::config::DiscoveryConfig;
     use aether_discovery::types::PoolScoreInputs;
     use alloy::primitives::address;
+    use std::time::Duration;
 
     fn weth() -> Address {
         address!("C02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2")
@@ -357,5 +358,247 @@ mod tests {
         let cfg = HotCacheUpdaterConfig::default();
         assert_eq!(cfg.update_interval_secs, 5);
         assert_eq!(cfg.top_n, 500);
+    }
+
+    #[test]
+    fn pool_addresses_returns_correct_set() {
+        let cache = HotCache::new(HotCacheMetrics::noop());
+        let addr1 = Address::from([1u8; 20]);
+        let addr2 = Address::from([2u8; 20]);
+        let diff = HotCacheDiff::compute(
+            &HashSet::new(),
+            vec![make_pool(1, 1e6), make_pool(2, 2e6)],
+        );
+        cache.apply_diff(diff);
+        let addrs = cache.pool_addresses();
+        assert_eq!(addrs.len(), 2);
+        assert!(addrs.contains(&addr1));
+        assert!(addrs.contains(&addr2));
+    }
+
+    #[test]
+    fn pool_addresses_empty_when_empty() {
+        let cache = HotCache::new(HotCacheMetrics::noop());
+        let addrs = cache.pool_addresses();
+        assert!(addrs.is_empty());
+    }
+
+    #[test]
+    fn pool_infos_empty_when_empty() {
+        let cache = HotCache::new(HotCacheMetrics::noop());
+        assert!(cache.pool_infos().is_empty());
+    }
+
+    #[test]
+    fn diff_compute_mixed_adds_and_removes() {
+        let mut prev = HashSet::new();
+        prev.insert(Address::from([1u8; 20]));
+        prev.insert(Address::from([2u8; 20]));
+        let pools = vec![make_pool(2, 2e6), make_pool(3, 3e6)];
+        let diff = HotCacheDiff::compute(&prev, pools);
+        assert_eq!(diff.added, 1);
+        assert_eq!(diff.removed, 1);
+        assert!(diff.removed_addresses.contains(&Address::from([1u8; 20])));
+        assert_eq!(diff.added_pools.len(), 1);
+        assert_eq!(diff.added_pools[0].address, Address::from([3u8; 20]));
+    }
+
+    #[test]
+    fn diff_compute_empty_to_empty() {
+        let diff = HotCacheDiff::compute(&HashSet::new(), vec![]);
+        assert_eq!(diff.added, 0);
+        assert_eq!(diff.removed, 0);
+        assert!(diff.added_pools.is_empty());
+        assert!(diff.removed_addresses.is_empty());
+        assert!(diff.new_addresses.is_empty());
+        assert!(diff.new_infos.is_empty());
+    }
+
+    #[test]
+    fn diff_compute_new_infos_matches_input() {
+        let pools = vec![make_pool(1, 1e6), make_pool(2, 2e6)];
+        let diff = HotCacheDiff::compute(&HashSet::new(), pools.clone());
+        assert_eq!(diff.new_infos.len(), 2);
+        assert_eq!(diff.new_infos[0].address, pools[0].address);
+        assert_eq!(diff.new_infos[1].address, pools[1].address);
+    }
+
+    #[test]
+    fn apply_diff_with_metrics_counts_additions() {
+        let registry = prometheus::Registry::new();
+        let metrics = HotCacheMetrics::register(&registry);
+        let cache = HotCache::new(metrics.clone());
+        let diff = HotCacheDiff::compute(
+            &HashSet::new(),
+            vec![make_pool(1, 1e6), make_pool(2, 2e6)],
+        );
+        cache.apply_diff(diff);
+        assert_eq!(metrics.pools_added.get(), 2);
+        assert_eq!(metrics.pools_removed.get(), 0);
+        assert_eq!(metrics.updates_total.get(), 1);
+        assert_eq!(metrics.size.get(), 2);
+    }
+
+    #[test]
+    fn apply_diff_with_metrics_counts_removals() {
+        let registry = prometheus::Registry::new();
+        let metrics = HotCacheMetrics::register(&registry);
+        let cache = HotCache::new(metrics.clone());
+
+        let diff1 = HotCacheDiff::compute(
+            &HashSet::new(),
+            vec![make_pool(1, 1e6), make_pool(2, 2e6), make_pool(3, 3e6)],
+        );
+        cache.apply_diff(diff1);
+        assert_eq!(metrics.pools_added.get(), 3);
+
+        let mut prev = HashSet::new();
+        prev.insert(Address::from([1u8; 20]));
+        prev.insert(Address::from([2u8; 20]));
+        prev.insert(Address::from([3u8; 20]));
+        let diff2 = HotCacheDiff::compute(&prev, vec![make_pool(1, 1e6)]);
+        cache.apply_diff(diff2);
+        assert_eq!(metrics.pools_removed.get(), 2);
+        assert_eq!(metrics.updates_total.get(), 2);
+        assert_eq!(metrics.size.get(), 1);
+    }
+
+    #[test]
+    fn apply_diff_replaces_previous_state() {
+        let cache = HotCache::new(HotCacheMetrics::noop());
+        let diff1 = HotCacheDiff::compute(
+            &HashSet::new(),
+            vec![make_pool(1, 1e6), make_pool(2, 2e6)],
+        );
+        cache.apply_diff(diff1);
+        assert_eq!(cache.len(), 2);
+
+        let diff2 = HotCacheDiff::compute(
+            &cache.pool_addresses(),
+            vec![make_pool(3, 3e6)],
+        );
+        cache.apply_diff(diff2);
+        assert_eq!(cache.len(), 1);
+        assert!(cache.contains(&Address::from([3u8; 20])));
+        assert!(!cache.contains(&Address::from([1u8; 20])));
+    }
+
+    #[test]
+    fn not_contains_absent_address() {
+        let cache = HotCache::new(HotCacheMetrics::noop());
+        assert!(!cache.contains(&Address::from([99u8; 20])));
+    }
+
+    #[test]
+    fn updater_refresh_once_returns_diff() {
+        let discovery = Arc::new(DiscoveryService::new(DiscoveryConfig::default()));
+        seed_discovery(&discovery, 3);
+        let cache = Arc::new(HotCache::new(HotCacheMetrics::noop()));
+        let updater = HotCacheUpdater::new(
+            Arc::clone(&discovery),
+            Arc::clone(&cache),
+            HotCacheUpdaterConfig {
+                top_n: 2,
+                ..Default::default()
+            },
+        );
+        let diff = updater.refresh_once();
+        assert_eq!(diff.added, 2);
+        assert_eq!(diff.removed, 0);
+        assert_eq!(diff.new_addresses.len(), 2);
+        assert_eq!(diff.new_infos.len(), 2);
+    }
+
+    #[test]
+    fn updater_refresh_twice_same_state_no_changes() {
+        let discovery = Arc::new(DiscoveryService::new(DiscoveryConfig::default()));
+        seed_discovery(&discovery, 3);
+        let cache = Arc::new(HotCache::new(HotCacheMetrics::noop()));
+        let updater = HotCacheUpdater::new(
+            Arc::clone(&discovery),
+            Arc::clone(&cache),
+            HotCacheUpdaterConfig {
+                top_n: 3,
+                ..Default::default()
+            },
+        );
+        updater.refresh_once();
+        let diff2 = updater.refresh_once();
+        assert_eq!(diff2.added, 0);
+        assert_eq!(diff2.removed, 0);
+    }
+
+    #[test]
+    fn updater_empty_discovery() {
+        let discovery = Arc::new(DiscoveryService::new(DiscoveryConfig::default()));
+        let cache = Arc::new(HotCache::new(HotCacheMetrics::noop()));
+        let updater = HotCacheUpdater::new(
+            Arc::clone(&discovery),
+            Arc::clone(&cache),
+            HotCacheUpdaterConfig::default(),
+        );
+        let diff = updater.refresh_once();
+        assert_eq!(diff.added, 0);
+        assert_eq!(diff.removed, 0);
+        assert!(cache.is_empty());
+    }
+
+    #[test]
+    fn updater_refresh_updates_metrics() {
+        let registry = prometheus::Registry::new();
+        let metrics = HotCacheMetrics::register(&registry);
+        let discovery = Arc::new(DiscoveryService::new(DiscoveryConfig::default()));
+        seed_discovery(&discovery, 3);
+        let cache = Arc::new(HotCache::new(metrics.clone()));
+        let updater = HotCacheUpdater::new(
+            Arc::clone(&discovery),
+            Arc::clone(&cache),
+            HotCacheUpdaterConfig {
+                top_n: 3,
+                ..Default::default()
+            },
+        );
+        updater.refresh_once();
+        assert_eq!(metrics.updates_total.get(), 1);
+        assert!(metrics.update_latency_ms.get() >= 0);
+        assert_eq!(metrics.size.get(), 3);
+    }
+
+    #[tokio::test]
+    async fn spawn_exits_on_shutdown() {
+        let discovery = Arc::new(DiscoveryService::new(DiscoveryConfig::default()));
+        seed_discovery(&discovery, 2);
+        let cache = Arc::new(HotCache::new(HotCacheMetrics::noop()));
+        let updater = Arc::new(HotCacheUpdater::new(
+            Arc::clone(&discovery),
+            Arc::clone(&cache),
+            HotCacheUpdaterConfig {
+                update_interval_secs: 1,
+                top_n: 10,
+            },
+        ));
+        let (_tx, shutdown) = tokio::sync::watch::channel(false);
+        updater.spawn(shutdown);
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        assert_eq!(cache.len(), 2);
+    }
+
+    #[test]
+    fn diff_added_pools_match_new_infos() {
+        let mut prev = HashSet::new();
+        prev.insert(Address::from([1u8; 20]));
+        let pools = vec![make_pool(1, 1e6), make_pool(2, 2e6)];
+        let diff = HotCacheDiff::compute(&prev, pools);
+        assert_eq!(diff.added_pools.len(), diff.added);
+        assert!(diff.added_pools.iter().all(|p| !prev.contains(&p.address)));
+    }
+
+    #[test]
+    fn diff_removed_addresses_not_in_new_set() {
+        let mut prev = HashSet::new();
+        prev.insert(Address::from([1u8; 20]));
+        prev.insert(Address::from([2u8; 20]));
+        let diff = HotCacheDiff::compute(&prev, vec![make_pool(2, 2e6)]);
+        assert!(diff.removed_addresses.iter().all(|a| !diff.new_addresses.contains(a)));
     }
 }

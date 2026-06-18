@@ -381,6 +381,74 @@ mod tests {
         assert_eq!(tracker.len(), 0);
     }
 
+    #[test]
+    fn now_unix_nanos_returns_large_value() {
+        let now = now_unix_nanos();
+        // Should be a nanosecond timestamp after 2020
+        assert!(now > 1_577_836_800_000_000_000);
+    }
+
+    #[test]
+    fn now_unix_nanos_is_monotonic() {
+        let a = now_unix_nanos();
+        let b = now_unix_nanos();
+        assert!(b >= a);
+    }
+
+    #[test]
+    fn record_multiple_then_observe_partial() {
+        let metrics = fresh_metrics();
+        let tracker = MempoolFirstSeenTracker::with_capacity(100);
+        let now = 1_700_000_000_000_000_000u64;
+        tracker.record(hashn(1), now, &metrics);
+        tracker.record(hashn(2), now + 1, &metrics);
+        tracker.record(hashn(3), now + 2, &metrics);
+
+        // Observe only hash 2
+        tracker.observe_block(&[hashn(2)], now + 1_000_000, &metrics);
+        assert_eq!(tracker.len(), 2, "hash 1 and 3 should remain");
+    }
+
+    #[test]
+    fn observe_block_mixed_matched_and_unmatched() {
+        let metrics = fresh_metrics();
+        let tracker = MempoolFirstSeenTracker::with_capacity(100);
+        let now = 1_700_000_000_000_000_000u64;
+        tracker.record(hashn(1), now, &metrics);
+        // Observe both matched (1) and unmatched (2, 3)
+        tracker.observe_block(&[hashn(1), hashn(2), hashn(3)], now + 1_000_000, &metrics);
+        assert_eq!(tracker.len(), 0);
+    }
+
+    #[test]
+    fn large_capacity_tracker() {
+        let metrics = fresh_metrics();
+        let tracker = MempoolFirstSeenTracker::with_capacity(100_000);
+        let now = 1_700_000_000_000_000_000u64;
+        // Use unique B256 hashes since hashn only covers 0..255
+        let hashes: Vec<B256> = (0..500u32)
+            .map(|i| {
+                let mut h = [0u8; 32];
+                h[30] = (i >> 8) as u8;
+                h[31] = i as u8;
+                B256::from(h)
+            })
+            .collect();
+        for (i, h) in hashes.iter().enumerate() {
+            tracker.record(*h, now + i as u64, &metrics);
+        }
+        assert_eq!(tracker.len(), 500);
+        // Clear all
+        tracker.observe_block(&hashes, now + 1_000_000, &metrics);
+        assert_eq!(tracker.len(), 0);
+    }
+
+    #[test]
+    fn default_trait_implementation() {
+        let tracker = MempoolFirstSeenTracker::default();
+        assert_eq!(tracker.len(), 0);
+    }
+
     // Touch alloy's `b256!` macro so the import isn't unused if the file
     // gets pared back to fewer tests.
     #[allow(dead_code)]

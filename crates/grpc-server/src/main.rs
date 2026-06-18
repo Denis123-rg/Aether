@@ -762,4 +762,340 @@ mod tests {
         let result = load_executor_runtime_bytecode(&artifact.to_string());
         assert!(result.is_err(), "expected out-of-bounds reference to error");
     }
+
+    #[test]
+    fn load_executor_runtime_bytecode_missing_deployed_bytecode() {
+        let artifact = serde_json::json!({
+            "bytecode": {
+                "object": "0x0011"
+            }
+        });
+
+        let result = load_executor_runtime_bytecode(&artifact.to_string());
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn load_executor_runtime_bytecode_missing_object() {
+        let artifact = serde_json::json!({
+            "deployedBytecode": {}
+        });
+
+        let result = load_executor_runtime_bytecode(&artifact.to_string());
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn load_executor_runtime_bytecode_invalid_json() {
+        let result = load_executor_runtime_bytecode("not json at all");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn load_executor_runtime_bytecode_empty_hex() {
+        let artifact = serde_json::json!({
+            "deployedBytecode": {
+                "object": "0x"
+            }
+        });
+
+        // "0x" decodes to empty bytes — this is valid (no immutable refs to splice)
+        let result = load_executor_runtime_bytecode(&artifact.to_string());
+        assert!(result.is_ok());
+        assert!(result.unwrap().is_empty());
+    }
+
+    #[test]
+    fn load_executor_runtime_bytecode_valid_simple() {
+        let artifact = serde_json::json!({
+            "deployedBytecode": {
+                "object": "0x00112233445566778899aabbccddeeff"
+            }
+        });
+
+        let bytecode = load_executor_runtime_bytecode(&artifact.to_string())
+            .expect("should succeed");
+        assert_eq!(
+            bytecode.as_ref(),
+            &alloy::hex::decode("00112233445566778899aabbccddeeff").unwrap()[..]
+        );
+    }
+
+    #[test]
+    fn load_executor_runtime_bytecode_without_0x_prefix() {
+        let artifact = serde_json::json!({
+            "deployedBytecode": {
+                "object": "00112233445566778899aabbccddeeff"
+            }
+        });
+
+        let bytecode = load_executor_runtime_bytecode(&artifact.to_string())
+            .expect("should succeed without 0x prefix");
+        assert_eq!(
+            bytecode.as_ref(),
+            &alloy::hex::decode("00112233445566778899aabbccddeeff").unwrap()[..]
+        );
+    }
+
+    #[test]
+    fn splice_immutable_no_references() {
+        let mut bytes = vec![0x42u8; 64];
+        let artifact = serde_json::json!({
+            "deployedBytecode": {
+                "immutableReferences": {}
+            }
+        });
+
+        let result = splice_immutable_aave_pool(&mut bytes, &artifact);
+        assert!(result.is_ok());
+        // Bytes should be unchanged
+        assert!(bytes.iter().all(|&b| b == 0x42));
+    }
+
+    #[test]
+    fn splice_immutable_missing_references() {
+        let mut bytes = vec![0x42u8; 64];
+        let artifact = serde_json::json!({
+            "deployedBytecode": {}
+        });
+
+        let result = splice_immutable_aave_pool(&mut bytes, &artifact);
+        assert!(result.is_ok());
+        assert!(bytes.iter().all(|&b| b == 0x42));
+    }
+
+    #[test]
+    fn splice_immutable_single_reference() {
+        let mut bytes = vec![0x00u8; 64];
+        let aave_pool = aether_common::types::addresses::AAVE_V3_POOL;
+
+        let artifact = serde_json::json!({
+            "deployedBytecode": {
+                "immutableReferences": {
+                    "4878": [{ "start": 0, "length": 32 }]
+                }
+            }
+        });
+
+        let result = splice_immutable_aave_pool(&mut bytes, &artifact);
+        assert!(result.is_ok());
+
+        // Check that bytes 12..32 contain the Aave pool address
+        assert_eq!(&bytes[12..32], aave_pool.as_slice());
+        // Bytes 0..12 should be zero (left-padding)
+        assert!(bytes[0..12].iter().all(|&b| b == 0));
+    }
+
+    #[test]
+    fn splice_immutable_wrong_length() {
+        let mut bytes = vec![0x00u8; 64];
+        let artifact = serde_json::json!({
+            "deployedBytecode": {
+                "immutableReferences": {
+                    "4878": [{ "start": 0, "length": 16 }]
+                }
+            }
+        });
+
+        let result = splice_immutable_aave_pool(&mut bytes, &artifact);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn splice_immutable_non_array_location() {
+        let mut bytes = vec![0x00u8; 64];
+        let artifact = serde_json::json!({
+            "deployedBytecode": {
+                "immutableReferences": {
+                    "4878": "not_an_array"
+                }
+            }
+        });
+
+        let result = splice_immutable_aave_pool(&mut bytes, &artifact);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn splice_immutable_missing_start() {
+        let mut bytes = vec![0x00u8; 64];
+        let artifact = serde_json::json!({
+            "deployedBytecode": {
+                "immutableReferences": {
+                    "4878": [{ "length": 32 }]
+                }
+            }
+        });
+
+        let result = splice_immutable_aave_pool(&mut bytes, &artifact);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn splice_immutable_missing_length() {
+        let mut bytes = vec![0x00u8; 64];
+        let artifact = serde_json::json!({
+            "deployedBytecode": {
+                "immutableReferences": {
+                    "4878": [{ "start": 0 }]
+                }
+            }
+        });
+
+        let result = splice_immutable_aave_pool(&mut bytes, &artifact);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn build_backrun_validator_config_returns_none_without_env() {
+        std::env::remove_var("AETHER_EXECUTOR_ADDRESS");
+        let result = build_backrun_validator_config(None);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn build_backrun_validator_config_returns_some_with_env() {
+        std::env::set_var("AETHER_EXECUTOR_ADDRESS", "0x1111111111111111111111111111111111111111");
+        let result = build_backrun_validator_config(None);
+        assert!(result.is_some());
+        std::env::remove_var("AETHER_EXECUTOR_ADDRESS");
+    }
+
+    #[test]
+    fn build_backrun_validator_config_default_values() {
+        std::env::set_var("AETHER_EXECUTOR_ADDRESS", "0x1111111111111111111111111111111111111111");
+        std::env::remove_var("AETHER_SEARCHER_CALLER");
+        std::env::remove_var("AETHER_PROFIT_TOKEN");
+        std::env::remove_var("AETHER_PROFIT_TOKEN_BALANCE_SLOT");
+        std::env::remove_var("AETHER_CHAIN_ID");
+        std::env::remove_var("AETHER_MEMPOOL_MIN_PROFIT_WEI");
+        std::env::remove_var("AETHER_MEMPOOL_INPUT_AMOUNT_WEI");
+        std::env::remove_var("AETHER_MEMPOOL_SIM_CONCURRENCY");
+        std::env::remove_var("AETHER_MEMPOOL_GAS_PRICE_GWEI");
+        std::env::remove_var("AETHER_EXECUTOR_BYTECODE_PATH");
+
+        let config = build_backrun_validator_config(None).unwrap();
+        let executor_addr: alloy::primitives::Address = "0x1111111111111111111111111111111111111111".parse().unwrap();
+        assert_eq!(config.executor_address, executor_addr);
+        assert_eq!(config.searcher_caller, executor_addr);
+        // Default profit token is WETH
+        let weth: alloy::primitives::Address = "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2".parse().unwrap();
+        assert_eq!(config.profit_token, weth);
+        assert_eq!(config.balance_slot, alloy::primitives::U256::from(3u64));
+        assert_eq!(config.chain_id, 1);
+
+        std::env::remove_var("AETHER_EXECUTOR_ADDRESS");
+    }
+
+    #[test]
+    fn build_backrun_validator_config_custom_values() {
+        std::env::set_var("AETHER_EXECUTOR_ADDRESS", "0x2222222222222222222222222222222222222222");
+        std::env::set_var("AETHER_SEARCHER_CALLER", "0x3333333333333333333333333333333333333333");
+        std::env::set_var("AETHER_PROFIT_TOKEN", "0x4444444444444444444444444444444444444444");
+        std::env::set_var("AETHER_PROFIT_TOKEN_BALANCE_SLOT", "9");
+        std::env::set_var("AETHER_CHAIN_ID", "137");
+        std::env::set_var("AETHER_MEMPOOL_SIM_CONCURRENCY", "16");
+        std::env::set_var("AETHER_MEMPOOL_GAS_PRICE_GWEI", "50.0");
+        std::env::remove_var("AETHER_MEMPOOL_MIN_PROFIT_WEI");
+        std::env::remove_var("AETHER_MEMPOOL_INPUT_AMOUNT_WEI");
+        std::env::remove_var("AETHER_EXECUTOR_BYTECODE_PATH");
+
+        let config = build_backrun_validator_config(None).unwrap();
+        let executor: alloy::primitives::Address = "0x2222222222222222222222222222222222222222".parse().unwrap();
+        let caller: alloy::primitives::Address = "0x3333333333333333333333333333333333333333".parse().unwrap();
+        let profit: alloy::primitives::Address = "0x4444444444444444444444444444444444444444".parse().unwrap();
+        assert_eq!(config.executor_address, executor);
+        assert_eq!(config.searcher_caller, caller);
+        assert_eq!(config.profit_token, profit);
+        assert_eq!(config.balance_slot, alloy::primitives::U256::from(9u64));
+        assert_eq!(config.chain_id, 137);
+        assert!((config.gas_price_gwei - 50.0).abs() < f64::EPSILON);
+
+        std::env::remove_var("AETHER_EXECUTOR_ADDRESS");
+        std::env::remove_var("AETHER_SEARCHER_CALLER");
+        std::env::remove_var("AETHER_PROFIT_TOKEN");
+        std::env::remove_var("AETHER_PROFIT_TOKEN_BALANCE_SLOT");
+        std::env::remove_var("AETHER_CHAIN_ID");
+        std::env::remove_var("AETHER_MEMPOOL_SIM_CONCURRENCY");
+        std::env::remove_var("AETHER_MEMPOOL_GAS_PRICE_GWEI");
+    }
+
+    #[test]
+    fn load_executor_runtime_bytecode_valid_64_byte_hex() {
+        let artifact = serde_json::json!({
+            "deployedBytecode": {
+                "object": "0x00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff"
+            }
+        });
+
+        let bytecode = load_executor_runtime_bytecode(&artifact.to_string())
+            .expect("should succeed");
+        assert_eq!(bytecode.len(), 32);
+    }
+
+    #[test]
+    fn splice_immutable_multiple_locations_same_id() {
+        let mut bytes = vec![0x00u8; 128];
+        let aave_pool = aether_common::types::addresses::AAVE_V3_POOL;
+
+        let artifact = serde_json::json!({
+            "deployedBytecode": {
+                "immutableReferences": {
+                    "4878": [
+                        { "start": 0, "length": 32 },
+                        { "start": 64, "length": 32 }
+                    ]
+                }
+            }
+        });
+
+        let result = splice_immutable_aave_pool(&mut bytes, &artifact);
+        assert!(result.is_ok());
+
+        // Both locations should have the Aave pool address
+        assert_eq!(&bytes[12..32], aave_pool.as_slice());
+        assert_eq!(&bytes[76..96], aave_pool.as_slice());
+    }
+
+    #[test]
+    fn load_executor_runtime_bytecode_non_string_object() {
+        let artifact = serde_json::json!({
+            "deployedBytecode": {
+                "object": 12345
+            }
+        });
+
+        let result = load_executor_runtime_bytecode(&artifact.to_string());
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn build_backrun_validator_config_invalid_executor_address() {
+        std::env::set_var("AETHER_EXECUTOR_ADDRESS", "not_a_valid_address");
+        let result = build_backrun_validator_config(None);
+        assert!(result.is_none());
+        std::env::remove_var("AETHER_EXECUTOR_ADDRESS");
+    }
+
+    #[test]
+    fn build_backrun_validator_config_invalid_gas_price() {
+        std::env::set_var("AETHER_EXECUTOR_ADDRESS", "0x1111111111111111111111111111111111111111");
+        std::env::set_var("AETHER_MEMPOOL_GAS_PRICE_GWEI", "not_a_number");
+        let config = build_backrun_validator_config(None).unwrap();
+        // Should use default 20.0
+        assert!((config.gas_price_gwei - 20.0).abs() < f64::EPSILON);
+        std::env::remove_var("AETHER_EXECUTOR_ADDRESS");
+        std::env::remove_var("AETHER_MEMPOOL_GAS_PRICE_GWEI");
+    }
+
+    #[test]
+    fn build_backrun_validator_config_negative_gas_price() {
+        std::env::set_var("AETHER_EXECUTOR_ADDRESS", "0x1111111111111111111111111111111111111111");
+        std::env::set_var("AETHER_MEMPOOL_GAS_PRICE_GWEI", "-5.0");
+        let config = build_backrun_validator_config(None).unwrap();
+        // Should use default 20.0 since negative is filtered out
+        assert!((config.gas_price_gwei - 20.0).abs() < f64::EPSILON);
+        std::env::remove_var("AETHER_EXECUTOR_ADDRESS");
+        std::env::remove_var("AETHER_MEMPOOL_GAS_PRICE_GWEI");
+    }
 }

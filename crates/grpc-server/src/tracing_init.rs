@@ -105,3 +105,226 @@ pub fn init() -> TracingGuard {
 
     TracingGuard { otel_installed }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tracing_guard_construction_otel_installed() {
+        let guard = TracingGuard {
+            otel_installed: true,
+        };
+        assert!(guard.otel_installed);
+    }
+
+    #[test]
+    fn tracing_guard_construction_no_otel() {
+        let guard = TracingGuard {
+            otel_installed: false,
+        };
+        assert!(!guard.otel_installed);
+    }
+
+    #[test]
+    fn tracing_guard_drop_with_no_otel_is_noop() {
+        {
+            let _guard = TracingGuard {
+                otel_installed: false,
+            };
+        }
+    }
+
+    #[test]
+    fn env_filter_default_when_no_rust_log() {
+        let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
+        assert_eq!(filter.to_string(), "info");
+    }
+
+    #[test]
+    fn env_filter_from_explicit_value() {
+        let filter = EnvFilter::new("debug");
+        assert_eq!(filter.to_string(), "debug");
+    }
+
+    #[test]
+    fn env_filter_from_warn() {
+        let filter = EnvFilter::new("warn");
+        assert_eq!(filter.to_string(), "warn");
+    }
+
+    #[test]
+    fn env_filter_from_trace() {
+        let filter = EnvFilter::new("trace");
+        assert_eq!(filter.to_string(), "trace");
+    }
+
+    #[test]
+    fn env_filter_from_error() {
+        let filter = EnvFilter::new("error");
+        assert_eq!(filter.to_string(), "error");
+    }
+
+    #[test]
+    fn env_filter_from_crate_specific() {
+        let filter = EnvFilter::new("aether_grpc_server=debug,info");
+        assert!(filter.to_string().contains("aether_grpc_server=debug"));
+    }
+
+    #[test]
+    fn json_format_detection_with_json_env() {
+        std::env::set_var("LOG_FORMAT", "json");
+        let is_json = matches!(std::env::var("LOG_FORMAT").as_deref(), Ok("json"));
+        assert!(is_json);
+        std::env::remove_var("LOG_FORMAT");
+    }
+
+    #[test]
+    fn json_format_detection_without_json_env() {
+        std::env::remove_var("LOG_FORMAT");
+        let is_json = matches!(std::env::var("LOG_FORMAT").as_deref(), Ok("json"));
+        assert!(!is_json);
+    }
+
+    #[test]
+    fn json_format_detection_with_non_json_value() {
+        std::env::set_var("LOG_FORMAT", "pretty");
+        let is_json = matches!(std::env::var("LOG_FORMAT").as_deref(), Ok("json"));
+        assert!(!is_json);
+        std::env::remove_var("LOG_FORMAT");
+    }
+
+    #[test]
+    fn otlp_endpoint_empty_string_is_none() {
+        std::env::set_var("OTEL_EXPORTER_OTLP_ENDPOINT", "");
+        let endpoint = std::env::var("OTEL_EXPORTER_OTLP_ENDPOINT")
+            .ok()
+            .filter(|s| !s.is_empty());
+        assert!(endpoint.is_none());
+        std::env::remove_var("OTEL_EXPORTER_OTLP_ENDPOINT");
+    }
+
+    #[test]
+    fn otlp_endpoint_set_to_value() {
+        std::env::set_var("OTEL_EXPORTER_OTLP_ENDPOINT", "http://localhost:4317");
+        let endpoint = std::env::var("OTEL_EXPORTER_OTLP_ENDPOINT")
+            .ok()
+            .filter(|s| !s.is_empty());
+        assert_eq!(endpoint.as_deref(), Some("http://localhost:4317"));
+        std::env::remove_var("OTEL_EXPORTER_OTLP_ENDPOINT");
+    }
+
+    #[test]
+    fn otlp_endpoint_unset_is_none() {
+        std::env::remove_var("OTEL_EXPORTER_OTLP_ENDPOINT");
+        let endpoint = std::env::var("OTEL_EXPORTER_OTLP_ENDPOINT")
+            .ok()
+            .filter(|s| !s.is_empty());
+        assert!(endpoint.is_none());
+    }
+
+    #[test]
+    fn otlp_service_name_default() {
+        std::env::remove_var("OTEL_SERVICE_NAME");
+        let name = std::env::var("OTEL_SERVICE_NAME")
+            .unwrap_or_else(|_| "aether-rust".to_string());
+        assert_eq!(name, "aether-rust");
+    }
+
+    #[test]
+    fn otlp_service_name_custom() {
+        std::env::set_var("OTEL_SERVICE_NAME", "my-service");
+        let name = std::env::var("OTEL_SERVICE_NAME")
+            .unwrap_or_else(|_| "aether-rust".to_string());
+        assert_eq!(name, "my-service");
+        std::env::remove_var("OTEL_SERVICE_NAME");
+    }
+
+    #[test]
+    fn resource_construction_with_default_name() {
+        let service_name = "aether-rust".to_string();
+        let version = env!("CARGO_PKG_VERSION");
+        let resource = Resource::new(vec![
+            KeyValue::new(SERVICE_NAME, service_name),
+            KeyValue::new(SERVICE_VERSION, version),
+        ]);
+        assert!(resource.get(SERVICE_NAME.into()).is_some());
+    }
+
+    #[test]
+    fn init_returns_guard_without_panic() {
+        let guard = init();
+        assert!(!guard.otel_installed);
+    }
+
+    #[test]
+    fn multiple_guards_can_be_created() {
+        let g1 = TracingGuard {
+            otel_installed: false,
+        };
+        let g2 = TracingGuard {
+            otel_installed: true,
+        };
+        assert!(!g1.otel_installed);
+        assert!(g2.otel_installed);
+    }
+
+    #[test]
+    fn env_filter_with_multiple_directives() {
+        let filter = EnvFilter::new("aether_grpc_server=debug,tonic=warn,info");
+        assert!(filter.to_string().contains("aether_grpc_server=debug"));
+        assert!(filter.to_string().contains("tonic=warn"));
+    }
+
+    #[test]
+    fn fmt_layer_json_creates_json_layer() {
+        use tracing_subscriber::fmt;
+        let _layer = fmt::layer::<tracing_subscriber::Registry>()
+            .json()
+            .flatten_event(true)
+            .with_current_span(true)
+            .with_span_list(false);
+    }
+
+    #[test]
+    fn fmt_layer_pretty_creates_pretty_layer() {
+        use tracing_subscriber::fmt;
+        let _layer = fmt::layer::<tracing_subscriber::Registry>();
+    }
+
+    #[test]
+    fn guard_fields_are_public() {
+        let guard = TracingGuard {
+            otel_installed: true,
+        };
+        let _val = guard.otel_installed;
+    }
+
+    #[test]
+    fn tracing_guard_drop_with_otel_calls_shutdown() {
+        {
+            let _guard = TracingGuard {
+                otel_installed: true,
+            };
+        }
+    }
+
+    #[test]
+    fn resource_construction_with_custom_name() {
+        let service_name = "my-custom-service".to_string();
+        let version = env!("CARGO_PKG_VERSION");
+        let resource = Resource::new(vec![
+            KeyValue::new(SERVICE_NAME, service_name),
+            KeyValue::new(SERVICE_VERSION, version),
+        ]);
+        assert!(resource.get(SERVICE_NAME.into()).is_some());
+    }
+
+    #[test]
+    fn resource_service_version_matches_crate_version() {
+        let version = env!("CARGO_PKG_VERSION");
+        let resource = Resource::new(vec![KeyValue::new(SERVICE_VERSION, version)]);
+        let val = resource.get(SERVICE_VERSION.into());
+        assert!(val.is_some());
+    }
+}

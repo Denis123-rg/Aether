@@ -333,4 +333,253 @@ fee_bps = 30
         let pools = load_pools(&tmp.path().to_path_buf()).unwrap();
         assert!(pools.is_empty());
     }
+
+    // ---- Q96 constant ----
+
+    #[test]
+    fn q96_constant_value() {
+        // 2^96 = 79228162514264337593543950336
+        let expected = 2f64.powi(96);
+        assert!((Q96 - expected).abs() < 1.0, "Q96 should equal 2^96");
+    }
+
+    // ---- u256_to_f64 edge cases ----
+
+    #[test]
+    fn u256_to_f64_max_u128() {
+        let v = u256_to_f64(U256::from(u128::MAX));
+        assert!(v > 0.0);
+        assert!(v.is_finite());
+    }
+
+    #[test]
+    fn u256_to_f64_256_bits() {
+        let v = u256_to_f64(U256::from(1u128) << 255);
+        assert!(v > 0.0);
+        assert!(v.is_finite());
+    }
+
+    // ---- uniswap_v2_get_amount_out additional ----
+
+    #[test]
+    fn uniswap_v2_get_amount_out_exact_ratio() {
+        // Equal reserves, no fee: dy = dx * y / (x + dx) = 100 * 1000 / 1100
+        let out = uniswap_v2_get_amount_out(
+            U256::from(100u64),
+            U256::from(1000u64),
+            U256::from(1000u64),
+            0, // no fee
+        ).unwrap();
+        let expected = U256::from(90u64); // floor of 100*1000/1100 = 90.909
+        assert_eq!(out, expected);
+    }
+
+    #[test]
+    fn uniswap_v2_get_amount_out_large_reserves() {
+        let out = uniswap_v2_get_amount_out(
+            U256::from(1_000_000_000_000_000_000u128), // 1e18
+            U256::from(1_000_000_000_000_000_000_000u128), // 1e21
+            U256::from(1_000_000_000_000_000_000_000u128), // 1e21
+            30,
+        );
+        assert!(out.is_some());
+        assert!(out.unwrap() > U256::ZERO);
+    }
+
+    #[test]
+    fn uniswap_v2_get_amount_out_100_bps_fee() {
+        let out = uniswap_v2_get_amount_out(
+            U256::from(1_000_000u64),
+            U256::from(1_000_000_000u64),
+            U256::from(1_000_000_000u64),
+            100, // 1% fee
+        ).unwrap();
+        assert!(out > U256::ZERO);
+    }
+
+    // ---- load_executor_init_bytecode ----
+
+    #[test]
+    fn load_executor_init_bytecode_missing_file() {
+        let path = PathBuf::from("/tmp/nonexistent_artifact.json");
+        assert!(load_executor_init_bytecode(&path).is_err());
+    }
+
+    #[test]
+    fn load_executor_init_bytecode_invalid_json() {
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(tmp.path(), "not json {{{").unwrap();
+        assert!(load_executor_init_bytecode(&tmp.path().to_path_buf()).is_err());
+    }
+
+    #[test]
+    fn load_executor_init_bytecode_missing_bytecode_key() {
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(tmp.path(), r#"{"abi": []}"#).unwrap();
+        assert!(load_executor_init_bytecode(&tmp.path().to_path_buf()).is_err());
+    }
+
+    #[test]
+    fn load_executor_init_bytecode_empty_bytecode() {
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(tmp.path(), r#"{"bytecode": {"object": "0x"}}"#).unwrap();
+        assert!(load_executor_init_bytecode(&tmp.path().to_path_buf()).is_err());
+    }
+
+    #[test]
+    fn load_executor_init_bytecode_valid() {
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(tmp.path(), r#"{"bytecode": {"object": "0x6080604052348015600f57600080fd5b50"}}"#).unwrap();
+        let bytes = load_executor_init_bytecode(&tmp.path().to_path_buf()).unwrap();
+        assert!(!bytes.is_empty());
+        assert_eq!(bytes[0], 0x60);
+    }
+
+    #[test]
+    fn load_executor_init_bytecode_without_0x_prefix() {
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(tmp.path(), r#"{"bytecode": {"object": "6080604052348015600f57600080fd5b50"}}"#).unwrap();
+        let bytes = load_executor_init_bytecode(&tmp.path().to_path_buf()).unwrap();
+        assert!(!bytes.is_empty());
+    }
+
+    // ---- PoolState enum ----
+
+    #[test]
+    fn pool_state_v2_creation() {
+        let state = PoolState::V2 {
+            r0: U256::from(1_000_000u64),
+            r1: U256::from(2_000_000u64),
+        };
+        match state {
+            PoolState::V2 { r0, r1 } => {
+                assert_eq!(r0, U256::from(1_000_000u64));
+                assert_eq!(r1, U256::from(2_000_000u64));
+            }
+            _ => panic!("expected V2 variant"),
+        }
+    }
+
+    #[test]
+    fn pool_state_v3_creation() {
+        let state = PoolState::V3 {
+            sqrt_price_x96: U256::from(79_228_162_514_264_337_593_543_950_336u128),
+            liquidity: 1_000_000_000_000u128,
+        };
+        match state {
+            PoolState::V3 { sqrt_price_x96, liquidity } => {
+                assert!(sqrt_price_x96 > U256::ZERO);
+                assert_eq!(liquidity, 1_000_000_000_000u128);
+            }
+            _ => panic!("expected V3 variant"),
+        }
+    }
+
+    #[test]
+    fn pool_state_clone() {
+        let state = PoolState::V2 {
+            r0: U256::from(100u64),
+            r1: U256::from(200u64),
+        };
+        let cloned = state;
+        match cloned {
+            PoolState::V2 { r0, r1 } => {
+                assert_eq!(r0, U256::from(100u64));
+                assert_eq!(r1, U256::from(200u64));
+            }
+            _ => panic!("expected V2 variant"),
+        }
+    }
+
+    // ---- LoadedPool ----
+
+    #[test]
+    fn loaded_pool_fields() {
+        let pool = LoadedPool {
+            address: address!("B4e16d0168e52d35CaCD2c6185b44281Ec28C9Dc"),
+            token0: address!("A0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"),
+            token1: address!("C02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2"),
+            protocol: ProtocolType::UniswapV2,
+            fee_bps: 30,
+        };
+        assert_eq!(pool.fee_bps, 30);
+        assert!(matches!(pool.protocol, ProtocolType::UniswapV2));
+    }
+
+    // ---- parse_protocol edge cases ----
+
+    #[test]
+    fn parse_protocol_case_sensitive() {
+        assert!(parse_protocol("Uniswap_V2").is_none());
+        assert!(parse_protocol("UNISWAP_V2").is_none());
+    }
+
+    #[test]
+    fn parse_protocol_balancer_v3() {
+        // balancer_v3 is not in the match — returns None
+        assert!(parse_protocol("balancer_v3").is_none());
+    }
+
+    // ---- load_pools with various entry types ----
+
+    #[test]
+    fn load_pools_all_supported_protocols() {
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(
+            tmp.path(),
+            r#"
+[[pools]]
+protocol = "uniswap_v2"
+address = "0xB4e16d0168e52d35CaCD2c6185b44281Ec28C9Dc"
+token0 = "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"
+token1 = "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2"
+fee_bps = 30
+
+[[pools]]
+protocol = "sushiswap"
+address = "0x397FF1542f962076d0BFE58eA045FfA2d347ACa0"
+token0 = "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"
+token1 = "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2"
+fee_bps = 30
+
+[[pools]]
+protocol = "uniswap_v3"
+address = "0x88e6A0c2dDD26FEEb64F039a2c41296FcB3f5640"
+token0 = "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"
+token1 = "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2"
+fee_bps = 5
+"#,
+        )
+        .unwrap();
+        let pools = load_pools(&tmp.path().to_path_buf()).unwrap();
+        assert_eq!(pools.len(), 3);
+    }
+
+    #[test]
+    fn load_pools_empty_file() {
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(tmp.path(), "").unwrap();
+        let pools = load_pools(&tmp.path().to_path_buf()).unwrap();
+        assert!(pools.is_empty());
+    }
+
+    #[test]
+    fn load_pools_invalid_address_format() {
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(
+            tmp.path(),
+            r#"
+[[pools]]
+protocol = "uniswap_v2"
+address = "not_an_address"
+token0 = "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"
+token1 = "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2"
+fee_bps = 30
+"#,
+        )
+        .unwrap();
+        assert!(load_pools(&tmp.path().to_path_buf()).is_err());
+    }
+
+    use alloy::primitives::address;
 }

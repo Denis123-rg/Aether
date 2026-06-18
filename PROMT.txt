@@ -1,0 +1,48 @@
+Test Coverage Prompt (Concise)
+Task: Achieve ≥95% test coverage for every Go and Rust file in the repository.
+
+Context: Aether project — arbitrage system (Rust, Go, Solidity). Existing tests pass.
+
+Instructions
+1. Analyze Current Coverage
+Run coverage tools and identify files below 95%:
+
+Go: go test -coverprofile=coverage.out ./... && go tool cover -func=coverage.out
+
+Rust: cargo llvm-cov --workspace --summary-only
+
+Output tables listing each file with coverage percentage.
+
+2. Write/Improve Tests
+For every file below 95%, add or improve tests:
+
+Realistic tests — use real data, cover edge cases, error paths, and concurrency
+
+No mocks — use real components where possible
+
+Don't modify business logic — only test code
+
+Per-file target: minimum 95% line coverage
+
+3. Ensure All Tests Pass
+After writing tests, run:
+
+bash
+cargo test --workspace --locked
+go test ./... -count=1
+All must be green.
+
+4. Final Report
+Generate and save FINAL_COVERAGE_REPORT.md containing:
+
+Go: per-file coverage table
+
+Rust: per-file coverage table
+
+Summary: total coverage, files fixed, new tests added
+
+Observations: hardest files, any issues encountered
+
+Deliver: Report saved in project root. All files ≥95% coverage.
+
+Proceed. 🚀

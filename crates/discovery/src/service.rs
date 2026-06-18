@@ -659,4 +659,263 @@ mod tests {
         };
         assert!(svc.ingest_pool_created(event).await);
     }
+
+    #[test]
+    fn u256_to_f64_various() {
+        assert!((u256_to_f64(U256::from(1_000_000_000_000_000_000u64)) - 1.0).abs() < 1e-6);
+        assert_eq!(u256_to_f64(U256::ZERO), 0.0);
+        let large = u256_to_f64(U256::from(1000u64) * U256::from(1_000_000_000_000_000_000u64));
+        assert!((large - 1000.0).abs() < 1.0);
+    }
+
+    #[test]
+    fn estimate_tvl_usd_weth_token0() {
+        let tvl = estimate_tvl_usd(weth(), usdc(), 100.0, 300_000.0);
+        assert!(tvl > 100_000.0);
+    }
+
+    #[test]
+    fn estimate_tvl_usd_weth_token1() {
+        let tvl = estimate_tvl_usd(usdc(), weth(), 300_000.0, 100.0);
+        assert!(tvl > 100_000.0);
+    }
+
+    #[test]
+    fn estimate_tvl_usd_usdc_pair() {
+        let dai = address!("6B175474E89094C44Da98b954EedeAC495271d0F");
+        let tvl = estimate_tvl_usd(dai, usdc(), 500.0, 500_000.0);
+        assert!(tvl > 0.0);
+    }
+
+    #[test]
+    fn estimate_tvl_usd_non_weth_non_usdc_pair() {
+        let token_a = address!("6B175474E89094C44Da98b954EedeAC495271d0F");
+        let token_b = address!("dAC17F958D2ee523a2206206994597C13D831ec7");
+        let tvl = estimate_tvl_usd(token_a, token_b, 500.0, 500_000.0);
+        assert!(tvl > 0.0);
+    }
+
+    #[test]
+    fn on_chain_metrics_source_new() {
+        let cfg = test_config();
+        let _source = OnChainMetricsSource::new(None, &cfg);
+    }
+
+    #[test]
+    fn on_chain_metrics_fetch_metrics_without_provider() {
+        let cfg = test_config();
+        let source = OnChainMetricsSource::new(None, &cfg);
+        let result = source.fetch_metrics(
+            Address::from([0x11; 20]),
+            usdc(),
+            weth(),
+            ProtocolType::UniswapV2,
+        );
+        assert_eq!(result.tvl_usd, 100_000.0);
+        assert_eq!(result.volume_24h_usd, 10_000.0);
+        assert_eq!(result.fee_bps, 30);
+        assert!(result.slippage_estimate > 0.0);
+    }
+
+    #[test]
+    fn on_chain_metrics_fetch_metrics_curve_without_provider() {
+        let cfg = test_config();
+        let source = OnChainMetricsSource::new(None, &cfg);
+        let result = source.fetch_metrics(Address::from([0x11; 20]), usdc(), weth(), ProtocolType::Curve);
+        assert_eq!(result.tvl_usd, 100_000.0);
+    }
+
+    #[test]
+    fn on_chain_metrics_fetch_metrics_balancer_v3_without_provider() {
+        let cfg = test_config();
+        let source = OnChainMetricsSource::new(None, &cfg);
+        let result = source.fetch_metrics(Address::from([0x11; 20]), usdc(), weth(), ProtocolType::BalancerV3);
+        assert_eq!(result.tvl_usd, 100_000.0);
+    }
+
+    #[test]
+    fn on_chain_metrics_fetch_metrics_sushiswap_without_provider() {
+        let cfg = test_config();
+        let source = OnChainMetricsSource::new(None, &cfg);
+        let result = source.fetch_metrics(Address::from([0x11; 20]), usdc(), weth(), ProtocolType::SushiSwap);
+        assert_eq!(result.tvl_usd, 100_000.0);
+    }
+
+    #[test]
+    fn on_chain_metrics_fetch_metrics_balancer_v2_without_provider() {
+        let cfg = test_config();
+        let source = OnChainMetricsSource::new(None, &cfg);
+        let result = source.fetch_metrics(Address::from([0x11; 20]), usdc(), weth(), ProtocolType::BalancerV2);
+        assert_eq!(result.tvl_usd, 100_000.0);
+    }
+
+    #[test]
+    fn discovery_service_set_metrics_and_get() {
+        let mut svc = DiscoveryService::new(test_config());
+        assert!(svc.metrics().is_none());
+        let m = DiscoveryMetrics::noop();
+        svc.set_metrics(m.clone());
+        assert!(svc.metrics().is_some());
+    }
+
+    #[test]
+    fn discovery_service_cache_accessor() {
+        let svc = DiscoveryService::new(test_config());
+        let _cache = svc.cache();
+    }
+
+    #[tokio::test]
+    async fn discovery_service_with_rpc_url_invalid() {
+        let svc = DiscoveryService::with_rpc_url(test_config(), "http://127.0.0.1:59999").await;
+        let event = FactoryPoolCreated {
+            factory: Address::ZERO,
+            protocol: ProtocolType::UniswapV2,
+            fee_bps: 30,
+            token0: usdc(),
+            token1: weth(),
+            pool: Address::from([0x11; 20]),
+        };
+        // RPC URL is unreachable → provider is Some (lazy), validation fails → pool rejected
+        // or provider is None → offline path → pool accepted. Either way, no panic.
+        let _ = svc.ingest_pool_created(event).await;
+    }
+
+    #[tokio::test]
+    async fn ingest_curve_pool_accepted_offline() {
+        let svc = DiscoveryService::new(test_config());
+        let event = FactoryPoolCreated {
+            factory: address!("F18056Bbd9e56aC88eefA885588501c1806Be1D8"),
+            protocol: ProtocolType::Curve,
+            fee_bps: 4,
+            token0: usdc(),
+            token1: weth(),
+            pool: Address::from([0x55; 20]),
+        };
+        assert!(svc.ingest_pool_created(event).await);
+    }
+
+    #[tokio::test]
+    async fn ingest_balancer_v3_pool_accepted_offline() {
+        let svc = DiscoveryService::new(test_config());
+        let event = FactoryPoolCreated {
+            factory: address!("bA1333333333a1BA1108E8412f11850A5C319bA9"),
+            protocol: ProtocolType::BalancerV3,
+            fee_bps: 10,
+            token0: usdc(),
+            token1: weth(),
+            pool: Address::from([0x66; 20]),
+        };
+        assert!(svc.ingest_pool_created(event).await);
+    }
+
+    #[tokio::test]
+    async fn ingest_unknown_protocol_valid_fee_accepted() {
+        let svc = DiscoveryService::new(test_config());
+        let event = FactoryPoolCreated {
+            factory: Address::ZERO,
+            protocol: ProtocolType::BancorV3,
+            fee_bps: 30,
+            token0: usdc(),
+            token1: weth(),
+            pool: Address::from([0x77; 20]),
+        };
+        assert!(svc.ingest_pool_created(event).await);
+    }
+
+    #[tokio::test]
+    async fn ingest_unknown_protocol_invalid_fee_rejected() {
+        let svc = DiscoveryService::new(test_config());
+        let event = FactoryPoolCreated {
+            factory: Address::ZERO,
+            protocol: ProtocolType::BancorV3,
+            fee_bps: 99999,
+            token0: usdc(),
+            token1: address!("6B175474E89094C44Da98b954EedeAC495271d0F"),
+            pool: Address::from([0x78; 20]),
+        };
+        assert!(!svc.ingest_pool_created(event).await);
+    }
+
+    #[test]
+    fn offline_validate_sushiswap_valid() {
+        let event = FactoryPoolCreated {
+            factory: address!("C0AEe478e3658e2610c5F7A4A2D1773cDCC8b275"),
+            protocol: ProtocolType::SushiSwap,
+            fee_bps: 25,
+            token0: usdc(),
+            token1: weth(),
+            pool: Address::from([0x99; 20]),
+        };
+        let result = offline_validate(&event, 0.001);
+        assert_eq!(result, ValidationResult::Valid);
+    }
+
+    #[test]
+    fn offline_validate_curve_uses_v2_reserves() {
+        let event = FactoryPoolCreated {
+            factory: address!("F18056Bbd9e56aC88eefA885588501c1806Be1D8"),
+            protocol: ProtocolType::Curve,
+            fee_bps: 4,
+            token0: usdc(),
+            token1: weth(),
+            pool: Address::from([0xAA; 20]),
+        };
+        let result = offline_validate(&event, 0.001);
+        assert_eq!(result, ValidationResult::Valid);
+    }
+
+    #[test]
+    fn offline_validate_balancer_v3_uses_v2_reserves() {
+        let event = FactoryPoolCreated {
+            factory: address!("bA1333333333a1BA1108E8412f11850A5C319bA9"),
+            protocol: ProtocolType::BalancerV3,
+            fee_bps: 10,
+            token0: usdc(),
+            token1: weth(),
+            pool: Address::from([0xBB; 20]),
+        };
+        let result = offline_validate(&event, 0.001);
+        assert_eq!(result, ValidationResult::Valid);
+    }
+
+    #[test]
+    fn offline_validate_unknown_protocol_valid_fee() {
+        let event = FactoryPoolCreated {
+            factory: Address::ZERO,
+            protocol: ProtocolType::BancorV3,
+            fee_bps: 30,
+            token0: usdc(),
+            token1: weth(),
+            pool: Address::from([0xCC; 20]),
+        };
+        let result = offline_validate(&event, 0.001);
+        assert_eq!(result, ValidationResult::Valid);
+    }
+
+    #[test]
+    fn offline_validate_unknown_protocol_invalid_fee() {
+        let event = FactoryPoolCreated {
+            factory: Address::ZERO,
+            protocol: ProtocolType::BancorV3,
+            fee_bps: 99999,
+            token0: usdc(),
+            token1: weth(),
+            pool: Address::from([0xDD; 20]),
+        };
+        let result = offline_validate(&event, 0.001);
+        assert!(matches!(result, ValidationResult::Invalid(_)));
+    }
+
+    #[test]
+    fn discovery_service_prune_empty() {
+        let svc = DiscoveryService::new(test_config());
+        assert_eq!(svc.prune(0.5), 0);
+    }
+
+    #[test]
+    fn discovery_service_subscribe_events_multiple() {
+        let svc = DiscoveryService::new(test_config());
+        let _rx1 = svc.subscribe_events();
+        let _rx2 = svc.subscribe_events();
+    }
 }
