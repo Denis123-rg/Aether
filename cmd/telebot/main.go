@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"os"
 	"os/signal"
@@ -17,10 +18,32 @@ func main() {
 	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo})))
 	slog.Info("aether-telebot: Telegram dashboard service starting")
 
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+	go func() {
+		<-sigCh
+		slog.Info("shutdown signal received")
+		cancel()
+	}()
+
+	if err := start(ctx, newBotAPIFn); err != nil {
+		slog.Error("telebot failed to start", "err", err)
+		os.Exit(1)
+	}
+	slog.Info("telebot stopped")
+}
+
+var newBotAPIFn = func(token string) (BotAPI, error) {
+	return tgbotapi.NewBotAPI(token)
+}
+
+func start(ctx context.Context, apiFactory func(string) (BotAPI, error)) error {
 	cfg, err := config.LoadProductionConfig(config.ProductionConfigPath())
 	if err != nil {
-		slog.Error("failed to load production config", "err", err)
-		os.Exit(1)
+		return fmt.Errorf("failed to load production config: %w", err)
 	}
 
 	token := cfg.Telegram.BotToken
@@ -28,8 +51,7 @@ func main() {
 		token = os.Getenv("TELEGRAM_BOT_TOKEN")
 	}
 	if token == "" {
-		slog.Error("TELEGRAM_BOT_TOKEN not set")
-		os.Exit(1)
+		return fmt.Errorf("TELEGRAM_BOT_TOKEN not set")
 	}
 
 	adminIDs := cfg.Telegram.AdminChatIDs
@@ -37,14 +59,12 @@ func main() {
 		if raw := os.Getenv("TELEGRAM_ADMIN_CHAT_IDS"); raw != "" {
 			adminIDs, err = config.ParseAdminChatIDs(raw)
 			if err != nil {
-				slog.Error("invalid TELEGRAM_ADMIN_CHAT_IDS", "err", err)
-				os.Exit(1)
+				return fmt.Errorf("invalid TELEGRAM_ADMIN_CHAT_IDS: %w", err)
 			}
 		}
 	}
 	if len(adminIDs) == 0 {
-		slog.Error("no admin chat IDs configured")
-		os.Exit(1)
+		return fmt.Errorf("no admin chat IDs configured")
 	}
 
 	metricsURL := cfg.Telegram.ExecutorMetricsURL
@@ -60,13 +80,16 @@ func main() {
 		config.RequireRedisInProduction()
 	}
 
-	botAPI, err := tgbotapi.NewBotAPI(token)
+	botAPI, err := apiFactory(token)
 	if err != nil {
-		slog.Error("telegram bot init failed", "err", err)
-		os.Exit(1)
+		return fmt.Errorf("telegram bot init failed: %w", err)
 	}
-	botAPI.Debug = os.Getenv("TELEBOT_DEBUG") == "1"
-	slog.Info("telegram bot authorized", "username", botAPI.Self.UserName)
+
+	botAPITyped, ok := botAPI.(*tgbotapi.BotAPI)
+	if ok {
+		botAPITyped.Debug = os.Getenv("TELEBOT_DEBUG") == "1"
+		slog.Info("telegram bot authorized", "username", botAPITyped.Self.UserName)
+	}
 
 	bot := NewTeleBot(
 		botAPI,
@@ -76,17 +99,6 @@ func main() {
 		redisURL,
 	)
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
-	go func() {
-		<-sigCh
-		slog.Info("shutdown signal received")
-		cancel()
-	}()
-
 	slog.Info("telebot running",
 		"metrics_url", metricsURL,
 		"poll_interval_secs", cfg.Telegram.DashboardUpdateIntervalSecs,
@@ -94,5 +106,5 @@ func main() {
 		"admins", len(adminIDs),
 	)
 	bot.Run(ctx)
-	slog.Info("telebot stopped")
+	return nil
 }

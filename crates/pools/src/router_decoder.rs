@@ -1872,7 +1872,7 @@ pub fn pool_word_for_test(pool: Address, zero_for_one: bool) -> U256 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alloy::primitives::{address, U256};
+    use alloy::primitives::{address, Address, Bytes, U256};
 
     #[test]
     fn too_short_calldata_rejected() {
@@ -2854,6 +2854,22 @@ mod tests {
         exactInputSingle_0Call { params }.abi_encode()
     }
 
+    fn weth() -> Address {
+        address!("C02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2")
+    }
+
+    fn usdc() -> Address {
+        address!("A0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48")
+    }
+
+    fn dai() -> Address {
+        address!("6B175474E89094C44Da98b954EedeAC495271d0F")
+    }
+
+    fn uni_v2_router() -> Address {
+        address!("7a250d5630B4cF539739dF2C5dAcb4c659F2488D")
+    }
+
     fn univ3_router() -> Address {
         address!("E592427A0AEce92De3Edee1F18E0157C05861564")
     }
@@ -3310,5 +3326,1177 @@ mod tests {
         let single = decode_pending(one_inch_router(), &calldata).expect("decode");
         assert_eq!(single.pool_address, Some(p1));
         assert_eq!(single.token_in, weth);
+    }
+
+    // ════════════════════════════════════════════════════════════════════
+    // Coverage push: remaining V2 swap variants
+    // ════════════════════════════════════════════════════════════════════
+
+    #[test]
+    fn decode_v2_swap_tokens_for_exact_tokens() {
+        use IUniswapV2Router02::swapTokensForExactTokensCall;
+        let calldata = swapTokensForExactTokensCall {
+            amountOut: U256::from(2_500_000_000u64),
+            amountInMax: U256::from(1_000_000_000_000_000_000u64),
+            path: vec![weth(), usdc()],
+            to: Address::ZERO,
+            deadline: U256::from(99u64),
+        }
+        .abi_encode();
+        let decoded = decode_pending(uni_v2_router(), &calldata).expect("decode");
+        assert_eq!(decoded.protocol, Protocol::UniswapV2);
+        assert_eq!(decoded.amount_in, U256::from(1_000_000_000_000_000_000u64));
+        assert_eq!(decoded.amount_out_min, U256::from(2_500_000_000u64));
+    }
+
+    #[test]
+    fn decode_v2_swap_exact_eth_for_tokens() {
+        use IUniswapV2Router02::swapExactETHForTokensCall;
+        let calldata = swapExactETHForTokensCall {
+            amountOutMin: U256::from(2_500_000_000u64),
+            path: vec![weth(), usdc()],
+            to: Address::ZERO,
+            deadline: U256::from(99u64),
+        }
+        .abi_encode();
+        let decoded = decode_pending(uni_v2_router(), &calldata).expect("decode");
+        assert_eq!(decoded.protocol, Protocol::UniswapV2);
+        assert_eq!(decoded.amount_in, U256::ZERO, "ETH amount in msg.value");
+        assert_eq!(decoded.amount_out_min, U256::from(2_500_000_000u64));
+    }
+
+    #[test]
+    fn decode_v2_swap_exact_tokens_for_eth() {
+        use IUniswapV2Router02::swapExactTokensForETHCall;
+        let calldata = swapExactTokensForETHCall {
+            amountIn: U256::from(1_000_000_000_000_000_000u64),
+            amountOutMin: U256::from(2_500_000_000u64),
+            path: vec![usdc(), weth()],
+            to: Address::ZERO,
+            deadline: U256::from(99u64),
+        }
+        .abi_encode();
+        let decoded = decode_pending(uni_v2_router(), &calldata).expect("decode");
+        assert_eq!(decoded.protocol, Protocol::UniswapV2);
+        assert_eq!(decoded.token_in, usdc());
+        assert_eq!(decoded.token_out, weth());
+    }
+
+    #[test]
+    fn decode_v2_swap_tokens_for_exact_eth() {
+        use IUniswapV2Router02::swapTokensForExactETHCall;
+        let calldata = swapTokensForExactETHCall {
+            amountOut: U256::from(2_500_000_000u64),
+            amountInMax: U256::from(1_000_000_000_000_000_000u64),
+            path: vec![usdc(), weth()],
+            to: Address::ZERO,
+            deadline: U256::from(99u64),
+        }
+        .abi_encode();
+        let decoded = decode_pending(uni_v2_router(), &calldata).expect("decode");
+        assert_eq!(decoded.protocol, Protocol::UniswapV2);
+        assert_eq!(decoded.amount_in, U256::from(1_000_000_000_000_000_000u64));
+    }
+
+    #[test]
+    fn decode_v2_swap_eth_for_exact_tokens() {
+        use IUniswapV2Router02::swapETHForExactTokensCall;
+        let calldata = swapETHForExactTokensCall {
+            amountOut: U256::from(2_500_000_000u64),
+            path: vec![weth(), usdc()],
+            to: Address::ZERO,
+            deadline: U256::from(99u64),
+        }
+        .abi_encode();
+        let decoded = decode_pending(uni_v2_router(), &calldata).expect("decode");
+        assert_eq!(decoded.protocol, Protocol::UniswapV2);
+        assert_eq!(decoded.amount_in, U256::ZERO, "ETH amount in msg.value");
+    }
+
+    #[test]
+    fn decode_v2_fot_tokens_for_tokens() {
+        use IUniswapV2Router02::swapExactTokensForTokensSupportingFeeOnTransferTokensCall;
+        let calldata = swapExactTokensForTokensSupportingFeeOnTransferTokensCall {
+            amountIn: U256::from(1_000u64),
+            amountOutMin: U256::from(900u64),
+            path: vec![weth(), usdc()],
+            to: Address::ZERO,
+            deadline: U256::from(99u64),
+        }
+        .abi_encode();
+        let decoded = decode_pending(uni_v2_router(), &calldata).expect("decode");
+        assert_eq!(decoded.protocol, Protocol::UniswapV2);
+        assert_eq!(decoded.amount_in, U256::from(1_000u64));
+    }
+
+    #[test]
+    fn decode_v2_fot_eth_for_tokens() {
+        use IUniswapV2Router02::swapExactETHForTokensSupportingFeeOnTransferTokensCall;
+        let calldata = swapExactETHForTokensSupportingFeeOnTransferTokensCall {
+            amountOutMin: U256::from(900u64),
+            path: vec![weth(), usdc()],
+            to: Address::ZERO,
+            deadline: U256::from(99u64),
+        }
+        .abi_encode();
+        let decoded = decode_pending(uni_v2_router(), &calldata).expect("decode");
+        assert_eq!(decoded.protocol, Protocol::UniswapV2);
+        assert_eq!(decoded.amount_in, U256::ZERO);
+    }
+
+    #[test]
+    fn decode_v2_fot_tokens_for_eth() {
+        use IUniswapV2Router02::swapExactTokensForETHSupportingFeeOnTransferTokensCall;
+        let calldata = swapExactTokensForETHSupportingFeeOnTransferTokensCall {
+            amountIn: U256::from(1_000u64),
+            amountOutMin: U256::from(900u64),
+            path: vec![usdc(), weth()],
+            to: Address::ZERO,
+            deadline: U256::from(99u64),
+        }
+        .abi_encode();
+        let decoded = decode_pending(uni_v2_router(), &calldata).expect("decode");
+        assert_eq!(decoded.protocol, Protocol::UniswapV2);
+        assert_eq!(decoded.amount_in, U256::from(1_000u64));
+    }
+
+    #[test]
+    fn decode_v2_single_element_path_rejected() {
+        use IUniswapV2Router02::swapExactTokensForTokensCall;
+        let calldata = swapExactTokensForTokensCall {
+            amountIn: U256::from(1u64),
+            amountOutMin: U256::ZERO,
+            path: vec![weth()],
+            to: Address::ZERO,
+            deadline: U256::ZERO,
+        }
+        .abi_encode();
+        let err = decode_pending(uni_v2_router(), &calldata).unwrap_err();
+        assert!(matches!(err, DecodeError::EmptyPath));
+    }
+
+    #[test]
+    fn decode_v2_multihop_path_has_extras() {
+        use IUniswapV2Router02::swapExactTokensForTokensCall;
+        let calldata = swapExactTokensForTokensCall {
+            amountIn: U256::from(1_000u64),
+            amountOutMin: U256::ZERO,
+            path: vec![weth(), dai(), usdc()],
+            to: Address::ZERO,
+            deadline: U256::ZERO,
+        }
+        .abi_encode();
+        let decoded = decode_pending(uni_v2_router(), &calldata).expect("decode");
+        assert_eq!(decoded.path_extra, vec![usdc()]);
+    }
+
+    // ════════════════════════════════════════════════════════════════════
+    // Coverage push: V2 non-swap helpers
+    // ════════════════════════════════════════════════════════════════════
+
+    #[test]
+    fn decode_v2_add_liquidity_skipped() {
+        use IUniswapV2Router02::addLiquidityCall;
+        let calldata = addLiquidityCall {
+            tokenA: weth(),
+            tokenB: usdc(),
+            amountADesired: U256::from(1u64),
+            amountBDesired: U256::ZERO,
+            amountAMin: U256::ZERO,
+            amountBMin: U256::ZERO,
+            to: Address::ZERO,
+            deadline: U256::ZERO,
+        }
+        .abi_encode();
+        let swaps = decode_pending_many(uni_v2_router(), &calldata).expect("decode");
+        assert!(swaps.is_empty());
+    }
+
+    #[test]
+    fn decode_v2_remove_liquidity_skipped() {
+        use IUniswapV2Router02::removeLiquidityCall;
+        let calldata = removeLiquidityCall {
+            tokenA: weth(),
+            tokenB: usdc(),
+            liquidity: U256::from(1u64),
+            amountAMin: U256::ZERO,
+            amountBMin: U256::ZERO,
+            to: Address::ZERO,
+            deadline: U256::ZERO,
+        }
+        .abi_encode();
+        let swaps = decode_pending_many(uni_v2_router(), &calldata).expect("decode");
+        assert!(swaps.is_empty());
+    }
+
+    #[test]
+    fn decode_v2_remove_liquidity_with_permit_skipped() {
+        use IUniswapV2Router02::removeLiquidityWithPermitCall;
+        let calldata = removeLiquidityWithPermitCall {
+            tokenA: weth(),
+            tokenB: usdc(),
+            liquidity: U256::from(1u64),
+            amountAMin: U256::ZERO,
+            amountBMin: U256::ZERO,
+            to: Address::ZERO,
+            deadline: U256::ZERO,
+            approveMax: false,
+            v: 0,
+            r: Default::default(),
+            s: Default::default(),
+        }
+        .abi_encode();
+        let swaps = decode_pending_many(uni_v2_router(), &calldata).expect("decode");
+        assert!(swaps.is_empty());
+    }
+
+    #[test]
+    fn decode_v2_remove_liquidity_eth_fot_skipped() {
+        use IUniswapV2Router02::removeLiquidityETHSupportingFeeOnTransferTokensCall;
+        let calldata = removeLiquidityETHSupportingFeeOnTransferTokensCall {
+            token: weth(),
+            liquidity: U256::from(1u64),
+            amountTokenMin: U256::ZERO,
+            amountETHMin: U256::ZERO,
+            to: Address::ZERO,
+            deadline: U256::ZERO,
+        }
+        .abi_encode();
+        let swaps = decode_pending_many(uni_v2_router(), &calldata).expect("decode");
+        assert!(swaps.is_empty());
+    }
+
+    #[test]
+    fn decode_v2_remove_liquidity_eth_with_permit_fot_skipped() {
+        use IUniswapV2Router02::removeLiquidityETHWithPermitSupportingFeeOnTransferTokensCall;
+        let calldata = removeLiquidityETHWithPermitSupportingFeeOnTransferTokensCall {
+            token: weth(),
+            liquidity: U256::from(1u64),
+            amountTokenMin: U256::ZERO,
+            amountETHMin: U256::ZERO,
+            to: Address::ZERO,
+            deadline: U256::ZERO,
+            approveMax: false,
+            v: 0,
+            r: Default::default(),
+            s: Default::default(),
+        }
+        .abi_encode();
+        let swaps = decode_pending_many(uni_v2_router(), &calldata).expect("decode");
+        assert!(swaps.is_empty());
+    }
+
+    // ════════════════════════════════════════════════════════════════════
+    // Coverage push: V3 remaining variants
+    // ════════════════════════════════════════════════════════════════════
+
+    #[test]
+    fn decode_v3_exact_input_single_swaprouter02() {
+        use IUniswapV3Router::{exactInputSingle_1Call, ExactInputSingleParams02};
+        let params = ExactInputSingleParams02 {
+            tokenIn: weth(),
+            tokenOut: usdc(),
+            fee: alloy::primitives::aliases::U24::from(500),
+            recipient: Address::ZERO,
+            amountIn: U256::from(42u64),
+            amountOutMinimum: U256::from(10u64),
+            sqrtPriceLimitX96: alloy::primitives::U160::ZERO,
+        };
+        let calldata = exactInputSingle_1Call { params }.abi_encode();
+        let swap = decode_pending(univ3_router(), &calldata).expect("decode");
+        assert_eq!(swap.protocol, Protocol::UniswapV3);
+        assert_eq!(swap.fee_bps, 500);
+        assert_eq!(swap.amount_in, U256::from(42u64));
+    }
+
+    #[test]
+    fn decode_v3_exact_input_multihop_with_deadline() {
+        use IUniswapV3Router::{exactInput_0Call, ExactInputParams};
+        let mut path = pack_v3_path(weth(), 3000, usdc());
+        path.extend_from_slice(usdc().as_slice());
+        path.push(0x00);
+        path.push(0x01);
+        path.push(0xf4);
+        path.extend_from_slice(dai().as_slice());
+
+        let params = ExactInputParams {
+            path: path.into(),
+            recipient: Address::ZERO,
+            deadline: U256::from(99u64),
+            amountIn: U256::from(1_000u64),
+            amountOutMinimum: U256::from(100u64),
+        };
+        let calldata = exactInput_0Call { params }.abi_encode();
+        let swap = decode_pending(univ3_router(), &calldata).expect("decode");
+        assert_eq!(swap.protocol, Protocol::UniswapV3);
+        assert_eq!(swap.token_in, weth());
+        assert_eq!(swap.token_out, usdc());
+        assert_eq!(swap.fee_bps, 3000);
+        assert_eq!(swap.amount_in, U256::from(1_000u64));
+        assert!(!swap.path_extra.is_empty());
+    }
+
+    #[test]
+    fn decode_v3_exact_input_multihop_no_deadline() {
+        use IUniswapV3Router::{exactInput_1Call, ExactInputParams02};
+        let path = pack_v3_path(weth(), 3000, usdc());
+        let params = ExactInputParams02 {
+            path: path.into(),
+            recipient: Address::ZERO,
+            amountIn: U256::from(500u64),
+            amountOutMinimum: U256::from(50u64),
+        };
+        let calldata = exactInput_1Call { params }.abi_encode();
+        let swap = decode_pending(univ3_router(), &calldata).expect("decode");
+        assert_eq!(swap.protocol, Protocol::UniswapV3);
+        assert_eq!(swap.amount_in, U256::from(500u64));
+    }
+
+    #[test]
+    fn decode_v3_exact_output_single_swaprouter02() {
+        use IUniswapV3Router::{exactOutputSingle_1Call, ExactOutputSingleParams02};
+        let params = ExactOutputSingleParams02 {
+            tokenIn: weth(),
+            tokenOut: usdc(),
+            fee: alloy::primitives::aliases::U24::from(10000),
+            recipient: Address::ZERO,
+            amountOut: U256::from(5_000u64),
+            amountInMaximum: U256::from(3_000_000_000_000_000_000u64),
+            sqrtPriceLimitX96: alloy::primitives::U160::ZERO,
+        };
+        let calldata = exactOutputSingle_1Call { params }.abi_encode();
+        let swap = decode_pending(univ3_router(), &calldata).expect("decode");
+        assert_eq!(swap.protocol, Protocol::UniswapV3);
+        assert_eq!(swap.amount_in, U256::from(5_000u64));
+        assert_eq!(swap.amount_out_min, U256::from(3_000_000_000_000_000_000u64));
+        assert_eq!(swap.fee_bps, 10000);
+    }
+
+    #[test]
+    fn decode_v3_exact_output_multihop_with_deadline() {
+        use IUniswapV3Router::{exactOutput_0Call, ExactOutputParams};
+        let path = pack_v3_path(usdc(), 3000, weth());
+        let params = ExactOutputParams {
+            path: path.into(),
+            recipient: Address::ZERO,
+            deadline: U256::from(99u64),
+            amountOut: U256::from(2_500u64),
+            amountInMaximum: U256::from(2u64) * U256::from(10u64).pow(U256::from(18u64)),
+        };
+        let calldata = exactOutput_0Call { params }.abi_encode();
+        let swap = decode_pending(univ3_router(), &calldata).expect("decode");
+        assert_eq!(swap.protocol, Protocol::UniswapV3);
+        assert_eq!(swap.token_in, weth(), "path flipped for exact output");
+        assert_eq!(swap.token_out, usdc());
+        assert_eq!(swap.amount_in, U256::from(2_500u64));
+        assert_eq!(swap.fee_bps, 3000);
+    }
+
+    #[test]
+    fn decode_v3_exact_output_multihop_no_deadline() {
+        use IUniswapV3Router::{exactOutput_1Call, ExactOutputParams02};
+        let path = pack_v3_path(usdc(), 500, weth());
+        let params = ExactOutputParams02 {
+            path: path.into(),
+            recipient: Address::ZERO,
+            amountOut: U256::from(100u64),
+            amountInMaximum: U256::from(1_000u64),
+        };
+        let calldata = exactOutput_1Call { params }.abi_encode();
+        let swap = decode_pending(univ3_router(), &calldata).expect("decode");
+        assert_eq!(swap.protocol, Protocol::UniswapV3);
+        assert_eq!(swap.token_in, weth());
+        assert_eq!(swap.token_out, usdc());
+        assert_eq!(swap.fee_bps, 500);
+    }
+
+    #[test]
+    fn decode_v3_parse_path_3hop() {
+        let usdt = address!("dAC17F958D2ee523a2206206994597C13D831ec7");
+        let mut path = Vec::new();
+        path.extend_from_slice(weth().as_slice());
+        path.extend_from_slice(&[0x00, 0x0b, 0xb8]);
+        path.extend_from_slice(usdc().as_slice());
+        path.extend_from_slice(&[0x00, 0x01, 0xf4]);
+        path.extend_from_slice(dai().as_slice());
+        path.extend_from_slice(&[0x00, 0x00, 0x01]);
+        path.extend_from_slice(usdt.as_slice());
+
+        let (token_in, token_out, fee, extras) = parse_v3_path(&path).expect("parse");
+        assert_eq!(token_in, weth());
+        assert_eq!(token_out, usdc());
+        assert_eq!(fee, 3000);
+        assert_eq!(extras.len(), 2);
+        assert_eq!(extras[0], dai());
+        assert_eq!(extras[1], usdt);
+    }
+
+    #[test]
+    fn decode_v3_parse_path_exactly_minimum() {
+        let mut path = Vec::with_capacity(43);
+        path.extend_from_slice(weth().as_slice());
+        path.push(0x00);
+        path.push(0x0b);
+        path.push(0xb8);
+        path.extend_from_slice(usdc().as_slice());
+
+        let (token_in, token_out, fee, extras) = parse_v3_path(&path).expect("parse");
+        assert_eq!(token_in, weth());
+        assert_eq!(token_out, usdc());
+        assert_eq!(fee, 3000);
+        assert!(extras.is_empty());
+    }
+
+    #[test]
+    fn decode_v3_parse_path_42_bytes_too_short() {
+        let mut path = Vec::with_capacity(42);
+        path.extend_from_slice(weth().as_slice());
+        path.push(0x00);
+        path.push(0x0b);
+        path.push(0xb8);
+        assert!(parse_v3_path(&path).is_err());
+    }
+
+    // ════════════════════════════════════════════════════════════════════
+    // Coverage push: UniV3 non-swap helpers
+    // ════════════════════════════════════════════════════════════════════
+
+    #[test]
+    fn decode_v3_self_permit_skipped() {
+        use IUniswapV3Router::selfPermitCall;
+        let calldata = selfPermitCall {
+            token: weth(),
+            value: U256::ZERO,
+            deadline: U256::ZERO,
+            v: 0,
+            r: Default::default(),
+            s: Default::default(),
+        }
+        .abi_encode();
+        let swaps = decode_pending_many(univ3_router(), &calldata).expect("decode");
+        assert!(swaps.is_empty());
+    }
+
+    #[test]
+    fn decode_v3_self_permit_allowed_skipped() {
+        use IUniswapV3Router::selfPermitAllowedCall;
+        let calldata = selfPermitAllowedCall {
+            token: weth(),
+            nonce: U256::ZERO,
+            expiry: U256::ZERO,
+            v: 0,
+            r: Default::default(),
+            s: Default::default(),
+        }
+        .abi_encode();
+        let swaps = decode_pending_many(univ3_router(), &calldata).expect("decode");
+        assert!(swaps.is_empty());
+    }
+
+    #[test]
+    fn decode_v3_self_permit_if_necessary_skipped() {
+        use IUniswapV3Router::selfPermitIfNecessaryCall;
+        let calldata = selfPermitIfNecessaryCall {
+            token: weth(),
+            value: U256::ZERO,
+            deadline: U256::ZERO,
+            v: 0,
+            r: Default::default(),
+            s: Default::default(),
+        }
+        .abi_encode();
+        let swaps = decode_pending_many(univ3_router(), &calldata).expect("decode");
+        assert!(swaps.is_empty());
+    }
+
+    #[test]
+    fn decode_v3_self_permit_allowed_if_necessary_skipped() {
+        use IUniswapV3Router::selfPermitAllowedIfNecessaryCall;
+        let calldata = selfPermitAllowedIfNecessaryCall {
+            token: weth(),
+            nonce: U256::ZERO,
+            expiry: U256::ZERO,
+            v: 0,
+            r: Default::default(),
+            s: Default::default(),
+        }
+        .abi_encode();
+        let swaps = decode_pending_many(univ3_router(), &calldata).expect("decode");
+        assert!(swaps.is_empty());
+    }
+
+    #[test]
+    fn decode_v3_unwrap_weth9_with_fee_skipped() {
+        use IUniswapV3Router::unwrapWETH9WithFeeCall;
+        let calldata = unwrapWETH9WithFeeCall {
+            amountMinimum: U256::ZERO,
+            recipient: Address::ZERO,
+            feeBips: U256::from(50u64),
+            feeRecipient: Address::ZERO,
+        }
+        .abi_encode();
+        let swaps = decode_pending_many(univ3_router(), &calldata).expect("decode");
+        assert!(swaps.is_empty());
+    }
+
+    #[test]
+    fn decode_v3_refund_eth_skipped() {
+        use IUniswapV3Router::refundETHCall;
+        let calldata = refundETHCall {}.abi_encode();
+        let swaps = decode_pending_many(univ3_router(), &calldata).expect("decode");
+        assert!(swaps.is_empty());
+    }
+
+    #[test]
+    fn decode_v3_sweep_token_skipped() {
+        use IUniswapV3Router::sweepTokenCall;
+        let calldata = sweepTokenCall {
+            token: weth(),
+            amountMinimum: U256::ZERO,
+            recipient: Address::ZERO,
+        }
+        .abi_encode();
+        let swaps = decode_pending_many(univ3_router(), &calldata).expect("decode");
+        assert!(swaps.is_empty());
+    }
+
+    #[test]
+    fn decode_v3_sweep_token_with_fee_skipped() {
+        use IUniswapV3Router::sweepTokenWithFeeCall;
+        let calldata = sweepTokenWithFeeCall {
+            token: weth(),
+            amountMinimum: U256::ZERO,
+            recipient: Address::ZERO,
+            feeBips: U256::from(50u64),
+            feeRecipient: Address::ZERO,
+        }
+        .abi_encode();
+        let swaps = decode_pending_many(univ3_router(), &calldata).expect("decode");
+        assert!(swaps.is_empty());
+    }
+
+    // ════════════════════════════════════════════════════════════════════
+    // Coverage push: 1inch v6 remaining variants
+    // ════════════════════════════════════════════════════════════════════
+
+    #[test]
+    fn decode_1inch_unoswap2_two_pools() {
+        use IOneInchV6Router::unoswap2Call;
+        let pool1 = address!("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa1");
+        let pool2 = address!("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb2");
+        let calldata = unoswap2Call {
+            token: addr_to_u256(weth()),
+            amount: U256::from(1_000u64),
+            minReturn: U256::from(900u64),
+            dex: encode_pool(pool1, true),
+            dex2: encode_pool(pool2, false),
+        }
+        .abi_encode();
+        let many = decode_pending_many(one_inch_router(), &calldata).expect("decode");
+        assert_eq!(many.len(), 2);
+        assert_eq!(many[0].pool_address, Some(pool1));
+        assert_eq!(many[0].token_in, weth());
+        assert_eq!(many[1].pool_address, Some(pool2));
+        assert_eq!(many[1].amount_out_min, U256::from(900u64));
+    }
+
+    #[test]
+    fn decode_1inch_unoswap2_to() {
+        use IOneInchV6Router::unoswap2ToCall;
+        let pool1 = address!("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa1");
+        let pool2 = address!("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb2");
+        let recipient = address!("000000000000000000000000000000000000dEaD");
+        let calldata = unoswap2ToCall {
+            to: addr_to_u256(recipient),
+            token: addr_to_u256(weth()),
+            amount: U256::from(500u64),
+            minReturn: U256::from(400u64),
+            dex: encode_pool(pool1, false),
+            dex2: encode_pool(pool2, true),
+        }
+        .abi_encode();
+        let many = decode_pending_many(one_inch_router(), &calldata).expect("decode");
+        assert_eq!(many.len(), 2);
+        assert_eq!(many[0].recipient, recipient);
+        assert_eq!(many[1].recipient, recipient);
+    }
+
+    #[test]
+    fn decode_1inch_unoswap3_to() {
+        use IOneInchV6Router::unoswap3ToCall;
+        let p1 = address!("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa1");
+        let p2 = address!("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb2");
+        let p3 = address!("ccccccccccccccccccccccccccccccccccccccc3");
+        let recipient = address!("000000000000000000000000000000000000dEaD");
+        let calldata = unoswap3ToCall {
+            to: addr_to_u256(recipient),
+            token: addr_to_u256(weth()),
+            amount: U256::from(1_000u64),
+            minReturn: U256::from(900u64),
+            dex: encode_pool(p1, false),
+            dex2: encode_pool(p2, true),
+            dex3: encode_pool(p3, false),
+        }
+        .abi_encode();
+        let many = decode_pending_many(one_inch_router(), &calldata).expect("decode");
+        assert_eq!(many.len(), 3);
+        assert_eq!(many[2].amount_out_min, U256::from(900u64));
+    }
+
+    #[test]
+    fn decode_1inch_eth_unoswap_to() {
+        use IOneInchV6Router::ethUnoswapToCall;
+        let pool = address!("88e6A0c2dDD26FEEb64F039a2c41296FcB3f5640");
+        let recipient = address!("000000000000000000000000000000000000dEaD");
+        let calldata = ethUnoswapToCall {
+            to: addr_to_u256(recipient),
+            minReturn: U256::from(42u64),
+            dex: encode_pool(pool, true),
+        }
+        .abi_encode();
+        let many = decode_pending_many(one_inch_router(), &calldata).expect("decode");
+        assert_eq!(many.len(), 1);
+        assert_eq!(many[0].token_in, WETH_ADDRESS);
+        assert_eq!(many[0].recipient, recipient);
+    }
+
+    #[test]
+    fn decode_1inch_eth_unoswap2() {
+        use IOneInchV6Router::ethUnoswap2Call;
+        let p1 = address!("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa1");
+        let p2 = address!("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb2");
+        let calldata = ethUnoswap2Call {
+            minReturn: U256::from(100u64),
+            dex: encode_pool(p1, false),
+            dex2: encode_pool(p2, true),
+        }
+        .abi_encode();
+        let many = decode_pending_many(one_inch_router(), &calldata).expect("decode");
+        assert_eq!(many.len(), 2);
+        assert_eq!(many[0].token_in, WETH_ADDRESS);
+    }
+
+    #[test]
+    fn decode_1inch_eth_unoswap2_to() {
+        use IOneInchV6Router::ethUnoswap2ToCall;
+        let p1 = address!("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa1");
+        let p2 = address!("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb2");
+        let recipient = address!("000000000000000000000000000000000000dEaD");
+        let calldata = ethUnoswap2ToCall {
+            to: addr_to_u256(recipient),
+            minReturn: U256::from(100u64),
+            dex: encode_pool(p1, false),
+            dex2: encode_pool(p2, true),
+        }
+        .abi_encode();
+        let many = decode_pending_many(one_inch_router(), &calldata).expect("decode");
+        assert_eq!(many.len(), 2);
+        assert_eq!(many[0].recipient, recipient);
+    }
+
+    #[test]
+    fn decode_1inch_eth_unoswap3() {
+        use IOneInchV6Router::ethUnoswap3Call;
+        let p1 = address!("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa1");
+        let p2 = address!("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb2");
+        let p3 = address!("ccccccccccccccccccccccccccccccccccccccc3");
+        let calldata = ethUnoswap3Call {
+            minReturn: U256::from(100u64),
+            dex: encode_pool(p1, false),
+            dex2: encode_pool(p2, false),
+            dex3: encode_pool(p3, true),
+        }
+        .abi_encode();
+        let many = decode_pending_many(one_inch_router(), &calldata).expect("decode");
+        assert_eq!(many.len(), 3);
+        assert_eq!(many[2].amount_out_min, U256::from(100u64));
+    }
+
+    #[test]
+    fn decode_1inch_eth_unoswap3_to() {
+        use IOneInchV6Router::ethUnoswap3ToCall;
+        let p1 = address!("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa1");
+        let p2 = address!("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb2");
+        let p3 = address!("ccccccccccccccccccccccccccccccccccccccc3");
+        let recipient = address!("000000000000000000000000000000000000dEaD");
+        let calldata = ethUnoswap3ToCall {
+            to: addr_to_u256(recipient),
+            minReturn: U256::from(100u64),
+            dex: encode_pool(p1, false),
+            dex2: encode_pool(p2, false),
+            dex3: encode_pool(p3, true),
+        }
+        .abi_encode();
+        let many = decode_pending_many(one_inch_router(), &calldata).expect("decode");
+        assert_eq!(many.len(), 3);
+        assert_eq!(many[0].recipient, recipient);
+        assert_eq!(many[2].amount_out_min, U256::from(100u64));
+    }
+
+    #[test]
+    fn decode_1inch_uniswap_v3_swap_to() {
+        use IOneInchV6Router::uniswapV3SwapToCall;
+        let pool = address!("88e6A0c2dDD26FEEb64F039a2c41296FcB3f5640");
+        let recipient = address!("000000000000000000000000000000000000dEaD");
+        let calldata = uniswapV3SwapToCall {
+            recipient,
+            amount: U256::from(5_000u64),
+            minReturn: U256::from(4_900u64),
+            pools: vec![encode_pool(pool, false)],
+        }
+        .abi_encode();
+        let many = decode_pending_many(one_inch_router(), &calldata).expect("decode");
+        assert_eq!(many.len(), 1);
+        assert_eq!(many[0].pool_address, Some(pool));
+        assert_eq!(many[0].recipient, recipient);
+        assert_eq!(many[0].one_inch_zero_for_one, Some(false));
+    }
+
+    #[test]
+    fn decode_1inch_uniswap_v3_swap_to_empty_pools_rejected() {
+        use IOneInchV6Router::uniswapV3SwapToCall;
+        let calldata = uniswapV3SwapToCall {
+            recipient: Address::ZERO,
+            amount: U256::from(1u64),
+            minReturn: U256::ZERO,
+            pools: vec![],
+        }
+        .abi_encode();
+        let err = decode_pending_many(one_inch_router(), &calldata).unwrap_err();
+        assert!(matches!(err, DecodeError::EmptyPath));
+    }
+
+    #[test]
+    fn decode_1inch_fill_contract_order_skipped() {
+        use IOneInchV6Router::fillContractOrderCall;
+        let order = (
+            U256::ZERO, U256::ZERO, U256::ZERO, U256::ZERO,
+            U256::ZERO, U256::ZERO, U256::ZERO, U256::ZERO,
+        );
+        let calldata = fillContractOrderCall {
+            order,
+            signature: alloy::primitives::Bytes::new(),
+            amount: U256::ZERO,
+            takerTraits: U256::ZERO,
+        }
+        .abi_encode();
+        let swaps = decode_pending_many(one_inch_router(), &calldata).expect("decode");
+        assert!(swaps.is_empty());
+    }
+
+    #[test]
+    fn decode_1inch_token_with_high_bits_flag() {
+        use IOneInchV6Router::unoswapCall;
+        let pool = address!("88e6A0c2dDD26FEEb64F039a2c41296FcB3f5640");
+        let mut token_be = [0u8; 32];
+        token_be[12..32].copy_from_slice(weth().as_slice());
+        token_be[0] = 0x80;
+        let calldata = unoswapCall {
+            token: U256::from_be_bytes(token_be),
+            amount: U256::from(1_000u64),
+            minReturn: U256::from(900u64),
+            dex: encode_pool(pool, false),
+        }
+        .abi_encode();
+        let many = decode_pending_many(one_inch_router(), &calldata).expect("decode");
+        assert_eq!(many[0].token_in, weth(), "high bits masked to WETH");
+    }
+
+    // ════════════════════════════════════════════════════════════════════
+    // Coverage push: Balancer V2
+    // ════════════════════════════════════════════════════════════════════
+
+    #[test]
+    fn decode_balancer_v2_swap() {
+        use IBalancerVault::{swapCall, SingleSwap, FundManagement};
+        let vault = address!("BA12222222228d8Ba445958a75a0704d566BF2C8");
+        let pool_id = alloy::primitives::B256::from([0x01u8; 32]);
+        let calldata = swapCall {
+            singleSwap: SingleSwap {
+                poolId: pool_id,
+                kind: 0,
+                assetIn: weth(),
+                assetOut: usdc(),
+                amount: U256::from(1_000_000_000_000_000_000u64),
+                userData: alloy::primitives::Bytes::new(),
+            },
+            funds: FundManagement {
+                sender: Address::ZERO,
+                fromInternalBalance: false,
+                recipient: address!("000000000000000000000000000000000000dEaD"),
+                toInternalBalance: false,
+            },
+            limit: U256::from(2_500_000_000u64),
+            deadline: U256::from(99u64),
+        }
+        .abi_encode();
+        let swap = decode_pending(vault, &calldata).expect("decode");
+        assert_eq!(swap.protocol, Protocol::BalancerV2);
+        assert_eq!(swap.router, vault);
+        assert_eq!(swap.token_in, weth());
+        assert_eq!(swap.token_out, usdc());
+    }
+
+    // ════════════════════════════════════════════════════════════════════
+    // Coverage push: Curve unsupported router
+    // ════════════════════════════════════════════════════════════════════
+
+    #[test]
+    fn is_unsupported_curve_router_returns_true_for_known() {
+        let curve_router = address!("99a58482BD75cbab83b27EC03CA68fF489b5788f");
+        assert!(is_unsupported_curve_router(curve_router));
+    }
+
+    #[test]
+    fn is_unsupported_curve_router_returns_false_for_unknown() {
+        let some_addr = address!("1111111111111111111111111111111111111111");
+        assert!(!is_unsupported_curve_router(some_addr));
+    }
+
+    #[test]
+    fn decode_curve_unsupported_router_returns_error() {
+        let curve_router = address!("99a58482BD75cbab83b27EC03CA68fF489b5788f");
+        let data = vec![0xdeu8; 64];
+        let err = decode_pending_many(curve_router, &data).unwrap_err();
+        assert!(matches!(err, DecodeError::CurveUnsupported(_)));
+    }
+
+    // ════════════════════════════════════════════════════════════════════
+    // Coverage push: Curve edge cases
+    // ════════════════════════════════════════════════════════════════════
+
+    #[test]
+    fn decode_curve_uint256_max_index_accepted() {
+        let pool = address!("0000000000000000000000000000000000000003");
+        let calldata = ICurvePoolUint256::exchangeCall {
+            i: U256::from(255u64),
+            j: U256::from(255u64),
+            dx: U256::from(1u64),
+            min_dy: U256::from(0u64),
+        }
+        .abi_encode();
+        let decoded = decode_pending(pool, &calldata).expect("decode");
+        assert_eq!(decoded.curve_indices, Some((255, 255)));
+    }
+
+    #[test]
+    fn decode_curve_int128_max_index_accepted() {
+        let pool = address!("0000000000000000000000000000000000000004");
+        let calldata = ICurvePoolInt128::exchangeCall {
+            i: 255,
+            j: 255,
+            dx: U256::from(1u64),
+            min_dy: U256::from(0u64),
+        }
+        .abi_encode();
+        let decoded = decode_pending(pool, &calldata).expect("decode");
+        assert_eq!(decoded.curve_indices, Some((255, 255)));
+    }
+
+    #[test]
+    fn decode_curve_int128_j_negative_rejected() {
+        let pool = address!("0000000000000000000000000000000000000005");
+        let calldata = ICurvePoolInt128::exchangeCall {
+            i: 0,
+            j: -1,
+            dx: U256::from(1u64),
+            min_dy: U256::from(0u64),
+        }
+        .abi_encode();
+        let err = decode_pending(pool, &calldata).unwrap_err();
+        assert!(matches!(err, DecodeError::AbiDecode(_)));
+    }
+
+    #[test]
+    fn decode_curve_uint256_j_above_u8_rejected() {
+        let pool = address!("0000000000000000000000000000000000000006");
+        let calldata = ICurvePoolUint256::exchangeCall {
+            i: U256::from(0u64),
+            j: U256::from(256u64),
+            dx: U256::from(1u64),
+            min_dy: U256::from(0u64),
+        }
+        .abi_encode();
+        let err = decode_pending(pool, &calldata).unwrap_err();
+        assert!(matches!(err, DecodeError::AbiDecode(_)));
+    }
+
+    // ════════════════════════════════════════════════════════════════════
+    // Coverage push: Multicall edge cases
+    // ════════════════════════════════════════════════════════════════════
+
+    #[test]
+    fn decode_multicall_short_inner_call_skipped() {
+        let inner_too_short: alloy::primitives::Bytes = vec![0x00, 0x01].into();
+        let inner_good = build_exact_input_single(weth(), usdc(), U256::from(1u64), Address::ZERO);
+        let calldata = IUniswapV3Multicall::multicallCall {
+            data: vec![inner_too_short, inner_good.into()],
+        }
+        .abi_encode();
+        let swaps = decode_pending_many(univ3_router(), &calldata).expect("decode");
+        assert_eq!(swaps.len(), 1, "short inner call silently skipped");
+    }
+
+    #[test]
+    fn decode_multicall_all_non_swap_helpers_returns_empty() {
+        use IUniswapV3Router::{refundETHCall, unwrapWETH9Call};
+        let inner1 = refundETHCall {}.abi_encode();
+        let inner2 = unwrapWETH9Call {
+            amountMinimum: U256::ZERO,
+            recipient: Address::ZERO,
+        }
+        .abi_encode();
+        let calldata = IUniswapV3Multicall::multicallCall {
+            data: vec![inner1.into(), inner2.into()],
+        }
+        .abi_encode();
+        let swaps = decode_pending_many(univ3_router(), &calldata).expect("decode");
+        assert!(swaps.is_empty());
+    }
+
+    // ════════════════════════════════════════════════════════════════════
+    // Coverage push: Universal Router remaining opcodes
+    // ════════════════════════════════════════════════════════════════════
+
+    #[test]
+    fn decode_ur_all_unknown_opcodes_skip_silently() {
+        use IUniversalRouter::execute_0Call;
+        let calldata = execute_0Call {
+            commands: Bytes::from(vec![0x0b, 0x0c, 0x0d, 0x0e]),
+            inputs: vec![vec![0u8; 32].into(), vec![0u8; 32].into(), vec![0u8; 32].into(), vec![0u8; 32].into()],
+        }
+        .abi_encode();
+        let swaps = decode_pending_many(UNIVERSAL_ROUTER_V2, &calldata).expect("decode");
+        assert!(swaps.is_empty());
+    }
+
+    #[test]
+    fn decode_ur_empty_commands_returns_empty() {
+        use IUniversalRouter::execute_0Call;
+        let calldata = execute_0Call {
+            commands: Bytes::new(),
+            inputs: vec![],
+        }
+        .abi_encode();
+        let swaps = decode_pending_many(UNIVERSAL_ROUTER_V2, &calldata).expect("decode");
+        assert!(swaps.is_empty());
+    }
+
+    #[test]
+    fn decode_ur_v2_exact_out_empty_path() {
+        use alloy::sol_types::{SolType, sol_data};
+        type V2Tuple = (
+            sol_data::Address,
+            sol_data::Uint<256>,
+            sol_data::Uint<256>,
+            sol_data::Array<sol_data::Address>,
+            sol_data::Bool,
+        );
+        let input = V2Tuple::abi_encode_params(&(Address::ZERO, U256::from(1u64), U256::ZERO, Vec::<Address>::new(), true));
+        use IUniversalRouter::execute_0Call;
+        let calldata = execute_0Call {
+            commands: Bytes::from(vec![0x09]),
+            inputs: vec![input.into()],
+        }
+        .abi_encode();
+        let err = decode_pending_many(UNIVERSAL_ROUTER_V2, &calldata).unwrap_err();
+        assert!(matches!(err, DecodeError::EmptyPath));
+    }
+
+    #[test]
+    fn decode_ur_v2_single_element_path() {
+        use alloy::sol_types::{SolType, sol_data};
+        type V2Tuple = (
+            sol_data::Address,
+            sol_data::Uint<256>,
+            sol_data::Uint<256>,
+            sol_data::Array<sol_data::Address>,
+            sol_data::Bool,
+        );
+        let input = V2Tuple::abi_encode_params(&(Address::ZERO, U256::from(1u64), U256::ZERO, vec![weth()], true));
+        use IUniversalRouter::execute_0Call;
+        let calldata = execute_0Call {
+            commands: Bytes::from(vec![0x08]),
+            inputs: vec![input.into()],
+        }
+        .abi_encode();
+        let err = decode_pending_many(UNIVERSAL_ROUTER_V2, &calldata).unwrap_err();
+        assert!(matches!(err, DecodeError::EmptyPath));
+    }
+
+    // ════════════════════════════════════════════════════════════════════
+    // Coverage push: Bancor zero amounts
+    // ════════════════════════════════════════════════════════════════════
+
+    #[test]
+    fn decode_bancor_zero_amounts() {
+        let bancor = address!("eEF417e1D5CC832e619ae18D2F140De2999dD4fB");
+        let calldata = IBancorNetwork::tradeBySourceAmountCall {
+            sourceToken: weth(),
+            targetToken: usdc(),
+            sourceAmount: U256::ZERO,
+            minReturnAmount: U256::ZERO,
+            deadline: U256::ZERO,
+            beneficiary: Address::ZERO,
+        }
+        .abi_encode();
+        let swap = decode_pending(bancor, &calldata).expect("decode");
+        assert_eq!(swap.protocol, Protocol::BancorV3);
+        assert_eq!(swap.amount_in, U256::ZERO);
+    }
+
+    // ════════════════════════════════════════════════════════════════════
+    // Coverage push: DecodeError Display / Clone
+    // ════════════════════════════════════════════════════════════════════
+
+    #[test]
+    fn decode_error_display_messages() {
+        let e1 = DecodeError::TooShort;
+        assert!(format!("{e1}").contains("too short"));
+
+        let e2 = DecodeError::UnknownSelector { selector: [0xab, 0xcd, 0xef, 0x01] };
+        assert!(format!("{e2}").contains("unknown selector"));
+
+        let e3 = DecodeError::AbiDecode("test error".into());
+        assert!(format!("{e3}").contains("ABI decode failed"));
+
+        let e4 = DecodeError::EmptyPath;
+        assert!(format!("{e4}").contains("empty or malformed"));
+
+        let e5 = DecodeError::CurveUnsupported(Address::ZERO);
+        assert!(format!("{e5}").contains("not yet supported"));
+    }
+
+    #[test]
+    fn decode_error_clone() {
+        let e = DecodeError::UnknownSelector { selector: [0xaa, 0xbb, 0xcc, 0xdd] };
+        let e2 = e.clone();
+        match e2 {
+            DecodeError::UnknownSelector { selector } => assert_eq!(selector, [0xaa, 0xbb, 0xcc, 0xdd]),
+            _ => panic!("expected UnknownSelector"),
+        }
+    }
+
+    // ════════════════════════════════════════════════════════════════════
+    // Coverage push: Protocol + DecodedSwap Clone/Debug
+    // ════════════════════════════════════════════════════════════════════
+
+    #[test]
+    fn protocol_clone_and_debug() {
+        let p = Protocol::UniswapV2;
+        let p2 = p;
+        assert_eq!(p, p2);
+        assert_ne!(Protocol::UniswapV2, Protocol::UniswapV3);
+        let _ = format!("{:?}", Protocol::UniswapV3);
+        let _ = format!("{:?}", Protocol::SushiSwap);
+        let _ = format!("{:?}", Protocol::BalancerV2);
+        let _ = format!("{:?}", Protocol::Curve);
+        let _ = format!("{:?}", Protocol::BancorV3);
+        let _ = format!("{:?}", Protocol::OneInchV6);
+    }
+
+    #[test]
+    fn decoded_swap_clone() {
+        let calldata = build_exact_input_single(weth(), usdc(), U256::from(100u64), Address::ZERO);
+        let swap = decode_pending(univ3_router(), &calldata).expect("decode");
+        let swap2 = swap.clone();
+        assert_eq!(swap.amount_in, swap2.amount_in);
+        assert_eq!(swap.token_in, swap2.token_in);
+    }
+
+    // ════════════════════════════════════════════════════════════════════
+    // Coverage push: pool_word_for_test
+    // ════════════════════════════════════════════════════════════════════
+
+    #[test]
+    fn pool_word_for_test_roundtrip() {
+        let pool = address!("88e6A0c2dDD26FEEb64F039a2c41296FcB3f5640");
+        let encoded = pool_word_for_test(pool, true);
+        let (got_pool, got_flag) = pool_zero_for_one(encoded);
+        assert_eq!(got_pool, pool);
+        assert!(got_flag);
+
+        let encoded2 = pool_word_for_test(pool, false);
+        let (got_pool2, got_flag2) = pool_zero_for_one(encoded2);
+        assert_eq!(got_pool2, pool);
+        assert!(!got_flag2);
+    }
+
+    fn addr_to_u256(addr: Address) -> U256 {
+        let mut be = [0u8; 32];
+        be[12..32].copy_from_slice(addr.as_slice());
+        U256::from_be_bytes(be)
+    }
+
+    // ════════════════════════════════════════════════════════════════════
+    // Coverage push: Bancor tradeByTargetAmount edge case
+    // ════════════════════════════════════════════════════════════════════
+
+    #[test]
+    fn decode_bancor_trade_by_target_amount_zero_amounts() {
+        let bancor = address!("eEF417e1D5CC832e619ae18D2F140De2999dD4fB");
+        let calldata = IBancorNetwork::tradeByTargetAmountCall {
+            sourceToken: weth(),
+            targetToken: usdc(),
+            targetAmount: U256::ZERO,
+            maxSourceAmount: U256::ZERO,
+            deadline: U256::ZERO,
+            beneficiary: Address::ZERO,
+        }
+        .abi_encode();
+        let swap = decode_pending(bancor, &calldata).expect("decode");
+        assert_eq!(swap.protocol, Protocol::BancorV3);
+    }
+
+    // ════════════════════════════════════════════════════════════════════
+    // Coverage push: UR V3 exact-in multi-hop
+    // ════════════════════════════════════════════════════════════════════
+
+    #[test]
+    fn decode_ur_v3_exact_in_multihop() {
+        use IUniversalRouter::execute_0Call;
+        let path = pack_v3_path(weth(), 3000, usdc());
+        let input = encode_v3_exact_in_input(
+            Address::ZERO,
+            U256::from(100u64),
+            U256::from(10u64),
+            &path,
+            true,
+        );
+        let calldata = execute_0Call {
+            commands: Bytes::from(vec![0x00]),
+            inputs: vec![input.into()],
+        }
+        .abi_encode();
+        let swaps = decode_pending_many(UNIVERSAL_ROUTER_V2, &calldata).expect("decode");
+        assert_eq!(swaps.len(), 1);
+        assert_eq!(swaps[0].protocol, Protocol::UniswapV3);
+    }
+
+    // ════════════════════════════════════════════════════════════════════
+    // Coverage push: V3 exact-output 3hop no-deadline
+    // ════════════════════════════════════════════════════════════════════
+
+    #[test]
+    fn decode_v3_exact_output_3hop_no_deadline() {
+        use IUniswapV3Router::{exactOutput_1Call, ExactOutputParams02};
+        let mut path = pack_v3_path(usdc(), 3000, weth());
+        path.extend_from_slice(weth().as_slice());
+        path.push(0x00);
+        path.push(0x01);
+        path.push(0xf4);
+        path.extend_from_slice(dai().as_slice());
+        let params = ExactOutputParams02 {
+            path: path.into(),
+            recipient: Address::ZERO,
+            amountOut: U256::from(100u64),
+            amountInMaximum: U256::from(1_000u64),
+        };
+        let calldata = exactOutput_1Call { params }.abi_encode();
+        let swap = decode_pending(univ3_router(), &calldata).expect("decode");
+        assert_eq!(swap.protocol, Protocol::UniswapV3);
+        assert_eq!(swap.amount_in, U256::from(100u64));
+        assert_eq!(swap.amount_out_min, U256::from(1_000u64));
+        assert_eq!(swap.fee_bps, 3000);
     }
 }

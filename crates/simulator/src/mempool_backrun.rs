@@ -1330,4 +1330,377 @@ mod tests {
         assert!(!result.accepted);
         assert_eq!(result.reject, Some(RejectReason::NegativeAfterGas));
     }
+
+    #[test]
+    fn v2_amount_out_basic() {
+        let amount_in = U256::from(1_000_000_000_000_000_000u128);
+        let reserve_in = U256::from(100u128 * 10u128.pow(18));
+        let reserve_out = U256::from(200_000u128 * 10u128.pow(6));
+        let result = v2_amount_out(amount_in, reserve_in, reserve_out);
+        assert!(result > U256::ZERO);
+        assert!(result < reserve_out);
+    }
+
+    #[test]
+    fn v2_amount_out_zero_input() {
+        let result = v2_amount_out(U256::ZERO, U256::from(100u64), U256::from(200u64));
+        assert_eq!(result, U256::ZERO);
+    }
+
+    #[test]
+    fn v2_amount_out_symmetric() {
+        let reserves = U256::from(1000u128 * 10u128.pow(18));
+        let amount_in = U256::from(1u128 * 10u128.pow(18));
+        let result = v2_amount_out(amount_in, reserves, reserves);
+        assert!(result > U256::ZERO);
+        assert!(result < amount_in);
+    }
+
+    #[test]
+    fn v2_swap_calldata_encodes_correctly() {
+        let amount0_out = U256::from(1000u64);
+        let amount1_out = U256::from(0u64);
+        let to = address!("1111111111111111111111111111111111111111");
+        let data = v2_swap_calldata(amount0_out, amount1_out, to);
+        assert!(data.len() >= 4);
+    }
+
+    #[test]
+    fn v2_swap_calldata_with_both_amounts() {
+        let data = v2_swap_calldata(
+            U256::from(500u64),
+            U256::from(300u64),
+            address!("2222222222222222222222222222222222222222"),
+        );
+        assert!(data.len() >= 4);
+    }
+
+    #[test]
+    fn build_roundtrip_calldata_produces_valid_abi() {
+        let flashloan_weth = U256::from(1_000_000_000_000_000_000u128);
+        let uni_r0 = U256::from(200_000u128 * 10u128.pow(6));
+        let uni_r1 = U256::from(100u128 * 10u128.pow(18));
+        let sushi_r0 = U256::from(200_000u128 * 10u128.pow(6));
+        let sushi_r1 = U256::from(100u128 * 10u128.pow(18));
+        let deadline = U256::from(u64::MAX);
+        let calldata = build_roundtrip_calldata(
+            ARB_TO, flashloan_weth, uni_r0, uni_r1, sushi_r0, sushi_r1, deadline,
+        );
+        assert!(calldata.len() > 4);
+    }
+
+    #[test]
+    fn build_roundtrip_calldata_different_reserves() {
+        let flashloan = U256::from(500_000_000_000_000_000u128);
+        let uni_r0 = U256::from(500_000u128 * 10u128.pow(6));
+        let uni_r1 = U256::from(250u128 * 10u128.pow(18));
+        let sushi_r0 = U256::from(300_000u128 * 10u128.pow(6));
+        let sushi_r1 = U256::from(150u128 * 10u128.pow(18));
+        let deadline = U256::from(1_000_000u64);
+        let calldata = build_roundtrip_calldata(
+            ARB_TO, flashloan, uni_r0, uni_r1, sushi_r0, sushi_r1, deadline,
+        );
+        assert!(!calldata.is_empty());
+    }
+
+    #[test]
+    fn resolve_rpc_url_with_env_var() {
+        let old = std::env::var("ETH_RPC_URL").ok();
+        std::env::set_var("ETH_RPC_URL", "https://test.example.com/rpc");
+        let url = resolve_rpc_url();
+        assert_eq!(url, Some("https://test.example.com/rpc".to_string()));
+        match old {
+            Some(v) => std::env::set_var("ETH_RPC_URL", v),
+            None => std::env::remove_var("ETH_RPC_URL"),
+        }
+    }
+
+    #[test]
+    fn resolve_rpc_url_empty_env_falls_through() {
+        let old = std::env::var("ETH_RPC_URL").ok();
+        std::env::set_var("ETH_RPC_URL", "");
+        let _ = resolve_rpc_url();
+        match old {
+            Some(v) => std::env::set_var("ETH_RPC_URL", v),
+            None => std::env::remove_var("ETH_RPC_URL"),
+        }
+    }
+
+    #[test]
+    fn resolve_rpc_url_env_with_placeholder() {
+        let old = std::env::var("ETH_RPC_URL").ok();
+        std::env::set_var("ETH_RPC_URL", "https://${ALCHEMY_API_KEY}.example.com");
+        let _ = resolve_rpc_url();
+        match old {
+            Some(v) => std::env::set_var("ETH_RPC_URL", v),
+            None => std::env::remove_var("ETH_RPC_URL"),
+        }
+    }
+
+    #[test]
+    fn resolve_rpc_url_existing_env_restores() {
+        std::env::set_var("ETH_RPC_URL", "old_value");
+        let url = resolve_rpc_url();
+        assert_eq!(url, Some("old_value".to_string()));
+        std::env::set_var("ETH_RPC_URL", "old_value");
+    }
+
+    #[test]
+    fn resolve_rpc_url_no_env_no_dotenv() {
+        let old = std::env::var("ETH_RPC_URL").ok();
+        std::env::remove_var("ETH_RPC_URL");
+        let _ = resolve_rpc_url();
+        match old {
+            Some(v) => std::env::set_var("ETH_RPC_URL", v),
+            None => {}
+        }
+    }
+
+    #[test]
+    fn load_executor_bytecode_when_artifact_missing() {
+        let result = load_executor_bytecode(false);
+        if result.is_some() {
+            let bytes = result.unwrap();
+            assert!(!bytes.is_empty());
+        }
+    }
+
+    #[test]
+    fn load_executor_bytecode_splice_mode() {
+        let result = load_executor_bytecode(true);
+        if result.is_some() {
+            let bytes = result.unwrap();
+            assert!(!bytes.is_empty());
+        }
+    }
+
+    #[test]
+    fn classify_transaction_error_is_sim_error() {
+        let err: EVMError<String> = EVMError::Transaction(revm::context::result::InvalidTransaction::GasPriceLessThanBasefee);
+        assert_eq!(classify_transact_err(&err), RejectReason::SimError);
+    }
+
+    #[test]
+    fn classify_header_error_is_sim_error() {
+        let err: EVMError<String> = EVMError::Header(revm::context::result::InvalidHeader::PrevrandaoNotSet);
+        assert_eq!(classify_transact_err(&err), RejectReason::SimError);
+    }
+
+    #[test]
+    fn decode_revert_panic_0x22() {
+        let mut payload = vec![0x4e, 0x48, 0x7b, 0x71];
+        payload.extend_from_slice(&U256::from(0x22u64).to_be_bytes::<32>());
+        let reason = decode_revert_reason(&payload);
+        assert!(reason.contains("storage byte array bad encoding"));
+    }
+
+    #[test]
+    fn decode_revert_error_string_body_shorter_than_64() {
+        let mut payload = vec![0x08, 0xc3, 0x79, 0xa0];
+        payload.extend_from_slice(&[0u8; 10]);
+        let reason = decode_revert_reason(&payload);
+        assert_eq!(reason, "Error(<malformed>)");
+    }
+
+    #[test]
+    fn decode_revert_error_string_zero_length_body() {
+        let mut payload = vec![0x08, 0xc3, 0x79, 0xa0];
+        payload.extend_from_slice(&[0u8; 32]);
+        payload.extend_from_slice(&U256::ZERO.to_be_bytes::<32>());
+        payload.extend_from_slice(&[0u8; 32]);
+        let reason = decode_revert_reason(&payload);
+        assert_eq!(reason, "Error(<malformed>)");
+    }
+
+    #[test]
+    fn victim_revert_produces_correct_result() {
+        let mut state = ForkedState::new_empty(18_000_000, 1_700_000_000, 0);
+        state.insert_account(VICTIM_TO, U256::ZERO, vec![0x60, 0x00, 0x60, 0x00, 0xfd].into());
+        let result = validate_backrun_cache(state, &default_victim(), &default_arb(), &default_params());
+        assert!(!result.accepted);
+        assert_eq!(result.reject, Some(RejectReason::VictimReverted));
+        assert_eq!(result.arb_gas_used, 0);
+        assert!(result.victim_gas_used > 0);
+        assert_eq!(result.revert_selector, Some([0, 0, 0, 0]));
+    }
+
+    #[test]
+    fn victim_revert_with_error_data_sets_selector() {
+        let mut state = ForkedState::new_empty(18_000_000, 1_700_000_000, 0);
+        let revert_bytecode: Vec<u8> = vec![
+            0x63, 0x08, 0xc3, 0x79, 0xa0,
+            0x60, 0x00,
+            0x52,
+            0x60, 0x04,
+            0x60, 0x1c,
+            0xfd,
+        ];
+        state.insert_account(VICTIM_TO, U256::ZERO, revert_bytecode.into());
+        let result = validate_backrun_cache(state, &default_victim(), &default_arb(), &default_params());
+        assert!(!result.accepted);
+        assert_eq!(result.reject, Some(RejectReason::VictimReverted));
+        assert_eq!(result.revert_selector, Some([0x08, 0xc3, 0x79, 0xa0]));
+    }
+
+    #[test]
+    fn arb_revert_with_error_data_sets_selector() {
+        let mut state = ForkedState::new_empty(18_000_000, 1_700_000_000, 0);
+        let revert_bytecode: Vec<u8> = vec![
+            0x63, 0x08, 0xc3, 0x79, 0xa0,
+            0x60, 0x00,
+            0x52,
+            0x60, 0x04,
+            0x60, 0x1c,
+            0xfd,
+        ];
+        state.insert_account(ARB_TO, U256::ZERO, revert_bytecode.into());
+        let result = validate_backrun_cache(state, &default_victim(), &default_arb(), &default_params());
+        assert!(!result.accepted);
+        assert_eq!(result.reject, Some(RejectReason::ArbReverted));
+        assert_eq!(result.revert_selector, Some([0x08, 0xc3, 0x79, 0xa0]));
+    }
+
+    #[test]
+    fn arb_accepted_with_profit_via_mock_weth() {
+        let profit_recipient = RECIPIENT;
+        let balance_slot = U256::from(3u64);
+        let profit_value = U256::from(10u128.pow(20));
+
+        let mut key_input = [0u8; 64];
+        key_input[12..32].copy_from_slice(profit_recipient.as_slice());
+        key_input[32..64].copy_from_slice(&balance_slot.to_be_bytes::<32>());
+        let storage_key = U256::from_be_slice(alloy::primitives::keccak256(key_input).as_slice());
+
+        let mock_weth_code = {
+            let mut code = Vec::new();
+            code.push(0x7f);
+            code.extend_from_slice(&profit_value.to_be_bytes::<32>());
+            code.push(0x7f);
+            code.extend_from_slice(&storage_key.to_be_bytes::<32>());
+            code.push(0x55);
+            code.push(0x60);
+            code.push(0x00);
+            code.push(0x60);
+            code.push(0x00);
+            code.push(0xf3);
+            code
+        };
+
+        let arb_code = {
+            let mut code = Vec::new();
+            code.push(0x60); code.push(0x00);
+            code.push(0x60); code.push(0x00);
+            code.push(0x60); code.push(0x00);
+            code.push(0x60); code.push(0x00);
+            code.push(0x60); code.push(0x00);
+            code.push(0x73);
+            code.extend_from_slice(WETH.as_slice());
+            code.push(0x61); code.push(0x60); code.push(0x00);
+            code.push(0xf1);
+            code.push(0x50);
+            code.push(0x00);
+            code
+        };
+
+        let mut state = ForkedState::new_empty(18_000_000, 1_700_000_000, 0);
+        state.insert_account(WETH, U256::ZERO, mock_weth_code.into());
+        state.insert_account(ARB_TO, U256::ZERO, arb_code.into());
+
+        let mut params = default_params();
+        params.base_fee = 1;
+        params.skip_victim_with_overrides = Some(vec![]);
+
+        let victim = VictimTx {
+            from: VICTIM_FROM,
+            to: VICTIM_TO,
+            value: U256::ZERO,
+            data: vec![],
+            gas_price: 0,
+            gas_limit: 21_000,
+        };
+
+        let arb = ArbTx {
+            caller: ARB_CALLER,
+            to: ARB_TO,
+            data: vec![],
+            gas_limit: 200_000,
+        };
+
+        let result = validate_backrun_cache(state, &victim, &arb, &params);
+        assert!(result.accepted, "arb should be accepted with profit, got: {:?}", result.reject);
+        assert!(result.gross_profit_wei > U256::ZERO);
+        assert!(result.arb_gas_used > 0);
+        assert!(result.reject.is_none());
+        assert!(result.revert_selector.is_none());
+    }
+
+    #[test]
+    fn arb_profit_exactly_covers_gas_is_rejected() {
+        let profit_recipient = RECIPIENT;
+        let balance_slot = U256::from(3u64);
+
+        let mut key_input = [0u8; 64];
+        key_input[12..32].copy_from_slice(profit_recipient.as_slice());
+        key_input[32..64].copy_from_slice(&balance_slot.to_be_bytes::<32>());
+        let storage_key = U256::from_be_slice(alloy::primitives::keccak256(key_input).as_slice());
+
+        let profit_value = U256::from(1u64);
+
+        let mock_weth_code = {
+            let mut code = Vec::new();
+            code.push(0x7f);
+            code.extend_from_slice(&profit_value.to_be_bytes::<32>());
+            code.push(0x7f);
+            code.extend_from_slice(&storage_key.to_be_bytes::<32>());
+            code.push(0x55);
+            code.push(0x60); code.push(0x00);
+            code.push(0x60); code.push(0x00);
+            code.push(0xf3);
+            code
+        };
+
+        let arb_code = {
+            let mut code = Vec::new();
+            code.push(0x60); code.push(0x00);
+            code.push(0x60); code.push(0x00);
+            code.push(0x60); code.push(0x00);
+            code.push(0x60); code.push(0x00);
+            code.push(0x60); code.push(0x00);
+            code.push(0x73);
+            code.extend_from_slice(WETH.as_slice());
+            code.push(0x61); code.push(0x60); code.push(0x00);
+            code.push(0xf1);
+            code.push(0x50);
+            code.push(0x00);
+            code
+        };
+
+        let mut state = ForkedState::new_empty(18_000_000, 1_700_000_000, 0);
+        state.insert_account(WETH, U256::ZERO, mock_weth_code.into());
+        state.insert_account(ARB_TO, U256::ZERO, arb_code.into());
+
+        let mut params = default_params();
+        params.base_fee = 10_000_000_000;
+        params.skip_victim_with_overrides = Some(vec![]);
+
+        let victim = VictimTx {
+            from: VICTIM_FROM,
+            to: VICTIM_TO,
+            value: U256::ZERO,
+            data: vec![],
+            gas_price: 0,
+            gas_limit: 21_000,
+        };
+
+        let arb = ArbTx {
+            caller: ARB_CALLER,
+            to: ARB_TO,
+            data: vec![],
+            gas_limit: 200_000,
+        };
+
+        let result = validate_backrun_cache(state, &victim, &arb, &params);
+        assert!(!result.accepted, "tiny profit should not cover high gas cost");
+        assert_eq!(result.reject, Some(RejectReason::NegativeAfterGas));
+    }
 }
