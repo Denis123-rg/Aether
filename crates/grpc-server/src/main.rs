@@ -1412,7 +1412,8 @@ mod tests {
 
     #[test]
     fn build_backrun_validator_config_with_provider() {
-        use alloy::providers::ProviderBuilder;
+        use alloy::providers::{Provider, ProviderBuilder};
+        use alloy_node_bindings::Anvil;
         std::env::set_var("AETHER_EXECUTOR_ADDRESS", "0x1111111111111111111111111111111111111111");
         std::env::remove_var("AETHER_SEARCHER_CALLER");
         std::env::remove_var("AETHER_PROFIT_TOKEN");
@@ -1420,7 +1421,8 @@ mod tests {
         let rt = tokio::runtime::Runtime::new().unwrap();
         let provider: alloy::providers::DynProvider<alloy::network::Ethereum> =
             rt.block_on(async {
-                ProviderBuilder::new().on_anvil()
+                let anvil = Anvil::new().spawn();
+                ProviderBuilder::new().connect_http(anvil.endpoint_url())
             }).erased();
         let config = build_backrun_validator_config(Some(provider));
         assert!(config.is_some());

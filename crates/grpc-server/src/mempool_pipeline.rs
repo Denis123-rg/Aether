@@ -5185,7 +5185,7 @@ mod tests {
 
     #[test]
     fn saturating_u256_to_i128_large_clamps() {
-        let big = U256::from(u128::MAX) * 2;
+        let big = U256::from(u128::MAX).checked_mul(U256::from(2)).unwrap();
         assert_eq!(saturating_u256_to_i128(big), i128::MAX);
     }
 
@@ -5286,14 +5286,14 @@ mod tests {
         let outcome = optimize_cycle_input(
             &steps, &pool_states, Address::ZERO, weth, 0.0, 0.0, 20.0, U256::ZERO,
         );
-        assert!(matches!(outcome, SizingOutcome::Optimized { .. } | SizingOutcome::BelowMinProfit));
+        assert!(matches!(outcome, SizingOutcome::Sized { .. } | SizingOutcome::BelowMinProfit));
     }
 
     #[test]
     fn poolstate_quote_balancer_v3() {
         let weth = address!("C02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2");
         let usdc = address!("A0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48");
-        let ps = PoolState::BalancerV3(aether_pools::balancer::BalancerV3Pool::new(
+        let ps = PoolState::BalancerV3(aether_pools::balancer_v3::BalancerV3Pool::new(
             Address::repeat_byte(0x44), weth, usdc, 500_000, 500_000, 10,
         ));
         let _ = poolstate_quote(&ps, weth, U256::from(1_000_000_000_000_000_000u128));
@@ -5341,6 +5341,6 @@ mod tests {
         let outcome = optimize_cycle_input(
             &steps, &pool_states, pool_addr, weth, 1_000_000.0, 2_000_000_000_000.0, 20.0, U256::ZERO,
         );
-        assert!(matches!(outcome, SizingOutcome::Optimized { .. } | SizingOutcome::BelowMinProfit));
+        assert!(matches!(outcome, SizingOutcome::Sized { .. } | SizingOutcome::BelowMinProfit));
     }
 }

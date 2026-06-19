@@ -65,3 +65,4 @@ tokio = { workspace = true }
 url = "2"
 futures = "0.3"
 aether-simulator = { path = "../simulator" }
+alloy-node-bindings = "0.8"

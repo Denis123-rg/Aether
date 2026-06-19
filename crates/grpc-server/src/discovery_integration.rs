@@ -356,9 +356,6 @@ mod tests {
 
     #[tokio::test]
     async fn maybe_start_discovery_disabled_config() {
-        use aether_common::types::ProtocolType;
-        use alloy::primitives::address;
-
         let tmp = tempfile::NamedTempFile::new().unwrap();
         std::fs::write(
             tmp.path(),
@@ -450,7 +447,6 @@ update_interval_secs = 5
 
     #[test]
     fn discovery_runtime_field_accessibility() {
-        use alloy::primitives::address;
         let registry = prometheus::Registry::new();
         let metrics = aether_state::hot_cache::HotCacheMetrics::register(&registry);
         let cache = std::sync::Arc::new(aether_state::hot_cache::HotCache::new(metrics));
@@ -487,20 +483,19 @@ update_interval_secs = 5
         use aether_state::hot_cache::HotCacheDiff;
         use alloy::primitives::address;
 
-        let pools: Vec<_> = (0..5)
-            .map(|i| aether_discovery::types::PoolInfo {
-                address: address!(&format!("0x{:040x}", i)),
-                token0: address!("A0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"),
-                token1: address!("C02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2"),
-                protocol: ProtocolType::UniswapV2,
-                fee_bps: 30,
-                score: 0.5 + i as f64 * 0.1,
-                tvl_usd: 1000.0,
-                volume_24h_usd: 100.0,
-                slippage_estimate: 0.01,
-                discovered_at: i as u64,
-            })
-            .collect();
+   let pools: Vec<_> = (0..5)
+      .map(|i| aether_discovery::types::PoolInfo {
+        address: format!("0x{:040x}", i).parse().unwrap(),
+        token0: address!("A0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"),
+        token1: address!("C02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2"),
+        protocol: ProtocolType::UniswapV2,
+        fee_bps: 30,
+        score: 0.5 + i as f64 * 0.1,
+        tvl_usd: 1000.0,
+        volume_24h_usd: 100.0,
+        slippage_estimate: 0.01,
+        discovered_at: i as u64,
+    })            .collect();
         let diff = HotCacheDiff::compute(&std::collections::HashSet::new(), pools.clone());
         assert_eq!(diff.added, 5);
         assert_eq!(diff.added_pools.len(), 5);

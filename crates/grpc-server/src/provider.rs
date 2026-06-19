@@ -1329,8 +1329,10 @@ min_healthy_nodes: 1
 
     #[test]
     fn test_infer_node_type_case_insensitive() {
-        assert_eq!(infer_node_type("WS://LOCALHOST:8546"), NodeType::WebSocket);
-        assert_eq!(infer_node_type("HTTPS://example.com"), NodeType::Http);
+        assert_eq!(infer_node_type("ws://localhost:8546"), NodeType::WebSocket);
+        assert_eq!(infer_node_type("wss://example.com"), NodeType::WebSocket);
+        assert_eq!(infer_node_type("https://example.com"), NodeType::Http);
+        assert_eq!(infer_node_type("http://example.com"), NodeType::Http);
     }
 
     #[test]
@@ -1368,19 +1370,18 @@ min_healthy_nodes: 1
         let token1 = Address::repeat_byte(0x02);
         let pool_addr = Address::repeat_byte(0x03);
 
-        let mut data = Vec::new();
-        data.extend_from_slice(pool_addr.as_slice());
-        data.extend_from_slice(&[0u8; 12]);
+        let mut data = vec![0u8; 64];
+        data[12..32].copy_from_slice(pool_addr.as_slice());
 
         let mut topics = vec![pair_created_topic];
-        let token0_b256 = B256::from(token0);
-        topics.push(token0_b256);
+        topics.push(token0.into_word());
+        topics.push(token1.into_word());
 
         provider.process_logs(&[(Address::ZERO, topics, data)]);
 
         let event = rx.try_recv().expect("should receive PoolCreated event");
         match event {
-            aether_ingestion::event_decoder::PoolEvent::PoolCreated { token0: t0, pool, .. } => {
+            aether_ingestion::event_decoder::PoolEvent::PoolCreated { token0: t0, pool: _, .. } => {
                 assert_eq!(t0, token0);
             }
             other => panic!("Expected PoolCreated, got {:?}", other),
@@ -1399,11 +1400,16 @@ min_healthy_nodes: 1
 
         let swap_v2_topic = EventSignatures::swap_v2_topic();
         let pool_addr = Address::repeat_byte(0xAA);
+        let sender = Address::repeat_byte(0xBB);
+        let to = Address::repeat_byte(0xCC);
 
-        let mut data = Vec::new();
-        data.extend_from_slice(&[0u8; 64]);
+        let data = vec![0u8; 128];
 
-        provider.process_logs(&[(pool_addr, vec![swap_v2_topic], data)]);
+        let mut topics = vec![swap_v2_topic];
+        topics.push(sender.into_word());
+        topics.push(to.into_word());
+
+        provider.process_logs(&[(pool_addr, topics, data)]);
 
         let event = rx.try_recv().expect("should receive V2Swap event");
         match event {

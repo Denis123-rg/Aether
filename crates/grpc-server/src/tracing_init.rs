@@ -8,6 +8,7 @@ use opentelemetry_sdk::{
 use opentelemetry_semantic_conventions::resource::{SERVICE_NAME, SERVICE_VERSION};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
 
+#[derive(Debug)]
 pub struct TracingGuard {
     otel_installed: bool,
 }
