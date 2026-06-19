@@ -3059,4 +3059,642 @@ mod tests {
         assert!(!args.no_optimizer);
         assert!(!args.sim_on_chain);
     }
+
+    #[test]
+    fn args_parse_defaults() {
+        let args = Args::try_parse_from(["aether-replay"]).unwrap();
+        assert_eq!(args.block, 0);
+        assert_eq!(args.max_hops, 4);
+        assert_eq!(args.max_time_us, 5_000_000);
+        assert_eq!(args.top, 5);
+        assert_eq!(args.anvil_port, 8546);
+        assert_eq!(args.tip_bps, 9000);
+        assert_eq!(args.sim_input_weth, 1.0);
+        assert!(!args.no_seed_state);
+        assert!(!args.full_block);
+        assert!(!args.anvil_attach);
+        assert!(!args.sim_on_chain);
+        assert!(!args.no_optimizer);
+        assert!(args.rpc_url.is_none());
+        assert!(args.pools.is_none());
+        assert!(args.blocks_file.is_none());
+        assert!(args.csv.is_none());
+    }
+
+    #[test]
+    fn args_parse_with_block() {
+        let args = Args::try_parse_from(["aether-replay", "--block", "19500123"]).unwrap();
+        assert_eq!(args.block, 19500123);
+    }
+
+    #[test]
+    fn args_parse_with_all_options() {
+        let args = Args::try_parse_from([
+            "aether-replay",
+            "--block", "100",
+            "--max-hops", "3",
+            "--max-time-us", "1000000",
+            "--top", "10",
+            "--full-block",
+            "--anvil-port", "9999",
+            "--anvil-attach",
+            "--no-seed-state",
+            "--sim-on-chain",
+            "--no-optimizer",
+            "--tip-bps", "5000",
+            "--sim-input-weth", "2.5",
+            "--rpc-url", "http://localhost:8545",
+            "--pools", "/tmp/pools.toml",
+            "--csv", "/tmp/out.csv",
+            "--executor-artifact", "/tmp/exec.json",
+        ]).unwrap();
+        assert_eq!(args.block, 100);
+        assert_eq!(args.max_hops, 3);
+        assert_eq!(args.max_time_us, 1_000_000);
+        assert_eq!(args.top, 10);
+        assert!(args.full_block);
+        assert_eq!(args.anvil_port, 9999);
+        assert!(args.anvil_attach);
+        assert!(args.no_seed_state);
+        assert!(args.sim_on_chain);
+        assert!(args.no_optimizer);
+        assert_eq!(args.tip_bps, 5000);
+        assert!((args.sim_input_weth - 2.5).abs() < f64::EPSILON);
+        assert_eq!(args.rpc_url.as_deref(), Some("http://localhost:8545"));
+        assert_eq!(args.pools.as_deref(), Some(std::path::Path::new("/tmp/pools.toml")));
+        assert_eq!(args.csv.as_deref(), Some(std::path::Path::new("/tmp/out.csv")));
+        assert_eq!(args.executor_artifact, PathBuf::from("/tmp/exec.json"));
+    }
+
+    #[test]
+    fn args_parse_blocks_file() {
+        let args = Args::try_parse_from([
+            "aether-replay",
+            "--blocks-file", "/tmp/blocks.txt",
+        ]).unwrap();
+        assert!(args.blocks_file.is_some());
+        assert_eq!(args.blocks_file.unwrap(), PathBuf::from("/tmp/blocks.txt"));
+    }
+
+    #[test]
+    fn args_parse_invalid_block() {
+        let result = Args::try_parse_from(["aether-replay", "--block", "not_a_number"]);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn args_parse_invalid_port() {
+        let result = Args::try_parse_from(["aether-replay", "--anvil-port", "99999"]);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn args_clone() {
+        let args = Args::try_parse_from([
+            "aether-replay",
+            "--block", "42",
+            "--max-hops", "2",
+            "--full-block",
+        ]).unwrap();
+        let cloned = args.clone();
+        assert_eq!(cloned.block, 42);
+        assert_eq!(cloned.max_hops, 2);
+        assert!(cloned.full_block);
+    }
+
+    #[test]
+    fn spawn_anvil_returns_error_when_anvil_missing() {
+        let result = spawn_anvil("http://127.0.0.1:8545", 100, 8546);
+        match result {
+            Ok(_) => {
+            }
+            Err(e) => {
+                let msg = e.to_string();
+                assert!(msg.contains("anvil") || msg.contains("spawn") || msg.contains("No such file"));
+            }
+        }
+    }
+
+    #[test]
+    fn optimize_cycle_input_short_path_returns_none() {
+        let (token_index, [ta, _tb, _tc]) = make_token_index_profit();
+        let graph = PriceGraph::new(token_index.len());
+        let pools: Vec<LoadedPool> = vec![];
+        let states = std::collections::HashMap::new();
+        let cycle = DetectedCycle { path: vec![ta], total_weight: 0.0 };
+        assert!(optimize_cycle_input(&cycle, &graph, &token_index, &pools, &states, 30_000_000_000).is_none());
+    }
+
+    #[test]
+    fn optimize_cycle_input_with_v2_reserves() {
+        let (token_index, [ta, tb, _tc]) = make_token_index_profit();
+        let a = *token_index.get_address(ta).unwrap();
+        let b = *token_index.get_address(tb).unwrap();
+        let pool = LoadedPool {
+            address: address!("B4e16d0168e52d35CaCD2c6185b44281Ec28C9Dc"),
+            token0: a.min(b),
+            token1: a.max(b),
+            protocol: ProtocolType::UniswapV2,
+            fee_bps: 30,
+        };
+        let pools = vec![pool];
+
+        let mut graph = PriceGraph::new(token_index.len());
+        graph.resize(token_index.len());
+        let pid = PoolId { address: pools[0].address, protocol: pools[0].protocol };
+        graph.add_edge(ta, tb, 0.5, pid, pools[0].address, pools[0].protocol, U256::ZERO);
+        graph.add_edge(tb, ta, 0.5, pid, pools[0].address, pools[0].protocol, U256::ZERO);
+
+        let mut states = std::collections::HashMap::new();
+        let r = U256::from(1_000_000_000_000_000_000_000u128);
+        states.insert(0, PoolState::V2 { r0: r, r1: r });
+
+        let cycle = DetectedCycle { path: vec![ta, tb, ta], total_weight: -0.05 };
+        let result = optimize_cycle_input(&cycle, &graph, &token_index, &pools, &states, 30_000_000_000);
+        assert!(result.is_some());
+        let opt = result.unwrap();
+        assert!(opt.optimal_input_wei > U256::ZERO);
+    }
+
+    #[test]
+    fn optimize_cycle_input_min_exceeds_max_uses_min() {
+        let (token_index, [ta, tb, _tc]) = make_token_index_profit();
+        let a = *token_index.get_address(ta).unwrap();
+        let b = *token_index.get_address(tb).unwrap();
+        let pool = LoadedPool {
+            address: address!("B4e16d0168e52d35CaCD2c6185b44281Ec28C9Dc"),
+            token0: a.min(b),
+            token1: a.max(b),
+            protocol: ProtocolType::UniswapV2,
+            fee_bps: 30,
+        };
+        let pools = vec![pool];
+
+        let mut graph = PriceGraph::new(token_index.len());
+        graph.resize(token_index.len());
+        let pid = PoolId { address: pools[0].address, protocol: pools[0].protocol };
+        graph.add_edge(ta, tb, 0.5, pid, pools[0].address, pools[0].protocol, U256::ZERO);
+
+        let mut states = std::collections::HashMap::new();
+        states.insert(0, PoolState::V2 {
+            r0: U256::from(100u64),
+            r1: U256::from(100u64),
+        });
+
+        let cycle = DetectedCycle { path: vec![ta, tb], total_weight: -0.5 };
+        let result = optimize_cycle_input(&cycle, &graph, &token_index, &pools, &states, 30_000_000_000);
+        assert!(result.is_some());
+        let opt = result.unwrap();
+        assert_eq!(opt.optimal_input_wei, U256::from(10_000_000_000_000_000u128));
+    }
+
+    #[test]
+    fn optimize_cycle_input_v3_state_uses_rate_fallback() {
+        let (token_index, [ta, tb, _tc]) = make_token_index_profit();
+        let a = *token_index.get_address(ta).unwrap();
+        let b = *token_index.get_address(tb).unwrap();
+        let pool = LoadedPool {
+            address: address!("88e6A0c2dDD26FEEb64F039a2c41296FcB3f5640"),
+            token0: a.min(b),
+            token1: a.max(b),
+            protocol: ProtocolType::UniswapV3,
+            fee_bps: 5,
+        };
+        let pools = vec![pool];
+
+        let mut graph = PriceGraph::new(token_index.len());
+        graph.resize(token_index.len());
+        let pid = PoolId { address: pools[0].address, protocol: pools[0].protocol };
+        graph.add_edge(ta, tb, 0.0, pid, pools[0].address, pools[0].protocol, U256::ZERO);
+        graph.add_edge(tb, ta, 0.0, pid, pools[0].address, pools[0].protocol, U256::ZERO);
+
+        let mut states = std::collections::HashMap::new();
+        states.insert(0, PoolState::V3 { sqrt_price_x96: U256::from(174_070_643_065_208_788_086_831u128), liquidity: 1_000_000 });
+
+        let cycle = DetectedCycle { path: vec![ta, tb, ta], total_weight: -0.05 };
+        let result = optimize_cycle_input(&cycle, &graph, &token_index, &pools, &states, 30_000_000_000);
+        assert!(result.is_some());
+    }
+
+    #[test]
+    fn optimize_cycle_input_missing_state_uses_rate_fallback() {
+        let (token_index, [ta, tb, _tc]) = make_token_index_profit();
+        let a = *token_index.get_address(ta).unwrap();
+        let b = *token_index.get_address(tb).unwrap();
+        let pool = LoadedPool {
+            address: address!("B4e16d0168e52d35CaCD2c6185b44281Ec28C9Dc"),
+            token0: a.min(b),
+            token1: a.max(b),
+            protocol: ProtocolType::UniswapV2,
+            fee_bps: 30,
+        };
+        let pools = vec![pool];
+
+        let mut graph = PriceGraph::new(token_index.len());
+        graph.resize(token_index.len());
+        let pid = PoolId { address: pools[0].address, protocol: pools[0].protocol };
+        graph.add_edge(ta, tb, 0.5, pid, pools[0].address, pools[0].protocol, U256::ZERO);
+        graph.add_edge(tb, ta, 0.5, pid, pools[0].address, pools[0].protocol, U256::ZERO);
+
+        let states = std::collections::HashMap::new();
+        let cycle = DetectedCycle { path: vec![ta, tb, ta], total_weight: -0.05 };
+        let result = optimize_cycle_input(&cycle, &graph, &token_index, &pools, &states, 30_000_000_000);
+        assert!(result.is_some());
+    }
+
+    fn build_test_rpc_tx_eip1559(
+        nonce: u64, gas_limit: u64, max_fee: u128, max_tip: u128,
+        to_addr: Address, value: U256, input: Vec<u8>,
+        access_list: alloy::rpc::types::AccessList,
+    ) -> alloy::rpc::types::Transaction {
+        use alloy::consensus::{TxEip1559, TxEnvelope, SignableTransaction};
+        use alloy::consensus::transaction::{Recovered, SignerRecoverable};
+        use alloy::signers::{local::PrivateKeySigner, SignerSync};
+
+        let signer: PrivateKeySigner = "0x4c0883a69102937d6231471b5dbb6204fe512961708279f2e3e8a5d4b8e3e3e3"
+            .parse()
+            .expect("valid key");
+        let tx = TxEip1559 {
+            chain_id: 1,
+            nonce,
+            gas_limit,
+            max_fee_per_gas: max_fee,
+            max_priority_fee_per_gas: max_tip,
+            to: alloy::primitives::TxKind::Call(to_addr),
+            value,
+            access_list,
+            input: input.into(),
+        };
+        let sig = signer.sign_hash_sync(&tx.signature_hash()).expect("sign");
+        let envelope: TxEnvelope = tx.into_signed(sig).into();
+        let from = envelope.recover_signer().expect("recover");
+        let recovered = Recovered::new_unchecked(envelope, from);
+        alloy::rpc::types::Transaction {
+            inner: recovered,
+            block_hash: None,
+            block_number: None,
+            transaction_index: None,
+            effective_gas_price: None,
+        }
+    }
+
+    fn build_test_rpc_tx_legacy(
+        chain_id: Option<u64>, nonce: u64, gas_price: u128, gas_limit: u64,
+        to_addr: Address, value: U256, input: Vec<u8>,
+    ) -> alloy::rpc::types::Transaction {
+        use alloy::consensus::{TxLegacy, TxEnvelope, SignableTransaction};
+        use alloy::consensus::transaction::{Recovered, SignerRecoverable};
+        use alloy::signers::{local::PrivateKeySigner, SignerSync};
+
+        let signer: PrivateKeySigner = "0x4c0883a69102937d6231471b5dbb6204fe512961708279f2e3e8a5d4b8e3e3e3"
+            .parse()
+            .expect("valid key");
+        let tx = TxLegacy {
+            chain_id,
+            nonce,
+            gas_price,
+            gas_limit,
+            to: alloy::primitives::TxKind::Call(to_addr),
+            value,
+            input: input.into(),
+        };
+        let sig = signer.sign_hash_sync(&tx.signature_hash()).expect("sign");
+        let envelope: TxEnvelope = tx.into_signed(sig).into();
+        let from = envelope.recover_signer().expect("recover");
+        let recovered = Recovered::new_unchecked(envelope, from);
+        alloy::rpc::types::Transaction {
+            inner: recovered,
+            block_hash: None,
+            block_number: None,
+            transaction_index: None,
+            effective_gas_price: None,
+        }
+    }
+
+    #[test]
+    fn build_impersonation_request_skips_blob_tx() {
+        use alloy::consensus::{TxEip4844, TxEnvelope, SignableTransaction};
+        use alloy::consensus::transaction::{Recovered, SignerRecoverable};
+        use alloy::signers::{local::PrivateKeySigner, SignerSync};
+        use alloy::primitives::B256;
+
+        let signer: PrivateKeySigner = "0x4c0883a69102937d6231471b5dbb6204fe512961708279f2e3e8a5d4b8e3e3e3"
+            .parse()
+            .expect("valid key");
+
+        let tx = TxEip4844 {
+            chain_id: 1,
+            nonce: 0,
+            gas_limit: 21_000,
+            max_fee_per_gas: 30_000_000_000,
+            max_priority_fee_per_gas: 1_000_000_000,
+            to: address!("7a250d5630B4cF539739dF2C5dAcb4c659F2488D"),
+            value: U256::ZERO,
+            access_list: Default::default(),
+            input: vec![].into(),
+            blob_versioned_hashes: vec![B256::ZERO],
+            max_fee_per_blob_gas: 1_000_000_000,
+        };
+        let sig = signer.sign_hash_sync(&tx.signature_hash()).expect("sign");
+        let envelope: TxEnvelope = tx.into_signed(sig).into();
+        let from = envelope.recover_signer().expect("recover");
+        let recovered = Recovered::new_unchecked(envelope, from);
+        let rpc_tx = alloy::rpc::types::Transaction {
+            inner: recovered,
+            block_hash: None,
+            block_number: None,
+            transaction_index: None,
+            effective_gas_price: None,
+        };
+
+        assert!(build_impersonation_request(&rpc_tx).is_none());
+    }
+
+    #[test]
+    fn build_impersonation_request_eip1559() {
+        let to_addr = address!("7a250d5630B4cF539739dF2C5dAcb4c659F2488D");
+        let rpc_tx = build_test_rpc_tx_eip1559(
+            5, 100_000, 50_000_000_000, 2_000_000_000,
+            to_addr, U256::from(1_000_000_000_000_000_000u128), vec![0xaa, 0xbb],
+            Default::default(),
+        );
+        let req = build_impersonation_request(&rpc_tx).expect("should succeed");
+        assert_eq!(req.gas, Some(100_000));
+    }
+
+    #[test]
+    fn build_impersonation_request_legacy() {
+        let to_addr = address!("7a250d5630B4cF539739dF2C5dAcb4c659F2488D");
+        let rpc_tx = build_test_rpc_tx_legacy(
+            Some(1), 0, 30_000_000_000, 21_000,
+            to_addr, U256::ZERO, vec![],
+        );
+        let req = build_impersonation_request(&rpc_tx).expect("should succeed");
+        assert_eq!(req.gas, Some(21_000));
+    }
+
+    #[test]
+    fn build_impersonation_request_legacy_no_chain_id() {
+        let to_addr = address!("7a250d5630B4cF539739dF2C5dAcb4c659F2488D");
+        let rpc_tx = build_test_rpc_tx_legacy(
+            None, 0, 20_000_000_000, 21_000,
+            to_addr, U256::from(42), vec![0xdd],
+        );
+        let req = build_impersonation_request(&rpc_tx).expect("should succeed");
+        assert_eq!(req.gas, Some(21_000));
+    }
+
+    #[test]
+    fn build_impersonation_request_with_access_list() {
+        use alloy::rpc::types::AccessList;
+        let to_addr = address!("7a250d5630B4cF539739dF2C5dAcb4c659F2488D");
+        let rpc_tx = build_test_rpc_tx_eip1559(
+            0, 21_000, 30_000_000_000, 1_000_000_000,
+            to_addr, U256::ZERO, vec![],
+            AccessList::default(),
+        );
+        let req = build_impersonation_request(&rpc_tx).expect("should succeed");
+        assert!(req.gas.is_some());
+    }
+
+    #[test]
+    fn build_impersonation_request_create_tx() {
+        use alloy::consensus::{TxEip1559, TxEnvelope, SignableTransaction};
+        use alloy::consensus::transaction::{Recovered, SignerRecoverable};
+        use alloy::signers::{local::PrivateKeySigner, SignerSync};
+
+        let signer: PrivateKeySigner = "0x4c0883a69102937d6231471b5dbb6204fe512961708279f2e3e8a5d4b8e3e3e3"
+            .parse()
+            .expect("valid key");
+
+        let tx = TxEip1559 {
+            chain_id: 1,
+            nonce: 0,
+            gas_limit: 500_000,
+            max_fee_per_gas: 30_000_000_000,
+            max_priority_fee_per_gas: 1_000_000_000,
+            to: alloy::primitives::TxKind::Create,
+            value: U256::ZERO,
+            access_list: Default::default(),
+            input: vec![0x60, 0x00].into(),
+        };
+        let sig = signer.sign_hash_sync(&tx.signature_hash()).expect("sign");
+        let envelope: TxEnvelope = tx.into_signed(sig).into();
+        let from = envelope.recover_signer().expect("recover");
+        let recovered = Recovered::new_unchecked(envelope, from);
+        let rpc_tx = alloy::rpc::types::Transaction {
+            inner: recovered,
+            block_hash: None,
+            block_number: None,
+            transaction_index: None,
+            effective_gas_price: None,
+        };
+
+        let req = build_impersonation_request(&rpc_tx).expect("create tx should succeed");
+        assert!(req.to.is_none());
+    }
+
+    fn make_token_index_profit() -> (TokenIndex, [usize; 3]) {
+        let a = address!("AAaaAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAaaaa");
+        let b = address!("BBbbBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBbbbb");
+        let c = address!("CCccCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCcccc");
+        let mut idx = TokenIndex::new();
+        let ia = idx.get_or_insert(a);
+        let ib = idx.get_or_insert(b);
+        let ic = idx.get_or_insert(c);
+        (idx, [ia, ib, ic])
+    }
+
+    #[test]
+    fn optimize_cycle_input_high_base_fee() {
+        let (token_index, [ta, tb, _tc]) = make_token_index_profit();
+        let a = *token_index.get_address(ta).unwrap();
+        let b = *token_index.get_address(tb).unwrap();
+        let pool = LoadedPool {
+            address: address!("B4e16d0168e52d35CaCD2c6185b44281Ec28C9Dc"),
+            token0: a.min(b),
+            token1: a.max(b),
+            protocol: ProtocolType::UniswapV2,
+            fee_bps: 30,
+        };
+        let pools = vec![pool];
+
+        let mut graph = PriceGraph::new(token_index.len());
+        graph.resize(token_index.len());
+        let pid = PoolId { address: pools[0].address, protocol: pools[0].protocol };
+        graph.add_edge(ta, tb, 0.5, pid, pools[0].address, pools[0].protocol, U256::ZERO);
+        graph.add_edge(tb, ta, 0.5, pid, pools[0].address, pools[0].protocol, U256::ZERO);
+
+        let mut states = std::collections::HashMap::new();
+        let r = U256::from(1_000_000_000_000_000_000_000u128);
+        states.insert(0, PoolState::V2 { r0: r, r1: r });
+
+        let cycle = DetectedCycle { path: vec![ta, tb, ta], total_weight: -0.05 };
+        let result = optimize_cycle_input(&cycle, &graph, &token_index, &pools, &states, 300_000_000_000);
+        assert!(result.is_some());
+        let opt = result.unwrap();
+        assert!(opt.optimal_input_wei > U256::ZERO);
+    }
+
+    #[test]
+    fn optimize_cycle_input_missing_pool_in_registry() {
+        let (token_index, [ta, tb, _tc]) = make_token_index_profit();
+        let pools: Vec<LoadedPool> = vec![];
+
+        let mut graph = PriceGraph::new(token_index.len());
+        graph.resize(token_index.len());
+        let pid = PoolId { address: address!("B4e16d0168e52d35CaCD2c6185b44281Ec28C9Dc"), protocol: ProtocolType::UniswapV2 };
+        graph.add_edge(ta, tb, 0.5, pid, pid.address, ProtocolType::UniswapV2, U256::ZERO);
+
+        let states = std::collections::HashMap::new();
+        let cycle = DetectedCycle { path: vec![ta, tb], total_weight: -0.5 };
+        assert!(optimize_cycle_input(&cycle, &graph, &token_index, &pools, &states, 30_000_000_000).is_none());
+    }
+
+    #[test]
+    fn build_graph_negative_rate_skipped() {
+        const WETH: Address = address!("C02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2");
+        const USDC: Address = address!("A0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48");
+
+        let pool = LoadedPool {
+            address: address!("B4e16d0168e52d35CaCD2c6185b44281Ec28C9Dc"),
+            token0: USDC,
+            token1: WETH,
+            protocol: ProtocolType::UniswapV2,
+            fee_bps: 30,
+        };
+        let r0 = U256::from(20_000_000_000u64);
+        let r1 = U256::from(10_000_000_000_000_000_000u128);
+        let states = vec![(0usize, PoolState::V2 { r0, r1 })];
+        let (graph, token_index) = build_graph(&[pool], &states);
+        assert!(graph.num_edges() > 0);
+        assert_eq!(token_index.len(), 2);
+    }
+
+    #[test]
+    fn build_graph_non_weth_pool_no_weth_vertex() {
+        const USDC: Address = address!("A0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48");
+        const USDT: Address = address!("dAC17F958D2ee523a2206206994597C13D831ec7");
+
+        let pool = LoadedPool {
+            address: address!("3041CbD36888bECc7bbCBc0045E3B1f144466f5f"),
+            token0: USDC,
+            token1: USDT,
+            protocol: ProtocolType::UniswapV2,
+            fee_bps: 30,
+        };
+        let r0 = U256::from(20_000_000_000u64);
+        let r1 = U256::from(20_000_000_000u64);
+        let states = vec![(0usize, PoolState::V2 { r0, r1 })];
+        let (graph, token_index) = build_graph(&[pool], &states);
+        assert!(graph.num_edges() > 0);
+        assert_eq!(token_index.len(), 2);
+    }
+
+    #[test]
+    fn build_impersonation_request_eip1559_with_access_list() {
+        use alloy::rpc::types::{AccessList, AccessListItem};
+        let to_addr = address!("7a250d5630B4cF539739dF2C5dAcb4c659F2488D");
+        let item = AccessListItem {
+            address: to_addr,
+            storage_keys: vec![alloy::primitives::B256::ZERO],
+        };
+        let rpc_tx = build_test_rpc_tx_eip1559(
+            3, 150_000, 40_000_000_000, 3_000_000_000,
+            to_addr, U256::from(100), vec![0xcc],
+            AccessList(vec![item]),
+        );
+        let req = build_impersonation_request(&rpc_tx).expect("should succeed");
+        assert!(req.access_list.is_some());
+    }
+
+    #[test]
+    fn build_impersonation_request_eip2930() {
+        use alloy::consensus::{TxEip2930, TxEnvelope, SignableTransaction};
+        use alloy::consensus::transaction::{Recovered, SignerRecoverable};
+        use alloy::signers::{local::PrivateKeySigner, SignerSync};
+
+        let signer: PrivateKeySigner = "0x4c0883a69102937d6231471b5dbb6204fe512961708279f2e3e8a5d4b8e3e3e3"
+            .parse()
+            .expect("valid key");
+        let tx = TxEip2930 {
+            chain_id: 1,
+            nonce: 0,
+            gas_price: 30_000_000_000,
+            gas_limit: 21_000,
+            to: alloy::primitives::TxKind::Call(address!("7a250d5630B4cF539739dF2C5dAcb4c659F2488D")),
+            value: U256::ZERO,
+            access_list: Default::default(),
+            input: vec![].into(),
+        };
+        let sig = signer.sign_hash_sync(&tx.signature_hash()).expect("sign");
+        let envelope: TxEnvelope = tx.into_signed(sig).into();
+        let from = envelope.recover_signer().expect("recover");
+        let recovered = Recovered::new_unchecked(envelope, from);
+        let rpc_tx = alloy::rpc::types::Transaction {
+            inner: recovered,
+            block_hash: None,
+            block_number: None,
+            transaction_index: None,
+            effective_gas_price: None,
+        };
+        let req = build_impersonation_request(&rpc_tx).expect("should succeed");
+        assert_eq!(req.gas, Some(21_000));
+    }
+
+    #[test]
+    fn build_impersonation_request_create_legacy() {
+        use alloy::consensus::{TxLegacy, TxEnvelope, SignableTransaction};
+        use alloy::consensus::transaction::{Recovered, SignerRecoverable};
+        use alloy::signers::{local::PrivateKeySigner, SignerSync};
+
+        let signer: PrivateKeySigner = "0x4c0883a69102937d6231471b5dbb6204fe512961708279f2e3e8a5d4b8e3e3e3"
+            .parse()
+            .expect("valid key");
+        let tx = TxLegacy {
+            chain_id: Some(1),
+            nonce: 0,
+            gas_price: 25_000_000_000,
+            gas_limit: 100_000,
+            to: alloy::primitives::TxKind::Create,
+            value: U256::ZERO,
+            input: vec![0x60, 0x01].into(),
+        };
+        let sig = signer.sign_hash_sync(&tx.signature_hash()).expect("sign");
+        let envelope: TxEnvelope = tx.into_signed(sig).into();
+        let from = envelope.recover_signer().expect("recover");
+        let recovered = Recovered::new_unchecked(envelope, from);
+        let rpc_tx = alloy::rpc::types::Transaction {
+            inner: recovered,
+            block_hash: None,
+            block_number: None,
+            transaction_index: None,
+            effective_gas_price: None,
+        };
+        let req = build_impersonation_request(&rpc_tx).expect("should succeed");
+        assert!(req.to.is_none());
+    }
+
+    #[test]
+    fn build_impersonation_request_verifies_from_address() {
+        let to_addr = address!("7a250d5630B4cF539739dF2C5dAcb4c659F2488D");
+        let rpc_tx = build_test_rpc_tx_eip1559(
+            10, 21_000, 30_000_000_000, 1_000_000_000,
+            to_addr, U256::ZERO, vec![],
+            Default::default(),
+        );
+        let req = build_impersonation_request(&rpc_tx).expect("should succeed");
+        assert!(req.from.is_some());
+    }
+
+    #[test]
+    fn build_impersonation_request_verifies_nonce_and_value() {
+        let to_addr = address!("7a250d5630B4cF539739dF2C5dAcb4c659F2488D");
+        let rpc_tx = build_test_rpc_tx_legacy(
+            Some(1), 42, 20_000_000_000, 21_000,
+            to_addr, U256::from(7_000_000_000_000_000_000u128), vec![0xab],
+        );
+        let req = build_impersonation_request(&rpc_tx).expect("should succeed");
+        assert_eq!(req.nonce, Some(42));
+    }
 }

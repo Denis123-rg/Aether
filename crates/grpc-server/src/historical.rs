@@ -755,4 +755,218 @@ fee_bps = 30
         );
         assert_eq!(out, None, "should overflow on huge input");
     }
+
+    #[test]
+    fn load_pools_bancor_v3_filtered() {
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(
+            tmp.path(),
+            r#"
+[[pools]]
+protocol = "bancor_v3"
+address = "0x0000000000000000000000000000000000000001"
+token0 = "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"
+token1 = "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2"
+fee_bps = 30
+"#,
+        )
+        .unwrap();
+        let pools = load_pools(&tmp.path().to_path_buf()).unwrap();
+        assert_eq!(pools.len(), 0);
+    }
+
+    #[test]
+    fn load_pools_balancer_v2_filtered() {
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(
+            tmp.path(),
+            r#"
+[[pools]]
+protocol = "balancer_v2"
+address = "0x0000000000000000000000000000000000000001"
+token0 = "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"
+token1 = "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2"
+fee_bps = 30
+"#,
+        )
+        .unwrap();
+        let pools = load_pools(&tmp.path().to_path_buf()).unwrap();
+        assert_eq!(pools.len(), 0);
+    }
+
+    #[test]
+    fn parse_protocol_all_known_variants() {
+        for (input, expected) in &[
+            ("uniswap_v2", Some(ProtocolType::UniswapV2)),
+            ("sushiswap", Some(ProtocolType::SushiSwap)),
+            ("uniswap_v3", Some(ProtocolType::UniswapV3)),
+            ("curve", Some(ProtocolType::Curve)),
+            ("balancer_v2", Some(ProtocolType::BalancerV2)),
+            ("bancor_v3", Some(ProtocolType::BancorV3)),
+        ] {
+            assert_eq!(parse_protocol(input), *expected);
+        }
+    }
+
+    #[test]
+    fn parse_protocol_whitespace_not_matched() {
+        assert!(parse_protocol(" uniswap_v2 ").is_none());
+    }
+
+    #[test]
+    fn uniswap_v2_get_amount_out_one_basis_point() {
+        let out = uniswap_v2_get_amount_out(
+            U256::from(1_000_000u64),
+            U256::from(1_000_000_000u64),
+            U256::from(1_000_000_000u64),
+            1,
+        );
+        assert!(out.is_some());
+        assert!(out.unwrap() > U256::ZERO);
+    }
+
+    #[test]
+    fn uniswap_v2_get_amount_out_very_small_reserves() {
+        let out = uniswap_v2_get_amount_out(
+            U256::from(1000u64),
+            U256::from(1u64),
+            U256::from(1u64),
+            30,
+        );
+        assert!(out.is_some());
+    }
+
+    #[test]
+    fn u256_to_f64_power_of_two() {
+        let v = U256::from(1u64) << 128;
+        let result = u256_to_f64(v);
+        assert!(result > 0.0);
+        assert!(result.is_finite());
+    }
+
+    #[test]
+    fn load_executor_init_bytecode_nested_json_structure() {
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let json = serde_json::json!({
+            "bytecode": {
+                "object": "0x6080604052348015600f57600080fd5b50"
+            }
+        });
+        std::fs::write(tmp.path(), json.to_string()).unwrap();
+        let bytes = load_executor_init_bytecode(&tmp.path().to_path_buf()).unwrap();
+        assert!(!bytes.is_empty());
+        assert_eq!(bytes[0], 0x60);
+    }
+
+    #[test]
+    fn pool_state_v2_debug_format() {
+        let state = PoolState::V2 {
+            r0: U256::from(100u64),
+            r1: U256::from(200u64),
+        };
+        let debug = format!("{:?}", state);
+        assert!(debug.contains("V2"));
+        assert!(debug.contains("100"));
+        assert!(debug.contains("200"));
+    }
+
+    #[test]
+    fn pool_state_v3_clone() {
+        let state = PoolState::V3 {
+            sqrt_price_x96: U256::from(500u64),
+            liquidity: 777u128,
+        };
+        let cloned = state;
+        match cloned {
+            PoolState::V3 { sqrt_price_x96, liquidity } => {
+                assert_eq!(sqrt_price_x96, U256::from(500u64));
+                assert_eq!(liquidity, 777u128);
+            }
+            _ => panic!("expected V3 variant"),
+        }
+    }
+
+    #[test]
+    fn uniswap_v2_get_amount_out_asymmetric_reserves() {
+        let out = uniswap_v2_get_amount_out(
+            U256::from(1_000_000u64),
+            U256::from(1_000_000_000u64),
+            U256::from(500_000_000u64),
+            30,
+        );
+        assert!(out.is_some());
+        assert!(out.unwrap() < U256::from(500_000_000u64));
+    }
+
+    #[test]
+    fn load_pools_mixed_valid_and_invalid() {
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(
+            tmp.path(),
+            r#"
+[[pools]]
+protocol = "uniswap_v2"
+address = "0xB4e16d0168e52d35CaCD2c6185b44281Ec28C9Dc"
+token0 = "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"
+token1 = "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2"
+fee_bps = 30
+
+[[pools]]
+protocol = "uniswap_v3"
+address = "0x88e6A0c2dDD26FEEb64F039a2c41296FcB3f5640"
+token0 = "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"
+token1 = "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2"
+fee_bps = 5
+
+[[pools]]
+protocol = "sushiswap"
+address = "0x397FF1542f962076d0BFE58eA045FfA2d347ACa0"
+token0 = "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"
+token1 = "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2"
+fee_bps = 30
+
+[[pools]]
+protocol = "curve"
+address = "0xbEbc44782C7dB0a1A60Cb6fe97d0b483032FF1C7"
+token0 = "0x6B175474E89094C44Da98b954EedeAC495271d0F"
+token1 = "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"
+fee_bps = 4
+"#,
+        )
+        .unwrap();
+        let pools = load_pools(&tmp.path().to_path_buf()).unwrap();
+        assert_eq!(pools.len(), 3);
+    }
+
+    #[test]
+    fn q96_approximately_2_pow_96() {
+        let expected = 2f64.powi(96);
+        let diff = (Q96 - expected).abs();
+        assert!(diff < 1.0, "Q96 differs from 2^96 by {diff}");
+    }
+
+    #[test]
+    fn pool_state_v3_with_zero_liquidity() {
+        let state = PoolState::V3 {
+            sqrt_price_x96: U256::from(1u64),
+            liquidity: 0,
+        };
+        match state {
+            PoolState::V3 { liquidity, .. } => assert_eq!(liquidity, 0),
+            _ => panic!("expected V3"),
+        }
+    }
+
+    #[test]
+    fn load_executor_init_bytecode_very_large_bytecode() {
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let hex_str = "aa".repeat(1000);
+        std::fs::write(
+            tmp.path(),
+            format!(r#"{{"bytecode": {{"object": "0x{hex_str}"}}}}"#),
+        )
+        .unwrap();
+        let bytes = load_executor_init_bytecode(&tmp.path().to_path_buf()).unwrap();
+        assert_eq!(bytes.len(), 1000);
+    }
 }

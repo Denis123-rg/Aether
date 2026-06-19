@@ -1720,4 +1720,251 @@ mod cache_tests {
         );
         assert!(matches!(result, Some(UnifiedPostState::Balancer(ref p)) if p.amount_out == U256::from(77u64)));
     }
+
+    #[test]
+    fn pool_state_address_uniswap_v2() {
+        let addr = address!("1111111111111111111111111111111111111111");
+        let v2 = UniswapV2Pool::new(addr, Address::ZERO, Address::ZERO, 30);
+        assert_eq!(PoolState::UniswapV2(v2).address(), addr);
+    }
+
+    #[test]
+    fn pool_state_protocol_balancer_v3() {
+        let b3 = BalancerV3Pool::new(Address::ZERO, Address::ZERO, Address::ZERO, 500_000, 500_000, 30);
+        assert_eq!(PoolState::BalancerV3(b3).protocol(), ProtocolType::BalancerV3);
+    }
+
+    #[test]
+    fn unified_post_state_bancor_amount_out() {
+        let bancor = UnifiedPostState::Bancor(crate::bancor::BancorPostState {
+            new_balance_in: U256::from(1000u64),
+            new_balance_out: U256::from(800u64),
+            amount_out: U256::from(150u64),
+            analytical: true,
+        });
+        assert_eq!(bancor.amount_out(), U256::from(150u64));
+    }
+
+    #[test]
+    fn unified_post_state_v3_amount_out_zero() {
+        let v3 = UnifiedPostState::UniswapV3(crate::uniswap_v3::V3PostState {
+            new_sqrt_price_x96: U256::ZERO,
+            new_liquidity: 0,
+            amount_out: U256::ZERO,
+            single_tick: false,
+        });
+        assert_eq!(v3.amount_out(), U256::ZERO);
+    }
+
+    #[test]
+    fn unified_post_state_curve_amount_out() {
+        let curve = UnifiedPostState::Curve(crate::curve::CurvePostState {
+            i: 0, j: 1,
+            new_balance_in: U256::from(100u64),
+            new_balance_out: U256::from(90u64),
+            amount_out: U256::from(8u64),
+            analytical: true,
+        });
+        assert_eq!(curve.amount_out(), U256::from(8u64));
+    }
+
+    #[test]
+    fn unified_post_state_balancer_amount_out() {
+        let bal = UnifiedPostState::Balancer(crate::balancer::BalancerPostState {
+            new_balance0: U256::from(500u64),
+            new_balance1: U256::from(400u64),
+            amount_out: U256::from(90u64),
+            analytical: false,
+        });
+        assert_eq!(bal.amount_out(), U256::from(90u64));
+    }
+
+    #[test]
+    fn replay_protocol_all_variants() {
+        let v3 = ReplayProtocol::UniswapV3;
+        let curve = ReplayProtocol::Curve;
+        let bal = ReplayProtocol::Balancer;
+        let bancor = ReplayProtocol::Bancor;
+        assert_ne!(v3, curve);
+        assert_ne!(bal, bancor);
+        assert_eq!(v3, ReplayProtocol::UniswapV3);
+        assert_eq!(curve, ReplayProtocol::Curve);
+    }
+
+    #[test]
+    fn new_pool_state_cache_independent_instances() {
+        let c1 = new_pool_state_cache();
+        let c2 = new_pool_state_cache();
+        let addr = address!("1111111111111111111111111111111111111111");
+        let v2 = UniswapV2Pool::new(addr, Address::ZERO, Address::ZERO, 30);
+        c1.insert(addr, Arc::new(PoolState::UniswapV2(v2)));
+        assert_eq!(c1.len(), 1);
+        assert_eq!(c2.len(), 0);
+    }
+
+    #[test]
+    fn predict_with_replay_v3_tick_cross_replay_none() {
+        let mut v3 = UniswapV3Pool::new(
+            address!("88e6A0c2dDD26FEEb64F039a2c41296FcB3f5640"),
+            address!("A0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"),
+            address!("C02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2"),
+            30,
+            60,
+        );
+        let two_pow_96_f64: f64 = 79_228_162_514_264_337_593_543_950_336.0;
+        let sqrt_norm = 1.0001f64.powi(15);
+        let sqrt_x96 = (sqrt_norm * two_pow_96_f64) as u128;
+        v3.update_sqrt_price(U256::from(sqrt_x96), 10_000_000_000_000_000u128, 30);
+        let state = PoolState::UniswapV3(v3.clone());
+        let result = predict_post_state_with_replay(
+            &state,
+            v3.token0,
+            U256::from(5_000_000_000_000_000u64),
+            |_| {},
+            |_| None,
+        );
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn predict_with_replay_balancer_unequal_weight_replay_none() {
+        let mut bal = BalancerPool::new(
+            Address::ZERO,
+            address!("A0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"),
+            address!("C02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2"),
+            800_000,
+            200_000,
+            30,
+        );
+        bal.update_state(
+            U256::from(1_000_000_000_000_000_000_000u128),
+            U256::from(10_000_000_000_000u64),
+        );
+        let state = PoolState::Balancer(bal);
+        let result = predict_post_state_with_replay(
+            &state,
+            address!("A0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"),
+            U256::from(1_000_000_000_000_000u64),
+            |_| {},
+            |_| None,
+        );
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn predict_with_replay_balancer_v3_unequal_weight_replay_none() {
+        let mut b3 = BalancerV3Pool::new(
+            Address::ZERO,
+            address!("A0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"),
+            address!("C02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2"),
+            800_000,
+            200_000,
+            30,
+        );
+        b3.update_state(
+            U256::from(1_000_000_000_000_000_000_000u128),
+            U256::from(10_000_000_000_000u64),
+        );
+        let state = PoolState::BalancerV3(b3);
+        let result = predict_post_state_with_replay(
+            &state,
+            address!("A0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"),
+            U256::from(1_000_000_000_000_000u64),
+            |_| {},
+            |_| None,
+        );
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn predict_with_replay_curve_2coin_returns_analytical() {
+        let usdc = address!("A0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48");
+        let usdt = address!("dAC17F958D2ee523a2206206994597C13D831ec7");
+        let mut curve = CurvePool::new(Address::ZERO, vec![usdc, usdt], 100, 4);
+        curve.balances = vec![
+            U256::from(10_000_000_000_000u64),
+            U256::from(10_000_000_000_000u64),
+        ];
+        let state = PoolState::Curve(curve);
+        let rp = std::cell::Cell::new(false);
+        let result = predict_post_state_with_replay(
+            &state,
+            usdc,
+            U256::from(1_000_000_000u64),
+            |_| {},
+            |_| { rp.set(true); None },
+        );
+        assert!(result.is_some());
+        assert!(!rp.get());
+    }
+
+    #[test]
+    fn predict_with_fallback_v3_single_tick_no_fallback() {
+        let mut v3 = UniswapV3Pool::new(
+            address!("88e6A0c2dDD26FEEb64F039a2c41296FcB3f5640"),
+            address!("A0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"),
+            address!("C02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2"),
+            30,
+            60,
+        );
+        let two_pow_96_f64: f64 = 79_228_162_514_264_337_593_543_950_336.0;
+        let sqrt_norm = 1.0001f64.powi(15);
+        let sqrt_x96 = (sqrt_norm * two_pow_96_f64) as u128;
+        v3.update_sqrt_price(U256::from(sqrt_x96), 10_000_000_000_000_000u128, 30);
+        let state = PoolState::UniswapV3(v3.clone());
+        let fb = std::cell::Cell::new(false);
+        let result = predict_post_state_with_replay(
+            &state,
+            v3.token0,
+            U256::from(100_000_000u64),
+            |_| fb.set(true),
+            |_| None,
+        );
+        assert!(result.is_some());
+        assert!(!fb.get());
+    }
+
+    #[test]
+    fn pool_state_cache_concurrent_reads() {
+        use std::sync::Arc;
+        let cache = new_pool_state_cache();
+        let addr = address!("1111111111111111111111111111111111111111");
+        let v2 = UniswapV2Pool::new(addr, Address::ZERO, Address::ZERO, 30);
+        cache.insert(addr, Arc::new(PoolState::UniswapV2(v2)));
+        let handles: Vec<_> = (0..4)
+            .map(|_| {
+                let cache = cache.clone();
+                std::thread::spawn(move || {
+                    for _ in 0..100 {
+                        let _ = cache.get(&addr);
+                    }
+                })
+            })
+            .collect();
+        for h in handles {
+            h.join().unwrap();
+        }
+    }
+
+    #[test]
+    fn predict_with_replay_bancor_bnt_output_returns_none() {
+        let token = address!("C02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2");
+        let bnt = address!("1F573D6Fb3F13d689FF844B4cE37794d79a7FF1C");
+        let mut bancor = BancorPool::new(Address::ZERO, token, bnt, 30);
+        bancor.update_state(
+            U256::from(1_000_000_000_000_000_000_000u128),
+            U256::from(2_000_000_000_000_000_000_000u128),
+        );
+        let state = PoolState::Bancor(bancor);
+        let rp = std::cell::Cell::new(false);
+        let result = predict_post_state_with_replay(
+            &state,
+            bnt,
+            U256::from(1_000_000_000_000_000_000u64),
+            |_| {},
+            |_| { rp.set(true); None },
+        );
+        assert!(result.is_some());
+        assert!(!rp.get());
+    }
 }

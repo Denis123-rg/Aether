@@ -12,6 +12,7 @@ import (
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 	"google.golang.org/grpc/test/bufconn"
+	"google.golang.org/protobuf/proto"
 )
 
 // --- Enum .Enum() and .EnumDescriptor() ---
@@ -573,6 +574,64 @@ func TestStreamArbsClientCloseSendError(t *testing.T) {
 	if !errors.Is(err, errDecFail) {
 		t.Errorf("expected CloseSend error, got %v", err)
 	}
+}
+
+// --- ProtoReflect on non-nil instances ---
+
+func TestPopulatedProtoReflect(t *testing.T) {
+	msgs := []proto.Message{
+		&SwapStep{},
+		&ArbHop{},
+		&ValidatedArb{},
+		&SubmitArbResponse{},
+		&StreamArbsRequest{},
+		&HealthCheckRequest{},
+		&HealthCheckResponse{},
+		&SetStateRequest{},
+		&SetStateResponse{},
+		&ReloadConfigRequest{},
+		&ReloadConfigResponse{},
+	}
+	for _, m := range msgs {
+		ref := m.ProtoReflect()
+		if ref == nil {
+			t.Errorf("%T.ProtoReflect() returned nil", m)
+		}
+	}
+}
+
+// --- mustEmbedUnimplemented* explicit calls ---
+
+func TestMustEmbedUnimplementedArbServiceServer(t *testing.T) {
+	var s UnimplementedArbServiceServer
+	s.mustEmbedUnimplementedArbServiceServer()
+}
+
+func TestMustEmbedUnimplementedHealthServiceServer(t *testing.T) {
+	var s UnimplementedHealthServiceServer
+	s.mustEmbedUnimplementedHealthServiceServer()
+}
+
+func TestMustEmbedUnimplementedControlServiceServer(t *testing.T) {
+	var s UnimplementedControlServiceServer
+	s.mustEmbedUnimplementedControlServiceServer()
+}
+
+// --- testEmbeddedByValue explicit calls ---
+
+func TestEmbeddedByValue_ArbService(t *testing.T) {
+	var s UnimplementedArbServiceServer
+	s.testEmbeddedByValue()
+}
+
+func TestEmbeddedByValue_HealthService(t *testing.T) {
+	var s UnimplementedHealthServiceServer
+	s.testEmbeddedByValue()
+}
+
+func TestEmbeddedByValue_ControlService(t *testing.T) {
+	var s UnimplementedControlServiceServer
+	s.testEmbeddedByValue()
 }
 
 // --- file_proto_aether_proto_init early return ---

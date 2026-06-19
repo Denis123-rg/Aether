@@ -1409,6 +1409,102 @@ mod tests {
     }
 
     #[test]
+    fn fot_verdict_clone_all_variants() {
+        let _ = FotVerdict::Clean { observed_tax_bps: 0 }.clone();
+        let _ = FotVerdict::FeeOnTransfer { tax_bps: 500 }.clone();
+        let _ = FotVerdict::Honeypot { reason: "x".into() }.clone();
+        let _ = FotVerdict::Inconclusive { reason: "x".into() }.clone();
+    }
+
+    #[test]
+    fn round_trip_verdict_clone_all_variants() {
+        let _ = RoundTripVerdict::Clean { recovery_bps: 9900 }.clone();
+        let _ = RoundTripVerdict::FeeOnTransfer { loss_bps: 100 }.clone();
+        let _ = RoundTripVerdict::Honeypot { reason: "x".into() }.clone();
+        let _ = RoundTripVerdict::Inconclusive { reason: "x".into() }.clone();
+    }
+
+    #[test]
+    fn expected_amount_out_fee_one_bps() {
+        let out = expected_amount_out(U256::from(1000u64), U256::from(1_000_000u64), U256::from(1_000_000u64), 1);
+        assert!(out > U256::ZERO);
+    }
+
+    #[test]
+    fn expected_amount_out_fee_9999_bps() {
+        let out = expected_amount_out(U256::from(1000u64), U256::from(1_000_000u64), U256::from(1_000_000u64), 9999);
+        assert_eq!(out, U256::ZERO);
+    }
+
+    #[test]
+    fn expected_amount_out_asymmetric_large() {
+        let small = U256::from(1_000u64);
+        let huge = U256::from(10u128.pow(36));
+        let out = expected_amount_out(small, huge, huge, 30);
+        assert!(out > U256::ZERO);
+        assert!(out < small);
+    }
+
+    #[test]
+    fn tax_bps_actual_greater_than_expected() {
+        let tax = tax_bps(U256::from(1000u64), U256::from(2000u64));
+        assert_eq!(tax, 0);
+    }
+
+    #[test]
+    fn tax_bps_both_zero() {
+        let tax = tax_bps(U256::ZERO, U256::ZERO);
+        assert_eq!(tax, 0);
+    }
+
+    #[test]
+    fn tax_bps_one_wei_each() {
+        let tax = tax_bps(U256::from(1u64), U256::from(1u64));
+        assert_eq!(tax, 0);
+    }
+
+    #[test]
+    fn classify_transfer_exact_boundary() {
+        for tol in [0, 1, 5, 10, 100] {
+            let _ = classify_transfer(U256::from(10_000u64), U256::from(9_990u64), tol);
+        }
+    }
+
+    #[test]
+    fn classify_round_trip_zero_base_out_nonzero_base_in() {
+        let v = classify_round_trip(U256::from(1000u64), U256::ZERO, 30, true, 0);
+        assert!(matches!(v, RoundTripVerdict::Honeypot { .. }));
+    }
+
+    #[test]
+    fn classify_round_trip_loss_bps_zero() {
+        let base_in = U256::from(1_000_000u64);
+        let ff = 10_000u64 - 30;
+        let expected_bps = (ff * ff / 10_000) as u32;
+        let base_out = base_in * U256::from(expected_bps) / U256::from(10_000u64);
+        let v = classify_round_trip(base_in, base_out, 30, true, 0);
+        assert!(matches!(v, RoundTripVerdict::Clean { .. }));
+    }
+
+    #[test]
+    fn round_trip_inconclusive_on_zero_base_in() {
+        let v = classify_round_trip(U256::ZERO, U256::from(1u64), 30, true, 0);
+        assert!(matches!(v, RoundTripVerdict::Inconclusive { .. }));
+    }
+
+    #[test]
+    fn classify_round_trip_honeypot_when_zero_output() {
+        let v = classify_round_trip(U256::from(100u64), U256::ZERO, 30, true, 10_000);
+        assert!(matches!(v, RoundTripVerdict::Honeypot { .. }));
+    }
+
+    #[test]
+    fn classify_round_trip_honeypot_when_sell_not_succeeded() {
+        let v = classify_round_trip(U256::from(100u64), U256::from(50u64), 30, false, 10_000);
+        assert!(matches!(v, RoundTripVerdict::Honeypot { .. }));
+    }
+
+    #[test]
     fn fot_verdict_debug_all_variants() {
         let _ = format!("{:?}", FotVerdict::Clean { observed_tax_bps: 0 });
         let _ = format!("{:?}", FotVerdict::FeeOnTransfer { tax_bps: 500 });

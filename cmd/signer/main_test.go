@@ -1,10 +1,12 @@
 package main
 
 import (
+	"crypto/rand"
 	"encoding/hex"
-	"fmt"
 	"flag"
+	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -205,5 +207,90 @@ func TestParseHexKeyViaEncrypt(t *testing.T) {
 	}
 	if len(parsed) != 32 {
 		t.Fatalf("len = %d", len(parsed))
+	}
+}
+
+type failingRandReader struct{}
+
+func (f *failingRandReader) Read(p []byte) (int, error) {
+	return 0, fmt.Errorf("mock random reader failure")
+}
+
+func TestRunEncrypt_EncryptError(t *testing.T) {
+	if os.Getenv("GO_WANT_HELPER_PROCESS") == "encrypt-err" {
+		rand.Reader = &failingRandReader{}
+		hexKey := os.Getenv("TEST_HEX_KEY")
+		outPath := os.Getenv("TEST_OUT_PATH")
+		os.Setenv(envPassphrase, "test-pass")
+		os.Args = []string{"aether-signer", "encrypt", "-key", hexKey, "-out", outPath, "-iters", "1000"}
+		main()
+		os.Exit(0)
+	}
+
+	dir := t.TempDir()
+	outPath := filepath.Join(dir, "encrypted.bin")
+	priv, _ := crypto.GenerateKey()
+	hexKey := "0x" + hex.EncodeToString(crypto.FromECDSA(priv))
+
+	cmd := exec.Command(os.Args[0], "-test.run=^"+t.Name()+"$", "-test.count=1")
+	cmd.Env = append(os.Environ(),
+		"GO_WANT_HELPER_PROCESS=encrypt-err",
+		"TEST_HEX_KEY="+hexKey,
+		"TEST_OUT_PATH="+outPath,
+	)
+
+	if err := cmd.Run(); err == nil {
+		t.Fatal("expected non-zero exit for encrypt error")
+	}
+}
+
+func TestRunEncrypt_DefaultIters(t *testing.T) {
+	dir := t.TempDir()
+	outPath := filepath.Join(dir, "encrypted.bin")
+	priv, _ := crypto.GenerateKey()
+	hexKey := "0x" + hex.EncodeToString(crypto.FromECDSA(priv))
+	t.Setenv(envPassphrase, "default-iters-pass")
+
+	err := runEncrypt([]string{"-key", hexKey, "-out", outPath})
+	if err != nil {
+		t.Fatalf("runEncrypt: %v", err)
+	}
+	if _, err := os.Stat(outPath); err != nil {
+		t.Fatalf("file missing: %v", err)
+	}
+}
+
+func TestRunEncrypt_KeyFromEnvAndFlag(t *testing.T) {
+	dir := t.TempDir()
+	outPath := filepath.Join(dir, "encrypted.bin")
+	priv, _ := crypto.GenerateKey()
+	flagKey := "0x" + hex.EncodeToString(crypto.FromECDSA(priv))
+	envPriv, _ := crypto.GenerateKey()
+	envKey := "0x" + hex.EncodeToString(crypto.FromECDSA(envPriv))
+	t.Setenv(envPrivateKey, envKey)
+	t.Setenv(envPassphrase, "env-flag-pass")
+
+	err := runEncrypt([]string{"-key", flagKey, "-out", outPath, "-iters", "1000"})
+	if err != nil {
+		t.Fatalf("runEncrypt: %v", err)
+	}
+	if _, err := os.Stat(outPath); err != nil {
+		t.Fatalf("file missing: %v", err)
+	}
+}
+
+func TestRunEncrypt_ReadableFileAsOutput(t *testing.T) {
+	dir := t.TempDir()
+	outPath := filepath.Join(dir, "readable.bin")
+	if err := os.WriteFile(outPath, []byte("data"), 0o444); err != nil {
+		t.Fatal(err)
+	}
+	priv, _ := crypto.GenerateKey()
+	hexKey := "0x" + hex.EncodeToString(crypto.FromECDSA(priv))
+	t.Setenv(envPassphrase, "pw")
+
+	err := runEncrypt([]string{"-key", hexKey, "-out", outPath})
+	if err == nil || !strings.Contains(err.Error(), "already exists") {
+		t.Fatalf("expected exists error, got %v", err)
 	}
 }

@@ -1803,4 +1803,330 @@ mod tests {
         );
         assert!(handles.is_empty());
     }
+
+    #[test]
+    fn http_to_ws_http_with_port() {
+        assert_eq!(
+            http_to_ws_url("http://localhost:3000"),
+            Some("ws://localhost:3000".to_string())
+        );
+    }
+
+    #[test]
+    fn http_to_ws_https_with_path() {
+        assert_eq!(
+            http_to_ws_url("https://example.com/rpc/v1"),
+            Some("wss://example.com/rpc/v1".to_string())
+        );
+    }
+
+    #[test]
+    fn resolve_ws_url_config_always_wins() {
+        assert_eq!(
+            resolve_ws_url("wss://config-ws.example/ws"),
+            Some("wss://config-ws.example/ws".to_string())
+        );
+    }
+
+    #[test]
+    fn build_factory_filter_deduplicates_topics() {
+        use crate::config::FactoryEventType;
+        let entries = vec![
+            FactoryEntry {
+                address: address!("5C69bEe701ef814a2B6a3EDD4B1652CB9cc5aA6f"),
+                protocol: ProtocolType::UniswapV2,
+                fee_bps: 30,
+                event_type: FactoryEventType::PairCreated,
+            },
+            FactoryEntry {
+                address: address!("C0AEe478e3658e2610c5F7A4A2D1773cDCC8b275"),
+                protocol: ProtocolType::SushiSwap,
+                fee_bps: 30,
+                event_type: FactoryEventType::PairCreated,
+            },
+        ];
+        let _filter = build_factory_filter(&entries);
+    }
+
+    #[test]
+    fn factory_pool_created_different_protocols_not_equal() {
+        let a = FactoryPoolCreated {
+            factory: Address::ZERO,
+            protocol: ProtocolType::UniswapV2,
+            fee_bps: 30,
+            token0: Address::ZERO,
+            token1: Address::ZERO,
+            pool: Address::ZERO,
+        };
+        let b = FactoryPoolCreated {
+            protocol: ProtocolType::SushiSwap,
+            ..a.clone()
+        };
+        assert_ne!(a, b);
+    }
+
+    #[test]
+    fn decode_factory_log_pair_created_no_data() {
+        let factory = address!("5C69bEe701ef814a2B6a3EDD4B1652CB9cc5aA6f");
+        let token0 = address!("A0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48");
+        let token1 = address!("C02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2");
+        let topics = vec![
+            EventSignatures::pair_created_topic(),
+            B256::left_padding_from(token0.as_slice()),
+            B256::left_padding_from(token1.as_slice()),
+        ];
+        let result = decode_factory_log(
+            factory,
+            ProtocolType::UniswapV2,
+            30,
+            FactoryEventType::PairCreated,
+            &topics,
+            &[],
+        );
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn mock_pair_created_log_data_length() {
+        let (_, data) = mock_pair_created_log(
+            Address::ZERO,
+            Address::ZERO,
+            Address::ZERO,
+            Address::ZERO,
+            0,
+        );
+        assert_eq!(data.len(), 64);
+    }
+
+    #[test]
+    fn ws_health_multiple_clones_independent_set() {
+        let h1 = WsHealth::new();
+        let h2 = h1.clone();
+        let h3 = h1.clone();
+        h1.set_healthy(true);
+        assert!(h2.is_healthy());
+        assert!(h3.is_healthy());
+        h2.set_healthy(false);
+        assert!(!h1.is_healthy());
+        assert!(!h3.is_healthy());
+    }
+
+    #[tokio::test]
+    async fn process_logs_multiple_factories() {
+        use alloy::primitives::LogData;
+        let service = crate::service::DiscoveryService::new(crate::config::DiscoveryConfig::default());
+        let factory1 = address!("5C69bEe701ef814a2B6a3EDD4B1652CB9cc5aA6f");
+        let factory2 = address!("C0AEe478e3658e2610c5F7A4A2D1773cDCC8b275");
+        let token0 = address!("A0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48");
+        let token1 = address!("C02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2");
+        let entries = vec![
+            FactoryEntry {
+                address: factory1,
+                protocol: ProtocolType::UniswapV2,
+                fee_bps: 30,
+                event_type: FactoryEventType::PairCreated,
+            },
+            FactoryEntry {
+                address: factory2,
+                protocol: ProtocolType::SushiSwap,
+                fee_bps: 30,
+                event_type: FactoryEventType::PairCreated,
+            },
+        ];
+
+        let pair1 = Address::from([0x11; 20]);
+        let (topics1, data1) = mock_pair_created_log(factory1, token0, token1, pair1, 1);
+        let log1 = alloy::rpc::types::Log {
+            inner: alloy::primitives::Log {
+                address: factory1,
+                data: LogData::new_unchecked(topics1, data1.into()),
+            },
+            ..Default::default()
+        };
+
+        let pair2 = Address::from([0x22; 20]);
+        let (topics2, data2) = mock_pair_created_log(factory2, token0, token1, pair2, 1);
+        let log2 = alloy::rpc::types::Log {
+            inner: alloy::primitives::Log {
+                address: factory2,
+                data: LogData::new_unchecked(topics2, data2.into()),
+            },
+            ..Default::default()
+        };
+
+        let ingested = process_logs(&service, &entries, vec![log1, log2]).await;
+        assert_eq!(ingested, 2);
+    }
+
+    #[test]
+    fn decode_factory_log_empty_data_for_pair_created() {
+        let factory = address!("5C69bEe701ef814a2B6a3EDD4B1652CB9cc5aA6f");
+        let topic0 = EventSignatures::pair_created_topic();
+        let topics = vec![topic0];
+        let result = decode_factory_log(
+            factory,
+            ProtocolType::UniswapV2,
+            30,
+            FactoryEventType::PairCreated,
+            &topics,
+            &[],
+        );
+        assert!(result.is_none());
+    }
+
+    #[tokio::test]
+    async fn process_logs_with_metrics_multiple_logs() {
+        use alloy::primitives::LogData;
+        let service = crate::service::DiscoveryService::new(crate::config::DiscoveryConfig::default());
+        let metrics = DiscoveryMetrics::noop();
+        let factory = address!("5C69bEe701ef814a2B6a3EDD4B1652CB9cc5aA6f");
+        let token0 = address!("A0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48");
+        let token1 = address!("C02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2");
+        let entries = vec![FactoryEntry {
+            address: factory,
+            protocol: ProtocolType::UniswapV2,
+            fee_bps: 30,
+            event_type: FactoryEventType::PairCreated,
+        }];
+
+        let pair = Address::from([0xAA; 20]);
+        let (topics, data) = mock_pair_created_log(factory, token0, token1, pair, 1);
+        let log = alloy::rpc::types::Log {
+            inner: alloy::primitives::Log {
+                address: factory,
+                data: LogData::new_unchecked(topics, data.into()),
+            },
+            ..Default::default()
+        };
+
+        let bad_log = alloy::rpc::types::Log {
+            inner: alloy::primitives::Log {
+                address: factory,
+                data: LogData::new_unchecked(
+                    vec![EventSignatures::pair_created_topic()],
+                    vec![].into(),
+                ),
+            },
+            ..Default::default()
+        };
+
+        let ingested = process_logs_with_metrics(
+            &service,
+            &entries,
+            vec![log, bad_log],
+            Some(metrics.clone()),
+        )
+        .await;
+        assert_eq!(ingested, 1);
+        assert!(metrics.events_received.get() >= 2.0);
+    }
+
+    #[test]
+    fn mock_plain_pool_deployed_log_zero_fee() {
+        let pool = Address::from([0x01; 20]);
+        let token0 = address!("A0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48");
+        let token1 = address!("C02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2");
+        let (topics, data) = mock_plain_pool_deployed_log(pool, token0, token1, 0);
+        assert_eq!(topics.len(), 1);
+        assert!(!data.is_empty());
+        let result = decode_factory_log(
+            address!("F18056Bbd9e56aC88eefA885588501c1806Be1D8"),
+            ProtocolType::Curve,
+            4,
+            FactoryEventType::PlainPoolDeployed,
+            &topics,
+            &data,
+        );
+        assert!(result.is_some());
+    }
+
+    #[test]
+    fn mock_pool_registered_log_zero_swap_fee() {
+        let pool = Address::from([0x02; 20]);
+        let factory = address!("bA1333333333a1BA1108E8412f11850A5C319bA9");
+        let token0 = address!("A0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48");
+        let token1 = address!("C02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2");
+        let (topics, data) = mock_pool_registered_log(pool, factory, token0, token1, U256::ZERO);
+        assert_eq!(topics.len(), 3);
+        let result = decode_factory_log(
+            factory,
+            ProtocolType::BalancerV3,
+            10,
+            FactoryEventType::PoolRegistered,
+            &topics,
+            &data,
+        );
+        assert!(result.is_some());
+    }
+
+    #[test]
+    fn factory_pool_created_inequality_different_pool() {
+        let a = FactoryPoolCreated {
+            factory: Address::ZERO,
+            protocol: ProtocolType::UniswapV2,
+            fee_bps: 30,
+            token0: Address::ZERO,
+            token1: Address::ZERO,
+            pool: Address::from([0x01; 20]),
+        };
+        let b = FactoryPoolCreated {
+            pool: Address::from([0x02; 20]),
+            ..a.clone()
+        };
+        assert_ne!(a, b);
+    }
+
+    #[test]
+    fn decode_factory_log_pool_created_v3_no_pool_in_data() {
+        let token0 = address!("A0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48");
+        let token1 = address!("C02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2");
+        let factory = address!("bA1333333333a1BA1108E8412f11850A5C319bA9");
+        let topic0 = EventSignatures::pool_created_v3_topic();
+        let topic3_fee = B256::left_padding_from(&U256::from(5000u32).to_be_bytes::<32>());
+        let topics = vec![
+            topic0,
+            B256::left_padding_from(token0.as_slice()),
+            B256::left_padding_from(token1.as_slice()),
+            topic3_fee,
+        ];
+        let data = vec![0xFF; 10];
+        let result = decode_factory_log(
+            factory,
+            ProtocolType::UniswapV3,
+            30,
+            FactoryEventType::PoolCreatedV3,
+            &topics,
+            &data,
+        );
+        assert!(result.is_none());
+    }
+
+    #[tokio::test]
+    async fn process_logs_rejects_non_factory_address() {
+        use alloy::primitives::LogData;
+        let service = crate::service::DiscoveryService::new(crate::config::DiscoveryConfig::default());
+        let factory = address!("5C69bEe701ef814a2B6a3EDD4B1652CB9cc5aA6f");
+        let entries = vec![FactoryEntry {
+            address: factory,
+            protocol: ProtocolType::UniswapV2,
+            fee_bps: 30,
+            event_type: FactoryEventType::PairCreated,
+        }];
+
+        let other = address!("C0AEe478e3658e2610c5F7A4A2D1773cDCC8b275");
+        let token0 = address!("A0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48");
+        let token1 = address!("C02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2");
+        let pair = Address::from([0x55; 20]);
+        let (topics, data) = mock_pair_created_log(other, token0, token1, pair, 1);
+        let log = alloy::rpc::types::Log {
+            inner: alloy::primitives::Log {
+                address: other,
+                data: LogData::new_unchecked(topics, data.into()),
+            },
+            ..Default::default()
+        };
+
+        let ingested = process_logs(&service, &entries, vec![log]).await;
+        assert_eq!(ingested, 0);
+    }
 }

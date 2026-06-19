@@ -1811,4 +1811,215 @@ mod tests {
             DiscoveryEvent::PoolUpdated(_)
         ));
     }
+
+    #[test]
+    fn on_chain_metrics_slippage_various_values() {
+        let mut cfg = test_config();
+        cfg.scoring.slippage_estimate_bps = 100;
+        let source = OnChainMetricsSource::new(None, &cfg);
+        let result = source.fetch_metrics(
+            Address::from([0xAA; 20]),
+            usdc(),
+            weth(),
+            ProtocolType::UniswapV2,
+        );
+        assert!(result.slippage_estimate > 0.0);
+        assert!(result.slippage_estimate <= 0.99);
+    }
+
+    #[test]
+    fn estimate_tvl_usd_weth_in_token1_position() {
+        let other = address!("6B175474E89094C44Da98b954EedeAC495271d0F");
+        let tvl = estimate_tvl_usd(other, weth(), 0.5, 100.0);
+        assert!(tvl > 0.0);
+    }
+
+    #[test]
+    fn discovery_service_insert_multiple_and_prune() {
+        let svc = DiscoveryService::new(test_config());
+        for i in 1u8..=10 {
+            let inputs = PoolScoreInputs {
+                tvl_usd: i as f64 * 100_000.0,
+                volume_24h_usd: i as f64 * 10_000.0,
+                fee_bps: 30,
+                slippage_estimate: 0.01,
+            };
+            svc.insert_validated(
+                PoolInfo {
+                    address: Address::from([i; 20]),
+                    token0: usdc(),
+                    token1: weth(),
+                    protocol: ProtocolType::UniswapV2,
+                    fee_bps: 30,
+                    score: 0.0,
+                    tvl_usd: 0.0,
+                    volume_24h_usd: 0.0,
+                    slippage_estimate: 0.0,
+                    discovered_at: 0,
+                },
+                inputs,
+            );
+        }
+        let before = svc.get_top_n(100).len();
+        let _removed = svc.prune(0.5);
+        assert!(svc.get_top_n(100).len() <= before);
+    }
+
+    #[test]
+    fn offline_validate_bancor_v3_valid_fee() {
+        let event = FactoryPoolCreated {
+            factory: Address::ZERO,
+            protocol: ProtocolType::BancorV3,
+            fee_bps: 50,
+            token0: usdc(),
+            token1: weth(),
+            pool: Address::from([0x40; 20]),
+        };
+        let result = offline_validate(&event, 0.01);
+        assert_eq!(result, ValidationResult::Valid);
+    }
+
+    #[test]
+    fn config_factory_entries_default() {
+        let cfg = test_config();
+        assert!(cfg.factories.is_empty());
+    }
+
+    #[test]
+    fn config_the_graph_defaults() {
+        let cfg = test_config();
+        assert!(cfg.the_graph.endpoint.is_empty());
+    }
+
+    #[test]
+    fn config_curve_defaults() {
+        let cfg = test_config();
+        assert!(cfg.curve.enabled);
+        assert_eq!(cfg.curve.default_fee_bps, 4);
+    }
+
+    #[test]
+    fn config_balancer_v3_defaults() {
+        let cfg = test_config();
+        assert!(!cfg.balancer_v3.enabled);
+    }
+
+    #[tokio::test]
+    async fn ingest_disabled_config_rejects_all() {
+        let cfg = DiscoveryConfig {
+            discovery: crate::config::DiscoverySettings {
+                enabled: false,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let svc = DiscoveryService::new(cfg);
+        for proto in &[ProtocolType::UniswapV2, ProtocolType::SushiSwap, ProtocolType::Curve] {
+            let event = FactoryPoolCreated {
+                factory: Address::ZERO,
+                protocol: *proto,
+                fee_bps: 30,
+                token0: usdc(),
+                token1: weth(),
+                pool: Address::from([0xBB; 20]),
+            };
+            assert!(!svc.ingest_pool_created(event).await);
+        }
+    }
+
+    #[test]
+    fn prune_after_max_pools_exceeded() {
+        let cfg = DiscoveryConfig {
+            discovery: crate::config::DiscoverySettings {
+                max_pools: 3,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let svc = DiscoveryService::new(cfg);
+        for i in 1u8..=5 {
+            let inputs = PoolScoreInputs {
+                tvl_usd: i as f64 * 100_000.0,
+                volume_24h_usd: i as f64 * 10_000.0,
+                fee_bps: 30,
+                slippage_estimate: 0.01,
+            };
+            svc.insert_validated(
+                PoolInfo {
+                    address: Address::from([i; 20]),
+                    token0: usdc(),
+                    token1: weth(),
+                    protocol: ProtocolType::UniswapV2,
+                    fee_bps: 30,
+                    score: 0.0,
+                    tvl_usd: 0.0,
+                    volume_24h_usd: 0.0,
+                    slippage_estimate: 0.0,
+                    discovered_at: 0,
+                },
+                inputs,
+            );
+        }
+        let top = svc.get_top_n(100);
+        assert!(top.len() <= 5);
+    }
+
+    #[test]
+    fn u256_to_f64_negative_exponent() {
+        let small = U256::from(1u64);
+        let result = u256_to_f64(small);
+        assert!((result - 1e-18).abs() < 1e-20);
+    }
+
+    #[test]
+    fn insert_validated_returns_updated_score() {
+        let svc = DiscoveryService::new(test_config());
+        let inputs = PoolScoreInputs {
+            tvl_usd: 1_000_000.0,
+            volume_24h_usd: 100_000.0,
+            fee_bps: 30,
+            slippage_estimate: 0.01,
+        };
+        let info = svc.insert_validated(
+            PoolInfo {
+                address: Address::from([0x42; 20]),
+                token0: usdc(),
+                token1: weth(),
+                protocol: ProtocolType::UniswapV2,
+                fee_bps: 30,
+                score: 0.0,
+                tvl_usd: 0.0,
+                volume_24h_usd: 0.0,
+                slippage_estimate: 0.0,
+                discovered_at: 0,
+            },
+            inputs,
+        );
+        assert!(info.score > 0.0);
+        assert!(info.tvl_usd > 0.0);
+    }
+
+    #[test]
+    fn subscribe_events_channel_capacity() {
+        let svc = DiscoveryService::new(test_config());
+        let mut receivers = Vec::new();
+        for _ in 0..5 {
+            receivers.push(svc.subscribe_events());
+        }
+        assert_eq!(receivers.len(), 5);
+    }
+
+    #[test]
+    fn on_chain_metrics_custom_slippage() {
+        let mut cfg = test_config();
+        cfg.scoring.slippage_estimate_bps = 200;
+        let source = OnChainMetricsSource::new(None, &cfg);
+        let result = source.fetch_metrics(
+            Address::from([0x50; 20]),
+            usdc(),
+            weth(),
+            ProtocolType::UniswapV2,
+        );
+        assert!((result.slippage_estimate - 0.02).abs() < 1e-6);
+    }
 }

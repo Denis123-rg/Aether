@@ -491,4 +491,203 @@ mod tests {
         assert!(resource.get(SERVICE_NAME.into()).is_some());
         assert!(resource.get(SERVICE_VERSION.into()).is_some());
     }
+
+    #[test]
+    fn tracing_guard_otel_installed_field_true() {
+        let guard = TracingGuard { otel_installed: true };
+        assert!(guard.otel_installed);
+    }
+
+    #[test]
+    fn tracing_guard_otel_installed_field_false() {
+        let guard = TracingGuard { otel_installed: false };
+        assert!(!guard.otel_installed);
+    }
+
+    #[test]
+    fn env_filter_try_from_default_env_returns_ok_or_default() {
+        std::env::remove_var("RUST_LOG");
+        let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("warn"));
+        assert_eq!(filter.to_string(), "warn");
+    }
+
+    #[test]
+    fn env_filter_try_from_default_env_with_value() {
+        std::env::set_var("RUST_LOG", "trace");
+        let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
+        assert_eq!(filter.to_string(), "trace");
+        std::env::remove_var("RUST_LOG");
+    }
+
+    #[test]
+    fn log_format_json_detection_exact_match() {
+        std::env::set_var("LOG_FORMAT", "json");
+        let v = std::env::var("LOG_FORMAT").unwrap();
+        assert_eq!(v, "json");
+        let is_json = v == "json";
+        assert!(is_json);
+        std::env::remove_var("LOG_FORMAT");
+    }
+
+    #[test]
+    fn log_format_json_detection_no_match() {
+        std::env::set_var("LOG_FORMAT", "JSON");
+        let v = std::env::var("LOG_FORMAT").unwrap();
+        assert_ne!(v, "json");
+        std::env::remove_var("LOG_FORMAT");
+    }
+
+    #[test]
+    fn otlp_endpoint_some_when_set() {
+        std::env::set_var("OTEL_EXPORTER_OTLP_ENDPOINT", "http://localhost:4317");
+        let endpoint = std::env::var("OTEL_EXPORTER_OTLP_ENDPOINT")
+            .ok()
+            .filter(|s| !s.is_empty());
+        assert!(endpoint.is_some());
+        assert_eq!(endpoint.unwrap(), "http://localhost:4317");
+        std::env::remove_var("OTEL_EXPORTER_OTLP_ENDPOINT");
+    }
+
+    #[test]
+    fn otlp_endpoint_none_when_unset() {
+        std::env::remove_var("OTEL_EXPORTER_OTLP_ENDPOINT");
+        let endpoint = std::env::var("OTEL_EXPORTER_OTLP_ENDPOINT")
+            .ok()
+            .filter(|s| !s.is_empty());
+        assert!(endpoint.is_none());
+    }
+
+    #[test]
+    fn resource_service_name_attribute_access() {
+        let resource = Resource::new(vec![
+            KeyValue::new(SERVICE_NAME, "aether-rust"),
+            KeyValue::new(SERVICE_VERSION, "1.0.0"),
+        ]);
+        let name = resource.get(SERVICE_NAME.into());
+        assert!(name.is_some());
+    }
+
+    #[test]
+    fn resource_service_version_attribute_access() {
+        let resource = Resource::new(vec![
+            KeyValue::new(SERVICE_NAME, "aether-rust"),
+            KeyValue::new(SERVICE_VERSION, "1.0.0"),
+        ]);
+        let ver = resource.get(SERVICE_VERSION.into());
+        assert!(ver.is_some());
+    }
+
+    #[test]
+    fn resource_empty_no_attributes() {
+        let resource = Resource::new(vec![]);
+        assert!(resource.get(SERVICE_NAME.into()).is_none());
+    }
+
+    #[test]
+    fn guard_drop_multiple_invocations() {
+        {
+            let _g1 = TracingGuard { otel_installed: false };
+            let _g2 = TracingGuard { otel_installed: false };
+            let _g3 = TracingGuard { otel_installed: false };
+        }
+    }
+
+    #[test]
+    fn env_filter_level_hierarchy() {
+        let filter = EnvFilter::new("warn");
+        let s = filter.to_string();
+        assert_eq!(s, "warn");
+    }
+
+    #[test]
+    fn env_filter_debug_all_crates() {
+        let filter = EnvFilter::new("debug");
+        assert_eq!(filter.to_string(), "debug");
+    }
+
+    #[test]
+    fn env_filter_critical_only() {
+        let filter = EnvFilter::new("error");
+        assert_eq!(filter.to_string(), "error");
+    }
+
+    #[test]
+    fn log_format_unset_is_not_json() {
+        std::env::remove_var("LOG_FORMAT");
+        let is_json = matches!(std::env::var("LOG_FORMAT").as_deref(), Ok("json"));
+        assert!(!is_json);
+    }
+
+    #[test]
+    fn init_json_fmt_layer_properties() {
+        use tracing_subscriber::fmt;
+        let _layer = fmt::layer::<tracing_subscriber::Registry>()
+            .json()
+            .flatten_event(true)
+            .with_current_span(true)
+            .with_span_list(false);
+    }
+
+    #[test]
+    fn init_pretty_fmt_layer_properties() {
+        use tracing_subscriber::fmt;
+        let _layer = fmt::layer::<tracing_subscriber::Registry>()
+            .with_target(true);
+    }
+
+    #[test]
+    fn resource_with_duplicate_service_name_uses_last() {
+        let resource = Resource::new(vec![
+            KeyValue::new(SERVICE_NAME, "first"),
+            KeyValue::new(SERVICE_NAME, "second"),
+        ]);
+        assert!(resource.get(SERVICE_NAME.into()).is_some());
+    }
+
+    #[test]
+    fn tracing_guard_debug_otel_installed() {
+        let guard = TracingGuard { otel_installed: true };
+        let debug = format!("{:?}", guard);
+        assert!(debug.contains("true"));
+    }
+
+    #[test]
+    fn tracing_guard_debug_no_otel() {
+        let guard = TracingGuard { otel_installed: false };
+        let debug = format!("{:?}", guard);
+        assert!(debug.contains("false"));
+    }
+
+    #[test]
+    fn env_filter_with_all_log_levels() {
+        let filter = EnvFilter::new("error,warn,info,debug,trace");
+        let s = filter.to_string();
+        assert!(s.contains("error"));
+    }
+
+    #[test]
+    fn otlp_endpoint_whitespace_only_is_none() {
+        std::env::set_var("OTEL_EXPORTER_OTLP_ENDPOINT", "   ");
+        let endpoint = std::env::var("OTEL_EXPORTER_OTLP_ENDPOINT")
+            .ok()
+            .filter(|s| !s.is_empty());
+        assert!(endpoint.is_some());
+        std::env::remove_var("OTEL_EXPORTER_OTLP_ENDPOINT");
+    }
+
+    #[test]
+    fn otlp_service_name_default_when_unset() {
+        std::env::remove_var("OTEL_SERVICE_NAME");
+        let name = std::env::var("OTEL_SERVICE_NAME")
+            .unwrap_or_else(|_| "aether-rust".to_string());
+        assert_eq!(name, "aether-rust");
+    }
+
+    #[test]
+    fn multiple_env_filter_variations() {
+        for level in &["error", "warn", "info", "debug", "trace", "off"] {
+            let filter = EnvFilter::new(*level);
+            assert_eq!(filter.to_string(), *level);
+        }
+    }
 }

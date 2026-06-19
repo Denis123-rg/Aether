@@ -4512,6 +4512,301 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn v2_pool_full_revm_mode_getreserves_error() {
+        use mock_rpc::{MockRpcConfig, provider_from_cfg};
+        let (provider, _server) = provider_from_cfg(MockRpcConfig {
+            token0: usdc(),
+            token1: WETH,
+            fail_get_reserves: true,
+            ..Default::default()
+        })
+        .await;
+        let result = validate_v2_pool_full(
+            &provider,
+            address!("1a00000000000000000000000000000000000001"),
+            usdc(),
+            WETH,
+            ProtocolType::UniswapV2,
+            30,
+            0.001,
+            "revm",
+            None,
+        )
+        .await;
+        assert!(matches!(result, ValidationResult::Invalid(_)));
+    }
+
+    #[tokio::test]
+    async fn v2_pool_full_both_mode_analytical_passes_revm_fails() {
+        use mock_rpc::{MockRpcConfig, provider_from_cfg};
+        let (provider, _server) = provider_from_cfg(MockRpcConfig {
+            token0: usdc(),
+            token1: WETH,
+            reserve0: U256::from(3_000_000_000_000u64),
+            reserve1: U256::from(1_000_000_000_000_000_000u64),
+            ..Default::default()
+        })
+        .await;
+        let metrics = crate::metrics::DiscoveryMetrics::noop();
+        let result = validate_v2_pool_full(
+            &provider,
+            address!("1b00000000000000000000000000000000000001"),
+            usdc(),
+            WETH,
+            ProtocolType::UniswapV2,
+            30,
+            0.001,
+            "both",
+            Some(metrics),
+        )
+        .await;
+        if skip_on_public_rpc_failure(&result) {
+            return;
+        }
+        assert!(matches!(result, ValidationResult::Valid | ValidationResult::Invalid(_)));
+    }
+
+    #[tokio::test]
+    async fn curve_pool_full_revms_mode_analytical_fails() {
+        use mock_rpc::{MockRpcConfig, provider_from_cfg};
+        let (provider, _server) = provider_from_cfg(MockRpcConfig::default()).await;
+        let result = validate_curve_pool_full(
+            &provider,
+            address!("1c00000000000000000000000000000000000001"),
+            WETH,
+            usdc(),
+            4,
+            0.001,
+            "revm",
+            None,
+        )
+        .await;
+        assert!(matches!(result, ValidationResult::Invalid(_)));
+    }
+
+    #[tokio::test]
+    async fn curve_pool_full_both_mode_analytical_passes() {
+        use mockito::{Matcher, Server};
+        let mut server = Server::new_async().await;
+        let a_sel = &alloy::hex::encode(ICurvePool::ACall {}.abi_encode())[0..8];
+        let bal_sel = &alloy::hex::encode(ICurvePool::balancesCall { i: U256::ZERO }.abi_encode())[0..8];
+        let bal1_sel = &alloy::hex::encode(ICurvePool::balancesCall { i: U256::from(1u64) }.abi_encode())[0..8];
+        let a_val = U256::from(200u64);
+        let bal_val = U256::from(1_000_000_000_000_000_000_000u128);
+        let pad = |v: U256| format!("0x{}", alloy::hex::encode(v.to_be_bytes::<32>()));
+        let rpc_ok = |h: &str| format!(r#"{{"jsonrpc":"2.0","id":1,"result":"{h}"}}"#);
+        let _m1 = server.mock("POST", "/").match_body(Matcher::Regex(format!("(?i){a_sel}"))).with_body(rpc_ok(&pad(a_val))).create();
+        let _m2 = server.mock("POST", "/").match_body(Matcher::Regex(format!("(?i){bal_sel}"))).with_body(rpc_ok(&pad(bal_val))).create();
+        let _m3 = server.mock("POST", "/").match_body(Matcher::Regex(format!("(?i){bal1_sel}"))).with_body(rpc_ok(&pad(bal_val))).create();
+        let url: url::Url = server.url().parse().unwrap();
+        let provider = alloy::providers::ProviderBuilder::new().connect_http(url).erased();
+        let result = validate_curve_pool_rpc(
+            &provider,
+            address!("1d00000000000000000000000000000000000001"),
+            WETH,
+            usdc(),
+            4,
+            0.001,
+        )
+        .await;
+        assert_eq!(result, ValidationResult::Valid);
+    }
+
+    #[tokio::test]
+    async fn balancer_v3_rpc_get_code_error_fail_open() {
+        use mockito::{Matcher, Server};
+        let mut server = Server::new_async().await;
+        let _mock = server.mock("POST", "/").match_body(Matcher::Regex("(?i)eth_getCode".into())).with_status(500).create();
+        let url: url::Url = server.url().parse().unwrap();
+        let provider = alloy::providers::ProviderBuilder::new().connect_http(url).erased();
+        let result = validate_balancer_v3_pool_rpc(
+            &provider,
+            address!("1e00000000000000000000000000000000000001"),
+            usdc(),
+            WETH,
+            30,
+            0.001,
+        )
+        .await;
+        assert_eq!(result, ValidationResult::Valid);
+    }
+
+    #[tokio::test]
+    async fn balancer_v3_rpc_valid_balances() {
+        use mock_rpc::{MockRpcConfig, provider_from_cfg};
+        let bal = U256::from(1_000_000_000_000_000_000_000u128);
+        let (provider, _server) = provider_from_cfg(MockRpcConfig {
+            pool_bytecode: Some("0x6080604052".into()),
+            erc20_balance: Some(bal),
+            ..Default::default()
+        })
+        .await;
+        let result = validate_balancer_v3_pool_rpc(
+            &provider,
+            address!("1f00000000000000000000000000000000000001"),
+            usdc(),
+            WETH,
+            30,
+            0.001,
+        )
+        .await;
+        assert_eq!(result, ValidationResult::Valid);
+    }
+
+    #[tokio::test]
+    async fn balancer_v3_pool_full_both_mode_analytical_fails() {
+        use mock_rpc::{MockRpcConfig, provider_from_cfg};
+        let (provider, _server) = provider_from_cfg(MockRpcConfig {
+            pool_bytecode: Some("0x6080604052".into()),
+            erc20_balance: Some(U256::from(1u64)),
+            ..Default::default()
+        })
+        .await;
+        let result = validate_balancer_v3_pool_full(
+            &provider,
+            address!("2a00000000000000000000000000000000000001"),
+            usdc(),
+            WETH,
+            30,
+            0.001,
+            "both",
+            None,
+        )
+        .await;
+        assert_eq!(result, ValidationResult::LowLiquidity);
+    }
+
+    #[tokio::test]
+    async fn validate_v3_pool_rpc_low_liquidity() {
+        use mock_rpc::{MockRpcConfig, provider_from_cfg};
+        let (provider, _server) = provider_from_cfg(MockRpcConfig {
+            erc20_balance: Some(U256::from(1u64)),
+            ..Default::default()
+        })
+        .await;
+        let result = validate_v3_pool_full(
+            &provider,
+            address!("2b00000000000000000000000000000000000001"),
+            usdc(),
+            WETH,
+            5,
+            0.001,
+            "analytical",
+            None,
+        )
+        .await;
+        assert_eq!(result, ValidationResult::LowLiquidity);
+    }
+
+    #[tokio::test]
+    async fn validate_v3_pool_rpc_erc20_rpc_error_omits_liquidity_check() {
+        use mockito::{Matcher, Server};
+        let mut server = Server::new_async().await;
+        let bal_hex = alloy::hex::encode(IERC20::balanceOfCall { account: Address::ZERO }.abi_encode());
+        let bal_sel = &bal_hex[0..8];
+        let _mock = server.mock("POST", "/").match_body(Matcher::Regex(format!("(?i){bal_sel}"))).with_status(500).create();
+        let url: url::Url = server.url().parse().unwrap();
+        let provider = alloy::providers::ProviderBuilder::new().connect_http(url).erased();
+        let result = validate_v3_pool_full(
+            &provider,
+            address!("2c00000000000000000000000000000000000001"),
+            usdc(),
+            WETH,
+            5,
+            0.001,
+            "analytical",
+            None,
+        )
+        .await;
+        assert_eq!(result, ValidationResult::Valid);
+    }
+
+    #[tokio::test]
+    async fn v2_rpc_token1_call_failure() {
+        use mock_rpc::{MockRpcConfig, provider_from_cfg};
+        let (provider, _server) = provider_from_cfg(MockRpcConfig {
+            token0: usdc(),
+            token1: WETH,
+            fail_token1: true,
+            ..Default::default()
+        })
+        .await;
+        let result = validate_v2_pool_rpc(
+            &provider,
+            address!("2d00000000000000000000000000000000000001"),
+            usdc(),
+            WETH,
+            ProtocolType::UniswapV2,
+            30,
+            0.001,
+        )
+        .await;
+        assert!(matches!(result, ValidationResult::Invalid(_)));
+    }
+
+    #[test]
+    fn v2_router_for_balancer_v2_returns_zero() {
+        assert_eq!(v2_router_for(ProtocolType::BalancerV2), Address::ZERO);
+    }
+
+    #[test]
+    fn v2_router_for_balancer_v3_returns_zero() {
+        assert_eq!(v2_router_for(ProtocolType::BalancerV3), Address::ZERO);
+    }
+
+    #[test]
+    fn v2_router_for_v3_returns_zero() {
+        assert_eq!(v2_router_for(ProtocolType::UniswapV3), Address::ZERO);
+    }
+
+    #[test]
+    fn v2_router_for_bancor_v3_returns_zero() {
+        assert_eq!(v2_router_for(ProtocolType::BancorV3), Address::ZERO);
+    }
+
+    #[test]
+    fn balancer_v3_balances_round_trip_near_zero() {
+        let bal = U256::from(1_000_000_000_000_000_000u64);
+        let result = validate_balancer_v3_balances(WETH, usdc(), 30, bal, bal, 0.5);
+        assert!(matches!(result, ValidationResult::Valid | ValidationResult::Invalid(_)));
+    }
+
+    #[test]
+    fn curve_balances_extreme_fee_bps() {
+        let bal = U256::from(1_000_000_000_000_000_000_000u128);
+        let result = validate_curve_balances(WETH, usdc(), 9999, U256::from(200), bal, bal, 0.001);
+        assert!(matches!(result, ValidationResult::Valid | ValidationResult::Invalid(_)));
+    }
+
+    #[test]
+    fn validate_v2_reserves_unsupported_balancer_v3() {
+        let result = validate_v2_reserves(
+            WETH,
+            usdc(),
+            ProtocolType::BalancerV3,
+            30,
+            U256::from(1_000_000_000_000_000_000u64),
+            U256::from(1_000_000_000_000_000_000u64),
+            0.001,
+        );
+        assert!(matches!(result, ValidationResult::Invalid(_)));
+    }
+
+    #[test]
+    fn validate_v2_reserves_unsupported_bancor_v3() {
+        let result = validate_v2_reserves(
+            WETH,
+            usdc(),
+            ProtocolType::BancorV3,
+            30,
+            U256::from(1_000_000_000_000_000_000u64),
+            U256::from(1_000_000_000_000_000_000u64),
+            0.001,
+        );
+        assert!(matches!(result, ValidationResult::Invalid(_)));
+    }
+
+    #[tokio::test]
     async fn balancer_v3_rpc_zero_balance_low_liquidity() {
         use mock_rpc::{MockRpcConfig, provider_from_cfg};
         let (provider, _server) = provider_from_cfg(MockRpcConfig {

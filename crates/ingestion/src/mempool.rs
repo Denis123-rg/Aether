@@ -883,4 +883,88 @@ mod tests {
         let v = default_router_addresses();
         assert!(v.len() >= 16, "expected at least 16 router addresses, got {}", v.len());
     }
+
+    #[test]
+    fn default_router_addresses_contains_sushiswap() {
+        let v = default_router_addresses();
+        let sushi = address!("d9e1cE17f2641f24aE83637ab66a2cca9C378B9F");
+        assert!(v.contains(&sushi));
+    }
+
+    #[test]
+    fn default_router_addresses_contains_curve_router() {
+        let v = default_router_addresses();
+        let curve = address!("99a58482BD75cbab83b27EC03CA68fF489b5788f");
+        assert!(v.contains(&curve));
+    }
+
+    #[test]
+    fn default_router_addresses_contains_balancer_vault() {
+        let v = default_router_addresses();
+        let bal = address!("BA12222222228d8Ba445958a75a0704d566BF2C8");
+        assert!(v.contains(&bal));
+    }
+
+    #[test]
+    fn default_router_addresses_contains_bancor() {
+        let v = default_router_addresses();
+        let bancor = address!("eEF417e1D5CC832e619ae18D2F140De2999dD4fB");
+        assert!(v.contains(&bancor));
+    }
+
+    #[test]
+    fn default_router_addresses_contains_1inch() {
+        let v = default_router_addresses();
+        let inch = address!("111111125421cA6dc452d289314280a0f8842A65");
+        assert!(v.contains(&inch));
+    }
+
+    #[test]
+    fn is_enabled_from_str_whitespace() {
+        assert!(!is_enabled_from_str("  "));
+        assert!(!is_enabled_from_str("\t"));
+        assert!(!is_enabled_from_str("\n"));
+    }
+
+    #[test]
+    fn is_enabled_from_str_numeric_non_one() {
+        assert!(!is_enabled_from_str("2"));
+        assert!(!is_enabled_from_str("99"));
+    }
+
+    #[test]
+    fn subscribe_params_empty_filter() {
+        let cfg = AlchemyMempoolConfig {
+            ws_url: "wss://test".into(),
+            router_filter: vec![],
+        };
+        let v = cfg.subscribe_params();
+        let arr = v.as_array().unwrap();
+        assert_eq!(arr.len(), 1);
+        assert_eq!(arr[0], "alchemy_pendingTransactions");
+    }
+
+    #[test]
+    fn raw_tx_matches_hash_different_hash() {
+        let (raw, _hash) = signed_tx_vector();
+        let wrong_hash = alloy::primitives::B256::repeat_byte(0xff);
+        assert!(!raw_tx_matches_hash(&raw, wrong_hash));
+    }
+
+    #[test]
+    fn warn_if_non_alchemy_endpoint_various_non_alchemy() {
+        warn_if_non_alchemy_endpoint("wss://reth.local:8546");
+        warn_if_non_alchemy_endpoint("wss://geth.example.com:8546");
+        warn_if_non_alchemy_endpoint("wss://quicknode.io/v2/key");
+    }
+
+    #[test]
+    fn default_router_set_no_duplicates() {
+        let v = default_router_addresses();
+        for i in 0..v.len() {
+            for j in (i + 1)..v.len() {
+                assert_ne!(v[i], v[j], "duplicate addresses at indices {i} and {j}");
+            }
+        }
+    }
 }

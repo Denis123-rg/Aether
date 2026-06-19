@@ -1778,6 +1778,80 @@ mod tests {
     }
 
     #[test]
+    fn arb_with_multiple_overrides_applies_all() {
+        let state = ForkedState::new_empty(18_000_000, 1_700_000_000, 0);
+        let mut params = default_params();
+        params.skip_victim_with_overrides = Some(vec![
+            (VICTIM_TO, U256::from(1u64), U256::from(100u64)),
+            (VICTIM_FROM, U256::from(2u64), U256::from(200u64)),
+        ]);
+        let result = validate_backrun_cache(state, &default_victim(), &default_arb(), &params);
+        assert!(!result.accepted);
+        assert_eq!(result.victim_gas_used, 0);
+    }
+
+    #[test]
+    fn decode_revert_error_string_long_message() {
+        let msg = "a".repeat(200);
+        let msg_bytes = msg.as_bytes();
+        let mut payload = vec![0x08, 0xc3, 0x79, 0xa0];
+        payload.extend_from_slice(&[0u8; 32]);
+        payload.extend_from_slice(&(U256::from(msg_bytes.len()).to_be_bytes::<32>()));
+        payload.extend_from_slice(msg_bytes);
+        payload.extend_from_slice(&[0u8; 32]);
+        let reason = decode_revert_reason(&payload);
+        assert!(reason.contains(&msg));
+    }
+
+    #[test]
+    fn read_post_balance_fallback_when_storage_absent() {
+        use revm::state::EvmState;
+        let state = EvmState::default();
+        let key = U256::from(999u64);
+        let fallback = U256::from(42u64);
+        let result = read_post_balance(&state, WETH, key, fallback);
+        assert_eq!(result, fallback);
+    }
+
+    #[test]
+    fn victim_revert_with_empty_output() {
+        let mut state = ForkedState::new_empty(18_000_000, 1_700_000_000, 0);
+        state.insert_account(VICTIM_TO, U256::ZERO, vec![0x60, 0x00, 0x60, 0x00, 0xfd].into());
+        let result = validate_backrun_cache(state, &default_victim(), &default_arb(), &default_params());
+        assert_eq!(result.revert_selector, Some([0, 0, 0, 0]));
+    }
+
+    #[test]
+    fn backrun_result_debug_format() {
+        let r = BackrunSimResult::rejected(RejectReason::SimError, 21000, 0);
+        let s = format!("{:?}", r);
+        assert!(s.contains("SimError"));
+    }
+
+    #[test]
+    fn victim_tx_debug_format() {
+        let v = default_victim();
+        let s = format!("{:?}", v);
+        assert!(s.contains("VictimTx"));
+    }
+
+    #[test]
+    fn arb_tx_debug_format() {
+        let a = default_arb();
+        let s = format!("{:?}", a);
+        assert!(s.contains("ArbTx"));
+    }
+
+    #[test]
+    fn skip_victim_overrides_empty_vec_still_skips() {
+        let state = ForkedState::new_empty(18_000_000, 1_700_000_000, 0);
+        let mut params = default_params();
+        params.skip_victim_with_overrides = Some(vec![]);
+        let result = validate_backrun_cache(state, &default_victim(), &default_arb(), &params);
+        assert_eq!(result.victim_gas_used, 0);
+    }
+
+    #[test]
     fn arb_profit_exactly_covers_gas_is_rejected() {
         let profit_recipient = RECIPIENT;
         let balance_slot = U256::from(3u64);

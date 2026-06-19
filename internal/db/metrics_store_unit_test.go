@@ -91,3 +91,15 @@ func TestBuildMetricsInsert_MalformedTagsSkipped(t *testing.T) {
 		t.Fatalf("query=%q args=%v", q, args)
 	}
 }
+
+func TestNoopMetricsStore_Record(t *testing.T) {
+	s := NewNoopMetricsStore()
+	s.Record(Metric{Name: "test_metric", Value: 1.23, Time: time.Now().UTC()})
+	s.Record(Metric{Name: "with_tags", Value: 42, Tags: map[string]string{"k": "v"}})
+	s.Record(Metric{})
+}
+
+func TestNoopMetricsStore_Close(t *testing.T) {
+	s := NewNoopMetricsStore()
+	s.Close()
+}

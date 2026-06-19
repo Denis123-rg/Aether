@@ -1,130 +1,136 @@
-Prompt 2: Rust – Fix Warnings and Achieve 95% Line Coverage
+Rust Test Coverage Improvement Plan – Prompt 1
 Objective
-You are a senior Rust testing engineer. Your task is twofold:
+You are a Senior Rust Testing Engineer. Your task is to fully complete the test coverage improvement for the Aether Rust codebase. This includes:
 
-Eliminate all compiler warnings (without changing functionality) so that cargo test produces a clean output.
+Fixing the remaining compilation warning so that cargo test outputs zero warnings.
 
-Increase line coverage for a specific list of source files to at least 95% (preferably 100%), without altering the existing architecture or business logic.
+Increasing line coverage for a specific set of source files to at least 95% (preferably 100%), without altering the existing architecture or business logic.
 
-You may use sub‑agents to parallelise work across files. All new tests must be realistic, idiomatic, and pass (green). At the end, produce a detailed report summarising the fixes, new tests, and coverage improvements.
+You are expected to write realistic, high‑quality tests that exercise all uncovered code paths. All tests must pass (be green). At the end, you must provide a detailed final report summarising the work done, coverage improvements, and any challenges encountered.
 
-Part 1: Fix Warnings
-Currently, cargo test emits several warnings (they do not break the build but clutter the output). You must fix them.
+You may use sub‑agents to parallelise work across files, but you are ultimately responsible for coordinating and delivering the final result.
 
-Warnings to fix:
-method pool_ready_for_simulation is never used in crates/grpc-server/src/engine.rs:710
+Phase 1: Fix Compilation Warning
+Currently, cargo test produces one warning:
 
-Action: Either remove the method if it’s not needed, or add #[allow(dead_code)] if it’s intended for future use or testing.
+text
+warning: method `pool_ready_for_simulation` is never used
+   --> crates/grpc-server/src/engine.rs:710:12
+    |
+403 | impl AetherEngine {
+    | ----------------- method in this implementation
+...
+710 |     pub fn pool_ready_for_simulation(&self, pool_addr: Address) -> bool {
+    |            ^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+Required Action:
 
-If it’s only for testing, use #[cfg(any(test, feature = "test-utils"))].
+Either remove the method entirely if it is not needed, or add #[allow(dead_code)] above it (or use #[cfg(any(test, feature = "test-utils"))] if it is only intended for testing).
 
-Unused variables in aether_replay.rs:
+After the fix, run cargo test and ensure that no warnings are emitted.
 
-pools at lines 2225 and 2245 – rename to _pools.
+✅ Verification: cargo test should show 0 warnings and all tests must still pass.
 
-token_index at line 2527 – rename to _token_index.
+Phase 2: Increase Test Coverage to ≥95%
+Your primary goal is to raise the line coverage of the following source files to at least 95% (ideally 100%). The current coverage (from cargo llvm-cov) is provided.
 
-Unused variables in aether_profit_scorer.rs:
-
-c at line 2194 – rename to _c.
-
-a at line 2212 – rename to _a.
-
-b at line 2213 – rename to _b.
-
-mut raw at line 2214 – remove mut (the variable is not mutated).
-
-Recommended Approach
-Run the following cargo fix commands to automatically apply most fixes:
-
-bash
-cargo fix --bin aether-replay -p aether-grpc-server --tests
-cargo fix --bin aether-profit-scorer -p aether-grpc-server --tests
-cargo fix --bin aether-rust -p aether-grpc-server
-Then manually verify and fix any remaining warnings. After that, run cargo test and ensure zero warnings are printed.
-
-Part 2: Increase Coverage to ≥95%
-Once warnings are eliminated, you must improve line coverage for the following source files to at least 95%. The current line coverage is shown (from cargo llvm-cov or tarpaulin). Your goal is to raise each to ≥95%.
-
+Files to Improve
 File	Current Line Coverage
-discovery/src/events.rs	77.87%
-discovery/src/service.rs	81.22%
-discovery/src/validator.rs	56.86%
-grpc-server/src/bin/aether_profit_scorer.rs	65.28%
-grpc-server/src/bin/aether_replay.rs	36.21%
-grpc-server/src/discovery_integration.rs	56.19%
-grpc-server/src/engine.rs	79.68%
-grpc-server/src/first_seen_tracker.rs	82.54%
-grpc-server/src/historical.rs	85.30%
-grpc-server/src/main.rs	63.31%
-grpc-server/src/mempool_pipeline.rs	64.77%
-grpc-server/src/mempool_writer.rs	73.46%
-grpc-server/src/profitability_writer.rs	82.76%
-grpc-server/src/provider.rs	91.02%
-grpc-server/src/tracing_init.rs	83.55%
-pools/src/lib.rs	87.66%
-simulator/src/fee_on_transfer.rs	66.47%
-simulator/src/lib.rs	87.98%
-simulator/src/mempool_backrun.rs	86.59%
-simulator/src/post_state_replay.rs	84.62%
-simulator/src/slot_prefetch.rs	81.65%
-Note: Files with coverage already ≥95% (e.g., ingestion/src/config.rs, grpc-server/src/metrics.rs, etc.) are not in the list – you only need to work on the above.
-
+discovery/src/events.rs	88.55%
+discovery/src/service.rs	89.90%
+discovery/src/validator.rs	73.62%
+grpc-server/src/bin/aether_profit_scorer.rs	82.39%
+grpc-server/src/bin/aether_replay.rs	50.76%
+grpc-server/src/discovery_integration.rs	56.77%
+grpc-server/src/engine.rs	81.38%
+grpc-server/src/historical.rs	86.26%
+grpc-server/src/main.rs	71.85%
+grpc-server/src/mempool_pipeline.rs	83.29%
+grpc-server/src/mempool_writer.rs	86.17%
+grpc-server/src/profitability_writer.rs	90.45%
+grpc-server/src/provider.rs	89.47%
+grpc-server/src/tracing_init.rs	78.64%
+ingestion/src/mempool.rs	93.93%
+pools/src/lib.rs	86.74%
+simulator/src/fee_on_transfer.rs	69.85%
+simulator/src/mempool_backrun.rs	88.92%
+simulator/src/post_state_replay.rs	91.12%
+simulator/src/slot_prefetch.rs	87.00%
 General Guidelines for Writing Tests
-Do not change production code unless necessary to expose internals (e.g., make a function pub(crate) or add #[cfg(test)] helpers). Prefer testing through public interfaces.
+Do not modify production code unless absolutely necessary to expose internals (e.g., make a function pub(crate) or add #[cfg(test)] helpers). Prefer testing through public interfaces.
 
-Use the existing test infrastructure – add new tests to existing #[cfg(test)] modules or create new test files under tests/ for integration tests.
+Use the existing test infrastructure – add new tests to existing #[cfg(test)] modules or create new integration test files under tests/ when needed.
 
-Write idiomatic Rust tests using assert_eq!, assert!, assert_matches!. Use proptest for property‑based testing where appropriate.
+Write idiomatic Rust tests using assert_eq!, assert!, assert_matches!, and where appropriate, use proptest for property‑based testing.
 
-Mock external dependencies (RPC, database, file system) using mockall, httpmock, or custom trait implementations.
+Mock external dependencies (RPC, databases, file system) using mockall, httpmock, or custom trait implementations. Do not rely on external network calls unless absolutely necessary (use mocks).
 
 Focus on uncovered branches – use the coverage report to identify specific lines, functions, and error paths that are not exercised.
 
-For binary files (aether_replay.rs, aether_profit_scorer.rs, main.rs):
-Refactor the logic into a separate function that can be unit‑tested. For example, move the main logic into a run() function that accepts parameters and returns a Result, then test that.
+For binary files (aether_replay.rs, aether_profit_scorer.rs, main.rs): refactor the main logic into a separate function (e.g., run()) that can be unit‑tested, then test that function with mocked dependencies.
 
-For tracing_init.rs – test initialisation with different environment variables, both success and error paths.
+For tracing_init.rs: test initialization with different environment variables, both success and error paths.
 
-For fee_on_transfer.rs – many edge cases (different fee percentages, honeypot detection) – use property‑based tests.
+For fee_on_transfer.rs: many edge cases (different fee percentages, honeypot detection) – use property‑based tests or exhaustive table‑driven tests.
 
 All new tests must pass – they must not break existing tests.
 
-Specific Advice per Module
-discovery: Focus on event handling, WebSocket reconnection, cache updates, validation logic.
+Specific Recommendations per File (Non‑Exhaustive)
+High Priority (Coverage < 60%)
+aether_replay.rs (50.76%) – extract core logic into a testable module; cover all sub‑commands and edge cases.
 
-engine.rs: Many methods are not covered – test pool management, cycle detection, optimisation, and integration with discovery.
+discovery_integration.rs (56.77%) – test integration between discovery and engine; use mock providers.
 
-mempool_pipeline.rs: Test the entire pipeline with various transaction inputs and error scenarios.
+validator.rs (73.62%) – many validation branches; mock RPC calls and test all error conditions.
 
-simulator: Cover simulation entry points, fallback logic, backrun execution, and post‑state replay.
+Medium Priority (60–80%)
+engine.rs (81.38%) – cover pool registration, cycle detection, optimisation, and hot‑cache integration.
+
+main.rs (71.85%) – refactor and test the main entry point.
+
+mempool_pipeline.rs (83.29%) – test the entire pipeline with various transaction inputs and error scenarios.
+
+fee_on_transfer.rs (69.85%) – cover all tax calculation and verification branches.
+
+Low‑Hanging Fruit (≥85%)
+mempool.rs (93.93%) – only a few missing branches; add tests for uncovered paths.
+
+profitability_writer.rs (90.45%), post_state_replay.rs (91.12%), provider.rs (89.47%) – add a few targeted tests to push over 95%.
 
 Deliverables
-Clean compilation – cargo test produces no warnings.
+Clean compilation – cargo test runs with zero warnings and all tests pass.
 
-New test code – added to existing test modules or new files.
+New test code – added to existing test modules or new test files.
 
-Updated coverage report – run the coverage tool (e.g., cargo llvm-cov --html) and confirm that each file now has ≥95% line coverage.
+Updated coverage report – run cargo llvm-cov --html (or cargo tarpaulin) and confirm that each file in the list now has ≥95% line coverage.
 
-Final report (Markdown) containing:
+Final Report (in Markdown) containing:
 
-Warnings fixed: list of warnings and how they were resolved.
+Warning fix summary – how the pool_ready_for_simulation warning was resolved.
 
-Coverage summary table – initial vs final coverage for each file.
+Coverage summary table – initial vs final coverage for every file.
 
-List of new test cases per file (e.g., “added integration test for WebSocket reconnect”, “tested error path when RPC fails”).
+List of new test cases per file (e.g., “added test for RPC timeout”, “tested invalid configuration path”).
 
-Total new tests and lines of test code added.
+Total number of new tests and lines of test code added.
 
-Challenges encountered (e.g., mocking external RPC, testing binaries) and how they were solved.
+Challenges encountered (e.g., mocking complex dependencies, testing binary files) and how they were overcome.
 
 Recommendations for maintaining high coverage going forward.
 
 Acceptance Criteria
-cargo test runs with zero warnings and zero failures.
+cargo test produces no warnings and zero failures.
 
 Each file in the list has line coverage ≥95% (verified by coverage tool).
 
 No production logic was changed (only tests and possibly test‑only helpers).
 
-The final report is detailed and actionable.
+The final report is clear, comprehensive, and includes all required sections.
+
+Additional Notes
+The project uses cargo-llvm-cov for coverage reporting – you can install it with cargo install cargo-llvm-cov.
+
+Some tests are currently ignored (marked #[ignore]) because they require a live Ethereum RPC URL. Do not re‑enable those unless you provide a mock alternative. Focus on tests that can run in a mocked environment.
+
+If you need to modify a file to add test‑only visibility, do so sparingly and document the change.

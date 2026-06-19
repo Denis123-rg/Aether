@@ -1409,4 +1409,136 @@ mod tests {
         assert_eq!(bytecode.len(), 32);
         assert!(bytecode.iter().all(|&b| b == 0x00));
     }
+
+    #[test]
+    fn build_backrun_validator_config_with_provider() {
+        use alloy::providers::ProviderBuilder;
+        std::env::set_var("AETHER_EXECUTOR_ADDRESS", "0x1111111111111111111111111111111111111111");
+        std::env::remove_var("AETHER_SEARCHER_CALLER");
+        std::env::remove_var("AETHER_PROFIT_TOKEN");
+        std::env::remove_var("AETHER_EXECUTOR_BYTECODE_PATH");
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let provider: alloy::providers::DynProvider<alloy::network::Ethereum> =
+            rt.block_on(async {
+                ProviderBuilder::new().on_anvil()
+            }).erased();
+        let config = build_backrun_validator_config(Some(provider));
+        assert!(config.is_some());
+        std::env::remove_var("AETHER_EXECUTOR_ADDRESS");
+    }
+
+    #[test]
+    fn load_executor_runtime_bytecode_with_0x_prefix_and_valid_hex() {
+        let artifact = serde_json::json!({
+            "deployedBytecode": {
+                "object": "0x6080604052348015600f57600080fd5b50603f80601d6000396000f3fe6080604052348015600f57600080fd5b50"
+            }
+        });
+        let result = load_executor_runtime_bytecode(&artifact.to_string());
+        assert!(result.is_ok());
+        let bytecode = result.unwrap();
+        assert!(!bytecode.is_empty());
+    }
+
+    #[test]
+    fn splice_immutable_valid_multiple_entries_different_ids() {
+        let mut bytes = vec![0x00u8; 128];
+        let artifact = serde_json::json!({
+            "deployedBytecode": {
+                "immutableReferences": {
+                    "4878": [{ "start": 0, "length": 32 }],
+                    "9999": [{ "start": 64, "length": 32 }]
+                }
+            }
+        });
+        let result = splice_immutable_aave_pool(&mut bytes, &artifact);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn build_backrun_validator_config_trimmed_executor_address() {
+        std::env::set_var("AETHER_EXECUTOR_ADDRESS", "  0x1111111111111111111111111111111111111111  ");
+        std::env::remove_var("AETHER_SEARCHER_CALLER");
+        std::env::remove_var("AETHER_PROFIT_TOKEN");
+        std::env::remove_var("AETHER_EXECUTOR_BYTECODE_PATH");
+        let config = build_backrun_validator_config(None);
+        assert!(config.is_some());
+        std::env::remove_var("AETHER_EXECUTOR_ADDRESS");
+    }
+
+    #[test]
+    fn build_backrun_validator_config_trimmed_searcher_caller() {
+        std::env::set_var("AETHER_EXECUTOR_ADDRESS", "0x1111111111111111111111111111111111111111");
+        std::env::set_var("AETHER_SEARCHER_CALLER", "  0x2222222222222222222222222222222222222222  ");
+        std::env::remove_var("AETHER_PROFIT_TOKEN");
+        std::env::remove_var("AETHER_EXECUTOR_BYTECODE_PATH");
+        let config = build_backrun_validator_config(None).unwrap();
+        let expected: alloy::primitives::Address = "0x2222222222222222222222222222222222222222".parse().unwrap();
+        assert_eq!(config.searcher_caller, expected);
+        std::env::remove_var("AETHER_EXECUTOR_ADDRESS");
+        std::env::remove_var("AETHER_SEARCHER_CALLER");
+    }
+
+    #[test]
+    fn load_executor_runtime_bytecode_non_string_hex() {
+        let artifact = serde_json::json!({
+            "deployedBytecode": {
+                "object": 42
+            }
+        });
+        let result = load_executor_runtime_bytecode(&artifact.to_string());
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn splice_immutable_empty_refs_object() {
+        let mut bytes = vec![0xAAu8; 32];
+        let artifact = serde_json::json!({
+            "deployedBytecode": {
+                "immutableReferences": {}
+            }
+        });
+        let result = splice_immutable_aave_pool(&mut bytes, &artifact);
+        assert!(result.is_ok());
+        assert!(bytes.iter().all(|&b| b == 0xAA));
+    }
+
+    #[test]
+    fn build_backrun_validator_config_trimmed_profit_token() {
+        std::env::set_var("AETHER_EXECUTOR_ADDRESS", "0x1111111111111111111111111111111111111111");
+        std::env::remove_var("AETHER_SEARCHER_CALLER");
+        std::env::set_var("AETHER_PROFIT_TOKEN", "  0x4444444444444444444444444444444444444444  ");
+        std::env::remove_var("AETHER_EXECUTOR_BYTECODE_PATH");
+        let config = build_backrun_validator_config(None).unwrap();
+        let expected: alloy::primitives::Address = "0x4444444444444444444444444444444444444444".parse().unwrap();
+        assert_eq!(config.profit_token, expected);
+        std::env::remove_var("AETHER_EXECUTOR_ADDRESS");
+        std::env::remove_var("AETHER_PROFIT_TOKEN");
+    }
+
+    #[test]
+    fn splice_immutable_nonexistent_deployed_bytecode() {
+        let mut bytes = vec![0x00u8; 64];
+        let artifact = serde_json::json!({
+            "bytecode": {
+                "immutableReferences": {
+                    "4878": [{ "start": 0, "length": 32 }]
+                }
+            }
+        });
+        let result = splice_immutable_aave_pool(&mut bytes, &artifact);
+        assert!(result.is_ok());
+        assert!(bytes.iter().all(|&b| b == 0x00));
+    }
+
+    #[test]
+    fn load_executor_runtime_bytecode_empty_object_field() {
+        let artifact = serde_json::json!({
+            "deployedBytecode": {
+                "object": ""
+            }
+        });
+        let result = load_executor_runtime_bytecode(&artifact.to_string());
+        assert!(result.is_err());
+    }
 }

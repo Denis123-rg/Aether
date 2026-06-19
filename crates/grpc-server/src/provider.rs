@@ -1326,4 +1326,257 @@ min_healthy_nodes: 1
             other => panic!("Expected ReserveUpdate, got {:?}", other),
         }
     }
+
+    #[test]
+    fn test_infer_node_type_case_insensitive() {
+        assert_eq!(infer_node_type("WS://LOCALHOST:8546"), NodeType::WebSocket);
+        assert_eq!(infer_node_type("HTTPS://example.com"), NodeType::Http);
+    }
+
+    #[test]
+    fn test_is_local_rpc_ipv6_loopback() {
+        assert!(is_local_rpc("http://[::1]:8545"));
+        assert!(is_local_rpc("HTTP://[::1]:8545"));
+    }
+
+    #[test]
+    fn test_is_local_rpc_docker_internal() {
+        assert!(is_local_rpc("http://host.docker.internal:8545"));
+        assert!(is_local_rpc("HTTP://HOST.DOCKER.INTERNAL:8545"));
+    }
+
+    #[test]
+    fn test_is_local_rpc_non_local() {
+        assert!(!is_local_rpc("https://mainnet.infura.io/v3/abc"));
+        assert!(!is_local_rpc("wss://eth-mainnet.alchemyapi.io/v2/key"));
+        assert!(!is_local_rpc("http://10.0.0.1:8545"));
+        assert!(!is_local_rpc("http://192.168.1.1:8545"));
+    }
+
+    #[test]
+    fn test_process_logs_pair_created_event() {
+        let channels = Arc::new(EventChannels::new());
+        let mut rx = channels.subscribe_pool_updates();
+        let config = ProviderConfig {
+            rpc_url: "http://localhost:8545".to_string(),
+            ..ProviderConfig::default()
+        };
+        let provider = RpcProvider::new(config, Arc::clone(&channels), test_metrics());
+
+        let pair_created_topic = EventSignatures::pair_created_topic();
+        let token0 = Address::repeat_byte(0x01);
+        let token1 = Address::repeat_byte(0x02);
+        let pool_addr = Address::repeat_byte(0x03);
+
+        let mut data = Vec::new();
+        data.extend_from_slice(pool_addr.as_slice());
+        data.extend_from_slice(&[0u8; 12]);
+
+        let mut topics = vec![pair_created_topic];
+        let token0_b256 = B256::from(token0);
+        topics.push(token0_b256);
+
+        provider.process_logs(&[(Address::ZERO, topics, data)]);
+
+        let event = rx.try_recv().expect("should receive PoolCreated event");
+        match event {
+            aether_ingestion::event_decoder::PoolEvent::PoolCreated { token0: t0, pool, .. } => {
+                assert_eq!(t0, token0);
+            }
+            other => panic!("Expected PoolCreated, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_process_logs_swap_v2_event() {
+        let channels = Arc::new(EventChannels::new());
+        let mut rx = channels.subscribe_pool_updates();
+        let config = ProviderConfig {
+            rpc_url: "http://localhost:8545".to_string(),
+            ..ProviderConfig::default()
+        };
+        let provider = RpcProvider::new(config, Arc::clone(&channels), test_metrics());
+
+        let swap_v2_topic = EventSignatures::swap_v2_topic();
+        let pool_addr = Address::repeat_byte(0xAA);
+
+        let mut data = Vec::new();
+        data.extend_from_slice(&[0u8; 64]);
+
+        provider.process_logs(&[(pool_addr, vec![swap_v2_topic], data)]);
+
+        let event = rx.try_recv().expect("should receive V2Swap event");
+        match event {
+            aether_ingestion::event_decoder::PoolEvent::V2Swap { pool, .. } => {
+                assert_eq!(pool, pool_addr);
+            }
+            other => panic!("Expected V2Swap, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_record_decode_failure_insufficient_topics() {
+        let channels = Arc::new(EventChannels::new());
+        let metrics = Arc::new(EngineMetrics::new());
+        let config = ProviderConfig {
+            rpc_url: "http://localhost:8545".to_string(),
+            ..ProviderConfig::default()
+        };
+        let provider = RpcProvider::new(config, channels, Arc::clone(&metrics));
+
+        provider.record_decode_failure(
+            Address::repeat_byte(0xFF),
+            &[B256::repeat_byte(0x01)],
+            event_decoder::DecodeReason::InsufficientTopics,
+        );
+
+        let rendered = String::from_utf8(metrics.render()).expect("metrics utf-8");
+        assert!(
+            rendered.contains(r#"aether_decode_errors_total{reason="insufficient_topics"} 1"#),
+        );
+    }
+
+    #[test]
+    fn test_record_decode_failure_malformed_payload() {
+        let channels = Arc::new(EventChannels::new());
+        let metrics = Arc::new(EngineMetrics::new());
+        let config = ProviderConfig {
+            rpc_url: "http://localhost:8545".to_string(),
+            ..ProviderConfig::default()
+        };
+        let provider = RpcProvider::new(config, channels, Arc::clone(&metrics));
+
+        provider.record_decode_failure(
+            Address::repeat_byte(0xFF),
+            &[B256::repeat_byte(0x01)],
+            event_decoder::DecodeReason::MalformedPayload,
+        );
+
+        let rendered = String::from_utf8(metrics.render()).expect("metrics utf-8");
+        assert!(
+            rendered.contains(r#"aether_decode_errors_total{reason="malformed_payload"} 1"#),
+        );
+    }
+
+    #[test]
+    fn test_provider_config_default_rpc_url_fallback() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        std::env::remove_var("ETH_WS_URL");
+        std::env::remove_var("ETH_RPC_URL");
+        let config = ProviderConfig::default();
+        assert_eq!(config.rpc_url, "http://localhost:8545");
+    }
+
+    #[test]
+    fn test_provider_config_default_rpc_url_from_eth_rpc_url() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        std::env::remove_var("ETH_WS_URL");
+        std::env::set_var("ETH_RPC_URL", "http://rpc.example.com:8545");
+        let config = ProviderConfig::default();
+        assert_eq!(config.rpc_url, "http://rpc.example.com:8545");
+        std::env::remove_var("ETH_RPC_URL");
+    }
+
+    #[test]
+    fn test_dispatch_block_large_values() {
+        let channels = Arc::new(EventChannels::new());
+        let mut rx = channels.subscribe_new_blocks();
+        let config = ProviderConfig {
+            rpc_url: "http://localhost:8545".to_string(),
+            ..ProviderConfig::default()
+        };
+        let provider = RpcProvider::new(config, Arc::clone(&channels), test_metrics());
+
+        provider.dispatch_block(
+            u64::MAX,
+            u64::MAX,
+            u128::MAX,
+            u64::MAX,
+            std::sync::Arc::new(Vec::new()),
+        );
+
+        let event = rx.try_recv().expect("should receive block event");
+        assert_eq!(event.block_number, u64::MAX);
+        assert_eq!(event.timestamp, u64::MAX);
+        assert_eq!(event.base_fee, u128::MAX);
+        assert_eq!(event.gas_limit, u64::MAX);
+    }
+
+    #[test]
+    fn test_event_topics_count() {
+        let channels = Arc::new(EventChannels::new());
+        let config = ProviderConfig {
+            rpc_url: "http://localhost:8545".to_string(),
+            ..ProviderConfig::default()
+        };
+        let provider = RpcProvider::new(config, channels, test_metrics());
+        let topics = provider.event_topics();
+        assert_eq!(topics.len(), 5);
+        assert!(topics.contains(&EventSignatures::sync_topic()));
+        assert!(topics.contains(&EventSignatures::swap_v2_topic()));
+        assert!(topics.contains(&EventSignatures::swap_v3_topic()));
+        assert!(topics.contains(&EventSignatures::token_exchange_topic()));
+        assert!(topics.contains(&EventSignatures::pair_created_topic()));
+    }
+
+    #[test]
+    fn test_provider_config_health_check_interval() {
+        let config = ProviderConfig {
+            health_check_interval: Duration::from_secs(120),
+            ..ProviderConfig::default()
+        };
+        assert_eq!(config.health_check_interval, Duration::from_secs(120));
+    }
+
+    #[test]
+    fn test_provider_config_max_reconnect_attempts() {
+        let config = ProviderConfig {
+            max_reconnect_attempts: 25,
+            ..ProviderConfig::default()
+        };
+        assert_eq!(config.max_reconnect_attempts, 25);
+    }
+
+    #[test]
+    fn test_provider_config_reconnect_delay() {
+        let config = ProviderConfig {
+            reconnect_delay: Duration::from_millis(500),
+            ..ProviderConfig::default()
+        };
+        assert_eq!(config.reconnect_delay, Duration::from_millis(500));
+    }
+
+    #[test]
+    fn test_process_logs_insufficient_topics_data_only() {
+        let channels = Arc::new(EventChannels::new());
+        let metrics = Arc::new(EngineMetrics::new());
+        let config = ProviderConfig {
+            rpc_url: "http://localhost:8545".to_string(),
+            ..ProviderConfig::default()
+        };
+        let provider = RpcProvider::new(config, channels, Arc::clone(&metrics));
+
+        provider.process_logs(&[(
+            Address::ZERO,
+            vec![],
+            vec![0u8; 64],
+        )]);
+
+        let rendered = String::from_utf8(metrics.render()).expect("metrics utf-8");
+        assert!(
+            rendered.contains("aether_decode_errors_total"),
+        );
+    }
+
+    #[test]
+    fn test_provider_node_pool_all_nodes() {
+        let channels = Arc::new(EventChannels::new());
+        let config = ProviderConfig {
+            rpc_url: "http://localhost:8545".to_string(),
+            ..ProviderConfig::default()
+        };
+        let provider = RpcProvider::new(config, channels, test_metrics());
+        let nodes = provider.node_pool().all_nodes();
+        assert_eq!(nodes.len(), 1);
+    }
 }

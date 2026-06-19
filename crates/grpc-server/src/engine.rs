@@ -707,6 +707,7 @@ impl AetherEngine {
     }
 
     /// Returns `false` when the pool is registered but bytecode is not warmed.
+    #[allow(dead_code)]
     pub fn pool_ready_for_simulation(&self, pool_addr: Address) -> bool {
         let reg = self.pool_registry.load();
         match reg.get(&pool_addr) {

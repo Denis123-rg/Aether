@@ -5156,4 +5156,191 @@ mod tests {
         assert!(v.is_finite());
         assert!(v > 0.0);
     }
+
+    #[test]
+    fn u256_from_f64_saturating_normal_positive() {
+        let v = u256_from_f64_saturating(42.7);
+        assert_eq!(v, U256::from(42u64));
+    }
+
+    #[test]
+    fn u256_from_f64_saturating_large_clamps() {
+        let v = u256_from_f64_saturating(u128::MAX as f64 * 2.0);
+        assert_eq!(v, U256::from(u128::MAX));
+    }
+
+    #[test]
+    fn u256_from_f64_saturating_zero_and_negative() {
+        assert_eq!(u256_from_f64_saturating(0.0), U256::ZERO);
+        assert_eq!(u256_from_f64_saturating(-1.0), U256::ZERO);
+        assert_eq!(u256_from_f64_saturating(f64::NAN), U256::ZERO);
+        assert_eq!(u256_from_f64_saturating(f64::INFINITY), U256::ZERO);
+        assert_eq!(u256_from_f64_saturating(f64::NEG_INFINITY), U256::ZERO);
+    }
+
+    #[test]
+    fn saturating_u256_to_i128_small() {
+        assert_eq!(saturating_u256_to_i128(U256::from(42u64)), 42i128);
+    }
+
+    #[test]
+    fn saturating_u256_to_i128_large_clamps() {
+        let big = U256::from(u128::MAX) * 2;
+        assert_eq!(saturating_u256_to_i128(big), i128::MAX);
+    }
+
+    #[test]
+    fn saturating_u256_to_i128_i128_max() {
+        let v = U256::from(i128::MAX as u128);
+        assert_eq!(saturating_u256_to_i128(v), i128::MAX);
+    }
+
+    #[test]
+    fn victim_post_reserves_token_in_is_token0() {
+        use aether_pools::uniswap_v2::UniswapV2Pool;
+        let token0 = address!("C02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2");
+        let token1 = address!("A0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48");
+        let mut pool = UniswapV2Pool::new(Address::ZERO, token0, token1, 30);
+        pool.update_state(U256::from(1_000_000_000_000_000_000_000u128), U256::from(2_000_000_000_000u128));
+        let result = victim_post_reserves(&pool, token0, 1_500_000.0, 1_500_000_000_000.0);
+        assert!(result.is_some());
+        let (r_in, r_out) = result.unwrap();
+        assert!((r_in - U256::from(1_500_000u64)).as_limbs()[0] <= 1);
+        assert!((r_out - U256::from(1_500_000_000_000u64)).as_limbs()[0] <= 1);
+    }
+
+    #[test]
+    fn victim_post_reserves_token_in_is_token1() {
+        use aether_pools::uniswap_v2::UniswapV2Pool;
+        let token0 = address!("C02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2");
+        let token1 = address!("A0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48");
+        let mut pool = UniswapV2Pool::new(Address::ZERO, token0, token1, 30);
+        pool.update_state(U256::from(1_000_000_000_000_000_000_000u128), U256::from(2_000_000_000_000u128));
+        let result = victim_post_reserves(&pool, token1, 3_000_000_000_000.0, 1_500_000.0);
+        assert!(result.is_some());
+        let (r_in, r_out) = result.unwrap();
+        assert!((r_in - U256::from(3_000_000_000_000u64)).as_limbs()[0] <= 1);
+        assert!((r_out - U256::from(1_500_000u64)).as_limbs()[0] <= 1);
+    }
+
+    #[test]
+    fn victim_post_reserves_nan_returns_none() {
+        use aether_pools::uniswap_v2::UniswapV2Pool;
+        let token0 = address!("C02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2");
+        let token1 = address!("A0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48");
+        let pool = UniswapV2Pool::new(Address::ZERO, token0, token1, 30);
+        assert!(victim_post_reserves(&pool, token0, f64::NAN, 1.0).is_none());
+        assert!(victim_post_reserves(&pool, token0, 1.0, f64::INFINITY).is_none());
+    }
+
+    #[test]
+    fn optimize_cycle_input_empty_steps_returns_fallback() {
+        let pool_states = new_pool_state_cache();
+        let outcome = optimize_cycle_input(&[], &pool_states, Address::ZERO, Address::ZERO, 0.0, 0.0, 20.0, U256::ZERO);
+        assert!(matches!(outcome, SizingOutcome::Fallback));
+    }
+
+    #[test]
+    fn optimize_cycle_input_missing_pool_state_returns_fallback() {
+        let weth = address!("C02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2");
+        let usdc = address!("A0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48");
+        let pool_states = new_pool_state_cache();
+        let steps = vec![aether_common::types::SwapStep {
+            protocol: ProtocolType::UniswapV2,
+            pool_address: address!("00000000000000000000000000000000000000AA"),
+            token_in: weth,
+            token_out: usdc,
+            amount_in: U256::ZERO,
+            min_amount_out: U256::ZERO,
+            calldata: Vec::new(),
+        }];
+        let outcome = optimize_cycle_input(&steps, &pool_states, Address::ZERO, weth, 0.0, 0.0, 20.0, U256::ZERO);
+        assert!(matches!(outcome, SizingOutcome::Fallback));
+    }
+
+    #[test]
+    fn optimize_cycle_input_succeeds_with_v2_pools() {
+        use aether_pools::uniswap_v2::UniswapV2Pool;
+        let weth = address!("C02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2");
+        let usdc = address!("A0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48");
+        let pool_addr = address!("00000000000000000000000000000000000000AA");
+        let (t0, t1) = if weth < usdc { (weth, usdc) } else { (usdc, weth) };
+        let mut p = UniswapV2Pool::new(pool_addr, t0, t1, 30);
+        let (r0, r1) = if t0 == weth {
+            (1_000_000_000_000_000_000_000u128, 2_000_000_000_000u128)
+        } else {
+            (2_000_000_000_000u128, 1_000_000_000_000_000_000_000u128)
+        };
+        p.update_state(U256::from(r0), U256::from(r1));
+        let pool_states = new_pool_state_cache();
+        pool_states.insert(pool_addr, std::sync::Arc::new(PoolState::UniswapV2(p)));
+        let steps = vec![aether_common::types::SwapStep {
+            protocol: ProtocolType::UniswapV2,
+            pool_address: pool_addr,
+            token_in: weth,
+            token_out: usdc,
+            amount_in: U256::ZERO,
+            min_amount_out: U256::ZERO,
+            calldata: Vec::new(),
+        }];
+        let outcome = optimize_cycle_input(
+            &steps, &pool_states, Address::ZERO, weth, 0.0, 0.0, 20.0, U256::ZERO,
+        );
+        assert!(matches!(outcome, SizingOutcome::Optimized { .. } | SizingOutcome::BelowMinProfit));
+    }
+
+    #[test]
+    fn poolstate_quote_balancer_v3() {
+        let weth = address!("C02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2");
+        let usdc = address!("A0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48");
+        let ps = PoolState::BalancerV3(aether_pools::balancer::BalancerV3Pool::new(
+            Address::repeat_byte(0x44), weth, usdc, 500_000, 500_000, 10,
+        ));
+        let _ = poolstate_quote(&ps, weth, U256::from(1_000_000_000_000_000_000u128));
+    }
+
+    #[test]
+    fn protocol_label_all_variants() {
+        assert_eq!(protocol_label(Protocol::Curve), "curve");
+        assert_eq!(protocol_label(Protocol::BancorV3), "bancor_v3");
+        assert_eq!(protocol_label(Protocol::OneInchV6), "one_inch_v6");
+    }
+
+    #[test]
+    fn decoder_protocol_label_all_variants() {
+        assert_eq!(decoder_protocol_label(Protocol::Curve), "curve");
+        assert_eq!(decoder_protocol_label(Protocol::BancorV3), "bancor");
+        assert_eq!(decoder_protocol_label(Protocol::OneInchV6), "one_inch_v6");
+    }
+
+    #[test]
+    fn optimize_cycle_input_success_with_victim_overlay() {
+        use aether_pools::uniswap_v2::UniswapV2Pool;
+        let weth = address!("C02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2");
+        let usdc = address!("A0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48");
+        let pool_addr = address!("00000000000000000000000000000000000000AA");
+        let (t0, t1) = if weth < usdc { (weth, usdc) } else { (usdc, weth) };
+        let mut p = UniswapV2Pool::new(pool_addr, t0, t1, 30);
+        let (r0, r1) = if t0 == weth {
+            (1_000_000_000_000_000_000_000u128, 2_000_000_000_000u128)
+        } else {
+            (2_000_000_000_000u128, 1_000_000_000_000_000_000_000u128)
+        };
+        p.update_state(U256::from(r0), U256::from(r1));
+        let pool_states = new_pool_state_cache();
+        pool_states.insert(pool_addr, std::sync::Arc::new(PoolState::UniswapV2(p)));
+        let steps = vec![aether_common::types::SwapStep {
+            protocol: ProtocolType::UniswapV2,
+            pool_address: pool_addr,
+            token_in: weth,
+            token_out: usdc,
+            amount_in: U256::ZERO,
+            min_amount_out: U256::ZERO,
+            calldata: Vec::new(),
+        }];
+        let outcome = optimize_cycle_input(
+            &steps, &pool_states, pool_addr, weth, 1_000_000.0, 2_000_000_000_000.0, 20.0, U256::ZERO,
+        );
+        assert!(matches!(outcome, SizingOutcome::Optimized { .. } | SizingOutcome::BelowMinProfit));
+    }
 }

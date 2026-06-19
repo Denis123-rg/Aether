@@ -353,4 +353,157 @@ mod tests {
         let cache = HotCache::new(metrics);
         assert!(cache.pool_infos().is_empty());
     }
+
+    #[tokio::test]
+    async fn maybe_start_discovery_disabled_config() {
+        use aether_common::types::ProtocolType;
+        use alloy::primitives::address;
+
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(
+            tmp.path(),
+            r#"
+[discovery]
+enabled = false
+
+[scoring]
+tvl_weight = 1.0
+
+[hot_cache]
+top_n = 10
+update_interval_secs = 5
+"#,
+        )
+        .unwrap();
+        std::env::set_var("AETHER_DISCOVERY_CONFIG", tmp.path().to_str().unwrap());
+        let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+        let (tx, _rx) = tokio::sync::broadcast::channel(16);
+        let engine = std::sync::Arc::new(crate::engine::AetherEngine::new(
+            crate::engine::EngineConfig::default(),
+            tx,
+        ));
+        let metrics = std::sync::Arc::new(aether_grpc_server::EngineMetrics::new());
+        let result = maybe_start_discovery(&engine, &metrics, None, shutdown_rx).await;
+        assert!(result.is_none());
+        std::env::remove_var("AETHER_DISCOVERY_CONFIG");
+        drop(shutdown_tx);
+    }
+
+    #[tokio::test]
+    async fn maybe_start_discovery_config_load_error() {
+        std::env::set_var("AETHER_DISCOVERY_CONFIG", "/tmp/nonexistent_discovery_config_12345.toml");
+        let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+        let (tx, _rx) = tokio::sync::broadcast::channel(16);
+        let engine = std::sync::Arc::new(crate::engine::AetherEngine::new(
+            crate::engine::EngineConfig::default(),
+            tx,
+        ));
+        let metrics = std::sync::Arc::new(aether_grpc_server::EngineMetrics::new());
+        let result = maybe_start_discovery(&engine, &metrics, None, shutdown_rx).await;
+        assert!(result.is_none());
+        std::env::remove_var("AETHER_DISCOVERY_CONFIG");
+        drop(shutdown_tx);
+    }
+
+    #[tokio::test]
+    async fn maybe_start_discovery_enabled_no_rpc() {
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(
+            tmp.path(),
+            r#"
+[discovery]
+enabled = true
+
+[scoring]
+tvl_weight = 1.0
+
+[hot_cache]
+top_n = 10
+update_interval_secs = 5
+"#,
+        )
+        .unwrap();
+        std::env::set_var("AETHER_DISCOVERY_CONFIG", tmp.path().to_str().unwrap());
+        std::env::remove_var("ETH_RPC_URL");
+        let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+        let (tx, _rx) = tokio::sync::broadcast::channel(16);
+        let engine = std::sync::Arc::new(crate::engine::AetherEngine::new(
+            crate::engine::EngineConfig::default(),
+            tx,
+        ));
+        let metrics = std::sync::Arc::new(aether_grpc_server::EngineMetrics::new());
+        let result = maybe_start_discovery(&engine, &metrics, None, shutdown_rx).await;
+        assert!(result.is_some(), "should succeed even without RPC in offline mode");
+        let runtime = result.unwrap();
+        assert!(runtime.hot_cache.is_empty());
+        std::env::remove_var("AETHER_DISCOVERY_CONFIG");
+        shutdown_tx.send(true).unwrap();
+    }
+
+    #[tokio::test]
+    async fn maybe_start_discovery_env_override() {
+        std::env::set_var("AETHER_DISCOVERY_CONFIG", "/tmp/nonexistent_for_override_test.toml");
+        let result = discovery_config_path();
+        assert_eq!(result, "/tmp/nonexistent_for_override_test.toml");
+        std::env::remove_var("AETHER_DISCOVERY_CONFIG");
+    }
+
+    #[test]
+    fn discovery_runtime_field_accessibility() {
+        use alloy::primitives::address;
+        let registry = prometheus::Registry::new();
+        let metrics = aether_state::hot_cache::HotCacheMetrics::register(&registry);
+        let cache = std::sync::Arc::new(aether_state::hot_cache::HotCache::new(metrics));
+        assert_eq!(cache.len(), 0);
+        assert!(cache.pool_addresses().is_empty());
+    }
+
+    #[test]
+    fn hot_cache_diff_preserves_pool_address() {
+        use aether_common::types::ProtocolType;
+        use aether_state::hot_cache::HotCacheDiff;
+        use alloy::primitives::address;
+
+        let pool = aether_discovery::types::PoolInfo {
+            address: address!("0x00000000000000000000000000000000000000c3"),
+            token0: address!("A0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"),
+            token1: address!("C02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2"),
+            protocol: ProtocolType::UniswapV2,
+            fee_bps: 30,
+            score: 0.9,
+            tvl_usd: 2.0,
+            volume_24h_usd: 0.5,
+            slippage_estimate: 0.01,
+            discovered_at: 100,
+        };
+        let diff = HotCacheDiff::compute(&std::collections::HashSet::new(), vec![pool.clone()]);
+        assert_eq!(diff.added_pools[0].address, pool.address);
+        assert_eq!(diff.added_pools[0].protocol, ProtocolType::UniswapV2);
+    }
+
+    #[test]
+    fn hot_cache_diff_multiple_pools_added() {
+        use aether_common::types::ProtocolType;
+        use aether_state::hot_cache::HotCacheDiff;
+        use alloy::primitives::address;
+
+        let pools: Vec<_> = (0..5)
+            .map(|i| aether_discovery::types::PoolInfo {
+                address: address!(&format!("0x{:040x}", i)),
+                token0: address!("A0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"),
+                token1: address!("C02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2"),
+                protocol: ProtocolType::UniswapV2,
+                fee_bps: 30,
+                score: 0.5 + i as f64 * 0.1,
+                tvl_usd: 1000.0,
+                volume_24h_usd: 100.0,
+                slippage_estimate: 0.01,
+                discovered_at: i as u64,
+            })
+            .collect();
+        let diff = HotCacheDiff::compute(&std::collections::HashSet::new(), pools.clone());
+        assert_eq!(diff.added, 5);
+        assert_eq!(diff.added_pools.len(), 5);
+        assert_eq!(diff.removed, 0);
+    }
 }
