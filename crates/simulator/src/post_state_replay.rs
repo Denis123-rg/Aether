@@ -769,4 +769,227 @@ mod tests {
         assert_eq!(ReplayError::DecodeFailed("slot0").as_str(), "decode_failed");
         assert_eq!(ReplayError::SimError.as_str(), "sim_error");
     }
+
+    #[test]
+    fn v3_victim_halt_path() {
+        let mut state = ForkedState::new_empty(18_000_000, 1_700_000_000, 1_000_000_000);
+        let victim_target = address!("3333333333333333333333333333333333333333");
+        state.insert_account(victim_target, U256::ZERO, vec![0xfe].into());
+        let pool = address!("88e6A0c2dDD26FEEb64F039a2c41296FcB3f5640");
+        let result = replay_v3_post_state_cache(state, &default_victim(), pool, &default_params());
+        assert!(matches!(result, Err(ReplayError::VictimHalted)));
+    }
+
+    #[test]
+    fn v3_victim_revert_path() {
+        let mut state = ForkedState::new_empty(18_000_000, 1_700_000_000, 1_000_000_000);
+        let victim_target = address!("3333333333333333333333333333333333333333");
+        state.insert_account(victim_target, U256::ZERO, vec![0x60, 0x00, 0x60, 0x00, 0xfd].into());
+        let pool = address!("88e6A0c2dDD26FEEb64F039a2c41296FcB3f5640");
+        let result = replay_v3_post_state_cache(state, &default_victim(), pool, &default_params());
+        assert!(matches!(result, Err(ReplayError::VictimReverted)));
+    }
+
+    #[test]
+    fn v3_read_call_failed_slot0_reverts() {
+        // Victim succeeds (EOA), but pool has REVERT opcode → slot0 call reverts.
+        let state = ForkedState::new_empty(18_000_000, 1_700_000_000, 1_000_000_000);
+        let pool = address!("88e6A0c2dDD26FEEb64F039a2c41296FcB3f5640");
+        let mut state = state;
+        state.insert_account(pool, U256::ZERO, vec![0x60, 0x00, 0x60, 0x00, 0xfd].into());
+        let result = replay_v3_post_state_cache(state, &default_victim(), pool, &default_params());
+        assert!(
+            matches!(result, Err(ReplayError::ReadCallFailed("slot0"))),
+            "expected ReadCallFailed(slot0), got {result:?}"
+        );
+    }
+
+    #[test]
+    fn curve_victim_halt_path() {
+        let mut state = ForkedState::new_empty(18_000_000, 1_700_000_000, 1_000_000_000);
+        let victim_target = address!("3333333333333333333333333333333333333333");
+        state.insert_account(victim_target, U256::ZERO, vec![0xfe].into());
+        let pool = address!("bEbc44782C7dB0a1A60Cb6fe97d0b483032FF1C7");
+        let result = replay_curve_post_state_cache(
+            state, &default_victim(), pool, 0, 1, &default_params(),
+        );
+        assert!(matches!(result, Err(ReplayError::VictimHalted)));
+    }
+
+    #[test]
+    fn curve_read_call_failed_balances_reverts() {
+        let state = ForkedState::new_empty(18_000_000, 1_700_000_000, 1_000_000_000);
+        let pool = address!("bEbc44782C7dB0a1A60Cb6fe97d0b483032FF1C7");
+        let mut state = state;
+        state.insert_account(pool, U256::ZERO, vec![0x60, 0x00, 0x60, 0x00, 0xfd].into());
+        let result = replay_curve_post_state_cache(
+            state, &default_victim(), pool, 0, 1, &default_params(),
+        );
+        assert!(
+            matches!(result, Err(ReplayError::ReadCallFailed("balances"))),
+            "expected ReadCallFailed(balances), got {result:?}"
+        );
+    }
+
+    #[test]
+    fn balancer_victim_halt_path() {
+        let mut state = ForkedState::new_empty(18_000_000, 1_700_000_000, 1_000_000_000);
+        let victim_target = address!("3333333333333333333333333333333333333333");
+        state.insert_account(victim_target, U256::ZERO, vec![0xfe].into());
+        let pool = address!("5c6Ee304399DBdB9C8Ef030aB642B10820DB8F56");
+        let vault = BALANCER_V2_VAULT;
+        let t0 = address!("C02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2");
+        let t1 = address!("ba100000625a3754423978a60c9317c58a424e3D");
+        let result = replay_balancer_post_state_cache(
+            state, &default_victim(), pool, vault, t0, t1, &default_params(),
+        );
+        assert!(matches!(result, Err(ReplayError::VictimHalted)));
+    }
+
+    #[test]
+    fn balancer_read_call_failed_get_pool_id_reverts() {
+        let state = ForkedState::new_empty(18_000_000, 1_700_000_000, 1_000_000_000);
+        let pool = address!("5c6Ee304399DBdB9C8Ef030aB642B10820DB8F56");
+        let vault = BALANCER_V2_VAULT;
+        let t0 = address!("C02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2");
+        let t1 = address!("ba100000625a3754423978a60c9317c58a424e3D");
+        let mut state = state;
+        state.insert_account(pool, U256::ZERO, vec![0x60, 0x00, 0x60, 0x00, 0xfd].into());
+        let result = replay_balancer_post_state_cache(
+            state, &default_victim(), pool, vault, t0, t1, &default_params(),
+        );
+        assert!(
+            matches!(result, Err(ReplayError::ReadCallFailed("getPoolId"))),
+            "expected ReadCallFailed(getPoolId), got {result:?}"
+        );
+    }
+
+    #[test]
+    fn replay_params_construction() {
+        let params = ReplayParams {
+            block_number: 20_000_000,
+            block_timestamp: 1_700_000_000,
+            base_fee: 30_000_000_000,
+            chain_id: 1,
+        };
+        assert_eq!(params.block_number, 20_000_000);
+        assert_eq!(params.base_fee, 30_000_000_000);
+        assert_eq!(params.chain_id, 1);
+    }
+
+    #[test]
+    fn replay_error_debug_format() {
+        let _ = format!("{:?}", ReplayError::VictimReverted);
+        let _ = format!("{:?}", ReplayError::VictimHalted);
+        let _ = format!("{:?}", ReplayError::ReadCallFailed("test"));
+        let _ = format!("{:?}", ReplayError::DecodeFailed("test"));
+        let _ = format!("{:?}", ReplayError::SimError);
+        let _ = format!("{:?}", ReplayError::UnimplementedProtocol("test"));
+    }
+
+    #[test]
+    fn replay_error_clone() {
+        let err = ReplayError::VictimReverted.clone();
+        assert_eq!(err, ReplayError::VictimReverted);
+        let err = ReplayError::ReadCallFailed("slot0").clone();
+        assert_eq!(err.as_str(), "read_call_failed");
+    }
+
+    #[test]
+    fn replay_error_eq() {
+        assert_eq!(ReplayError::SimError, ReplayError::SimError);
+        assert_ne!(ReplayError::SimError, ReplayError::VictimReverted);
+        assert_eq!(
+            ReplayError::ReadCallFailed("slot0"),
+            ReplayError::ReadCallFailed("slot0")
+        );
+        assert_ne!(
+            ReplayError::ReadCallFailed("slot0"),
+            ReplayError::ReadCallFailed("liquidity")
+        );
+    }
+
+    #[test]
+    fn v3_success_with_mock_pool() {
+        // Pool returns valid slot0() data: 224 zero bytes (7 words).
+        // liquidity() also gets 224 bytes — the ABI decoder for uint128
+        // may or may not handle this. The important thing is we exercise
+        // the success path of the victim and the slot0 read.
+        let pool = address!("88e6A0c2dDD26FEEb64F039a2c41296FcB3f5640");
+        let mut state = ForkedState::new_empty(18_000_000, 1_700_000_000, 1_000_000_000);
+        // Return 224 zero bytes for any call (valid slot0 ABI, oversized for liquidity).
+        // Bytecode: PUSH1 0x00, PUSH1 0xe0 (224), RETURN
+        state.insert_account(pool, U256::ZERO, vec![0x60, 0x00, 0x60, 0xe0, 0xf3].into());
+        let result = replay_v3_post_state_cache(state, &default_victim(), pool, &default_params());
+        // Either succeeds (if decoder accepts extra bytes) or DecodeFailed("liquidity").
+        // slot0 decoding fails first since mock bytecode returns all zeros
+        assert!(
+            result.is_ok() || matches!(result, Err(ReplayError::DecodeFailed(_))),
+            "expected Ok or DecodeFailed, got {result:?}"
+        );
+    }
+
+    #[test]
+    fn curve_success_with_mock_pool() {
+        let constant = U256::from(500_000u64);
+        let pool = address!("bEbc44782C7dB0a1A60Cb6fe97d0b483032FF1C7");
+        let mut state = ForkedState::new_empty(18_000_000, 1_700_000_000, 1_000_000_000);
+        state.insert_account(pool, U256::ZERO, const_uint256_returner(constant).into());
+        state.insert_account_balance(default_victim().from, U256::from(10u128.pow(18)));
+        let result = replay_curve_post_state_cache(
+            state, &default_victim(), pool, 0, 1, &default_params(),
+        );
+        let post = result.expect("curve replay should succeed");
+        assert_eq!(post.new_balance_in, constant);
+        assert_eq!(post.new_balance_out, constant);
+        assert_eq!(post.amount_out, U256::ZERO);
+    }
+
+    #[test]
+    fn balancer_victim_revert_with_revert_bytecode() {
+        let mut state = ForkedState::new_empty(18_000_000, 1_700_000_000, 1_000_000_000);
+        let victim_target = address!("3333333333333333333333333333333333333333");
+        state.insert_account(
+            victim_target,
+            U256::ZERO,
+            vec![0x60, 0x00, 0x60, 0x00, 0xfd].into(),
+        );
+        state.insert_account_balance(default_victim().from, U256::from(10u128.pow(18)));
+        let pool = address!("5c6Ee304399DBdB9C8Ef030aB642B10820DB8F56");
+        let t0 = address!("C02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2");
+        let t1 = address!("ba100000625a3754423978a60c9317c58a424e3D");
+        let result = replay_balancer_post_state_cache(
+            state, &default_victim(), pool, BALANCER_V2_VAULT, t0, t1, &default_params(),
+        );
+        assert!(matches!(result, Err(ReplayError::VictimReverted)));
+    }
+
+    #[test]
+    fn v3_victim_success_with_eoa_target() {
+        // Victim calls an EOA (no code) — this is a simple value transfer
+        // that succeeds. Then slot0 is called against a codeless pool → decode fails.
+        let state = ForkedState::new_empty(18_000_000, 1_700_000_000, 1_000_000_000);
+        let pool = address!("88e6A0c2dDD26FEEb64F039a2c41296FcB3f5640");
+        let result = replay_v3_post_state_cache(state, &default_victim(), pool, &default_params());
+        assert!(
+            matches!(result, Err(ReplayError::DecodeFailed("slot0"))),
+            "expected DecodeFailed(slot0), got {result:?}"
+        );
+    }
+
+    #[test]
+    fn curve_different_coin_indices() {
+        let constant = U256::from(100_000u64);
+        let pool = address!("bEbc44782C7dB0a1A60Cb6fe97d0b483032FF1C7");
+        let mut state = ForkedState::new_empty(18_000_000, 1_700_000_000, 1_000_000_000);
+        state.insert_account(pool, U256::ZERO, const_uint256_returner(constant).into());
+        state.insert_account_balance(default_victim().from, U256::from(10u128.pow(18)));
+        let result = replay_curve_post_state_cache(
+            state, &default_victim(), pool, 1, 0, &default_params(),
+        );
+        let post = result.expect("curve replay should succeed");
+        assert_eq!(post.i, 1);
+        assert_eq!(post.j, 0);
+        assert!(!post.analytical);
+    }
 }

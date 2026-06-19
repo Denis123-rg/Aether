@@ -4835,4 +4835,989 @@ fee_bps = 30
         };
         assert!((meta.fee_factor() - 0.0).abs() < 1e-10);
     }
+
+    // ---- remove_pool for existing pool ----
+
+    #[tokio::test]
+    async fn test_remove_pool_existing_cleans_registry_and_graph() {
+        let (tx, _rx) = broadcast::channel(100);
+        let engine = AetherEngine::new(EngineConfig::default(), tx);
+
+        let pool = Address::repeat_byte(0xAA);
+        let token0 = Address::repeat_byte(0x01);
+        let token1 = Address::repeat_byte(0x02);
+
+        engine
+            .register_pool(pool, token0, token1, ProtocolType::UniswapV2, 30)
+            .await;
+        assert!(engine.pool_registry().load().contains_key(&pool));
+
+        let pool_id = engine.pool_registry().load().get(&pool).unwrap().pool_id;
+
+        {
+            let graph = engine.working_graph.lock().await;
+            assert_eq!(graph.num_edges(), 2);
+        }
+
+        engine.remove_pool(pool).await;
+
+        assert!(
+            !engine.pool_registry().load().contains_key(&pool),
+            "registry should not contain removed pool"
+        );
+        {
+            let graph = engine.working_graph.lock().await;
+            let from_idx = engine.token_index().load().get_index(&token0).unwrap();
+            let edges = graph.edges_from(from_idx);
+            let remaining = edges.iter().filter(|e| e.pool_id == pool_id).count();
+            assert_eq!(remaining, 0, "graph edges for removed pool should be gone");
+        }
+        assert!(
+            engine.pool_states().get(&pool).is_none(),
+            "pool_states should not contain removed pool"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_remove_pool_multiple_pools_removes_only_target() {
+        let (tx, _rx) = broadcast::channel(100);
+        let engine = AetherEngine::new(EngineConfig::default(), tx);
+
+        let pool_a = Address::repeat_byte(0xAA);
+        let pool_b = Address::repeat_byte(0xBB);
+        let t0 = Address::repeat_byte(0x01);
+        let t1 = Address::repeat_byte(0x02);
+
+        engine
+            .register_pool(pool_a, t0, t1, ProtocolType::UniswapV2, 30)
+            .await;
+        engine
+            .register_pool(pool_b, t0, t1, ProtocolType::SushiSwap, 30)
+            .await;
+        assert_eq!(engine.pool_registry().load().len(), 2);
+
+        engine.remove_pool(pool_a).await;
+        assert_eq!(engine.pool_registry().load().len(), 1);
+        assert!(!engine.pool_registry().load().contains_key(&pool_a));
+        assert!(engine.pool_registry().load().contains_key(&pool_b));
+    }
+
+    // ---- fetch_initial_reserves no RPC provider ----
+
+    #[tokio::test]
+    async fn test_fetch_initial_reserves_no_rpc_provider() {
+        let (tx, _rx) = broadcast::channel(100);
+        let engine = AetherEngine::new(EngineConfig::default(), tx);
+        assert!(engine.rpc_provider().is_none());
+        engine.fetch_initial_reserves().await;
+    }
+
+    // ---- handle_pool_update V2Swap event (informational) ----
+
+    #[tokio::test]
+    async fn test_handle_pool_update_v2_swap_informational() {
+        let (tx, _rx) = broadcast::channel(100);
+        let engine = AetherEngine::new(EngineConfig::default(), tx);
+
+        let event = PoolEvent::V2Swap {
+            pool: Address::repeat_byte(0x11),
+            sender: Address::repeat_byte(0x01),
+            to: Address::repeat_byte(0x02),
+            amount0_in: U256::from(1000u64),
+            amount1_in: U256::ZERO,
+            amount0_out: U256::ZERO,
+            amount1_out: U256::from(990u64),
+        };
+        engine.handle_pool_update(event).await;
+    }
+
+    // ---- handle_pool_update V3Update for unregistered pool ----
+
+    #[tokio::test]
+    async fn test_handle_pool_update_v3_unregistered_pool() {
+        let (tx, _rx) = broadcast::channel(100);
+        let engine = AetherEngine::new(EngineConfig::default(), tx);
+
+        let sqrt = U256::from(1u128) << 96;
+        engine
+            .handle_pool_update(PoolEvent::V3Update {
+                pool: Address::repeat_byte(0xFF),
+                sqrt_price_x96: sqrt,
+                liquidity: 1_000_000,
+                tick: 0,
+            })
+            .await;
+        assert!(
+            !engine.pool_registry().load().contains_key(&Address::repeat_byte(0xFF)),
+            "unregistered pool must not be added by V3Update"
+        );
+    }
+
+    // ---- handle_pool_update ReserveUpdate with zero reserves ----
+
+    #[tokio::test]
+    async fn test_handle_pool_update_reserve_zero_skips_update() {
+        let (tx, _rx) = broadcast::channel(100);
+        let engine = AetherEngine::new(EngineConfig::default(), tx);
+
+        let pool = Address::repeat_byte(0xBB);
+        let t0 = Address::repeat_byte(0x01);
+        let t1 = Address::repeat_byte(0x02);
+        engine
+            .register_pool(pool, t0, t1, ProtocolType::UniswapV2, 30)
+            .await;
+        {
+            let mut graph = engine.working_graph.lock().await;
+            graph.clear_dirty();
+        }
+
+        engine
+            .handle_pool_update(PoolEvent::ReserveUpdate {
+                pool,
+                protocol: ProtocolType::UniswapV2,
+                reserve0: U256::ZERO,
+                reserve1: U256::from(1_000_000u64),
+            })
+            .await;
+
+        {
+            let graph = engine.working_graph.lock().await;
+            assert!(
+                !graph.has_dirty_edges(),
+                "zero reserve0 should not dirty any edges"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn test_handle_pool_update_reserve_both_zero_skips_update() {
+        let (tx, _rx) = broadcast::channel(100);
+        let engine = AetherEngine::new(EngineConfig::default(), tx);
+
+        let pool = Address::repeat_byte(0xBB);
+        let t0 = Address::repeat_byte(0x01);
+        let t1 = Address::repeat_byte(0x02);
+        engine
+            .register_pool(pool, t0, t1, ProtocolType::UniswapV2, 30)
+            .await;
+        {
+            let mut graph = engine.working_graph.lock().await;
+            graph.clear_dirty();
+        }
+
+        engine
+            .handle_pool_update(PoolEvent::ReserveUpdate {
+                pool,
+                protocol: ProtocolType::UniswapV2,
+                reserve0: U256::ZERO,
+                reserve1: U256::ZERO,
+            })
+            .await;
+
+        {
+            let graph = engine.working_graph.lock().await;
+            assert!(!graph.has_dirty_edges());
+        }
+    }
+
+    // ---- bootstrap_pools with invalid TOML ----
+
+    #[tokio::test]
+    async fn test_bootstrap_pools_invalid_toml() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_path = dir.path().join("bad.toml");
+        tokio::fs::write(&config_path, "{{{{invalid toml").await.unwrap();
+
+        let (tx, _rx) = broadcast::channel(100);
+        let engine = AetherEngine::new(EngineConfig::default(), tx);
+        let loaded = engine.bootstrap_pools(config_path.to_str().unwrap()).await;
+        assert_eq!(loaded, 0, "Invalid TOML should return 0");
+    }
+
+    // ---- bootstrap_pools with empty pools array ----
+
+    #[tokio::test]
+    async fn test_bootstrap_pools_empty_pools_array() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_path = dir.path().join("empty.toml");
+        tokio::fs::write(&config_path, "").await.unwrap();
+
+        let (tx, _rx) = broadcast::channel(100);
+        let engine = AetherEngine::new(EngineConfig::default(), tx);
+        let loaded = engine.bootstrap_pools(config_path.to_str().unwrap()).await;
+        assert_eq!(loaded, 0, "Empty config should return 0");
+    }
+
+    // ---- bootstrap_pools with zero token0 address ----
+
+    #[tokio::test]
+    async fn test_bootstrap_pools_zero_token0() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_path = dir.path().join("pools.toml");
+        let toml_content = r#"
+[[pools]]
+protocol = "uniswap_v2"
+address = "0x1111111111111111111111111111111111111111"
+token0 = "0x0000000000000000000000000000000000000000"
+token1 = "0x0202020202020202020202020202020202020202"
+fee_bps = 30
+"#;
+        tokio::fs::write(&config_path, toml_content).await.unwrap();
+
+        let (tx, _rx) = broadcast::channel(100);
+        let engine = AetherEngine::new(EngineConfig::default(), tx);
+        let loaded = engine.bootstrap_pools(config_path.to_str().unwrap()).await;
+        assert_eq!(loaded, 0, "Pool with zero token0 should be skipped");
+    }
+
+    // ---- bootstrap_pools with bad address format ----
+
+    #[tokio::test]
+    async fn test_bootstrap_pools_bad_pool_address_format() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_path = dir.path().join("pools.toml");
+        let toml_content = r#"
+[[pools]]
+protocol = "uniswap_v2"
+address = "not-a-valid-address"
+token0 = "0x0101010101010101010101010101010101010101"
+token1 = "0x0202020202020202020202020202020202020202"
+fee_bps = 30
+"#;
+        tokio::fs::write(&config_path, toml_content).await.unwrap();
+
+        let (tx, _rx) = broadcast::channel(100);
+        let engine = AetherEngine::new(EngineConfig::default(), tx);
+        let loaded = engine.bootstrap_pools(config_path.to_str().unwrap()).await;
+        assert_eq!(loaded, 0, "Bad pool address should be skipped");
+    }
+
+    #[tokio::test]
+    async fn test_bootstrap_pools_bad_token0_format() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_path = dir.path().join("pools.toml");
+        let toml_content = r#"
+[[pools]]
+protocol = "uniswap_v2"
+address = "0x1111111111111111111111111111111111111111"
+token0 = "xyz"
+token1 = "0x0202020202020202020202020202020202020202"
+fee_bps = 30
+"#;
+        tokio::fs::write(&config_path, toml_content).await.unwrap();
+
+        let (tx, _rx) = broadcast::channel(100);
+        let engine = AetherEngine::new(EngineConfig::default(), tx);
+        let loaded = engine.bootstrap_pools(config_path.to_str().unwrap()).await;
+        assert_eq!(loaded, 0, "Bad token0 address should be skipped");
+    }
+
+    #[tokio::test]
+    async fn test_bootstrap_pools_bad_token1_format() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_path = dir.path().join("pools.toml");
+        let toml_content = r#"
+[[pools]]
+protocol = "uniswap_v2"
+address = "0x1111111111111111111111111111111111111111"
+token0 = "0x0101010101010101010101010101010101010101"
+token1 = "zzz"
+fee_bps = 30
+"#;
+        tokio::fs::write(&config_path, toml_content).await.unwrap();
+
+        let (tx, _rx) = broadcast::channel(100);
+        let engine = AetherEngine::new(EngineConfig::default(), tx);
+        let loaded = engine.bootstrap_pools(config_path.to_str().unwrap()).await;
+        assert_eq!(loaded, 0, "Bad token1 address should be skipped");
+    }
+
+    // ---- bootstrap_pools all supported protocols ----
+
+    #[tokio::test]
+    async fn test_bootstrap_pools_curve_protocol() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_path = dir.path().join("pools.toml");
+        let toml_content = r#"
+[[pools]]
+protocol = "curve"
+address = "0x1111111111111111111111111111111111111111"
+token0 = "0x0101010101010101010101010101010101010101"
+token1 = "0x0202020202020202020202020202020202020202"
+fee_bps = 4
+"#;
+        tokio::fs::write(&config_path, toml_content).await.unwrap();
+
+        let (tx, _rx) = broadcast::channel(100);
+        let engine = AetherEngine::new(EngineConfig::default(), tx);
+        let loaded = engine.bootstrap_pools(config_path.to_str().unwrap()).await;
+        assert_eq!(loaded, 1, "Curve should be accepted");
+        let addr: Address = "0x1111111111111111111111111111111111111111".parse().unwrap();
+        assert_eq!(
+            engine.pool_registry().load().get(&addr).unwrap().protocol,
+            ProtocolType::Curve
+        );
+    }
+
+    #[tokio::test]
+    async fn test_bootstrap_pools_balancer_v2_protocol() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_path = dir.path().join("pools.toml");
+        let toml_content = r#"
+[[pools]]
+protocol = "balancer_v2"
+address = "0x1111111111111111111111111111111111111111"
+token0 = "0x0101010101010101010101010101010101010101"
+token1 = "0x0202020202020202020202020202020202020202"
+fee_bps = 10
+"#;
+        tokio::fs::write(&config_path, toml_content).await.unwrap();
+
+        let (tx, _rx) = broadcast::channel(100);
+        let engine = AetherEngine::new(EngineConfig::default(), tx);
+        let loaded = engine.bootstrap_pools(config_path.to_str().unwrap()).await;
+        assert_eq!(loaded, 1, "Balancer V2 should be accepted");
+    }
+
+    #[tokio::test]
+    async fn test_bootstrap_pools_bancor_v3_protocol() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_path = dir.path().join("pools.toml");
+        let toml_content = r#"
+[[pools]]
+protocol = "bancor_v3"
+address = "0x1111111111111111111111111111111111111111"
+token0 = "0x0101010101010101010101010101010101010101"
+token1 = "0x0202020202020202020202020202020202020202"
+fee_bps = 20
+"#;
+        tokio::fs::write(&config_path, toml_content).await.unwrap();
+
+        let (tx, _rx) = broadcast::channel(100);
+        let engine = AetherEngine::new(EngineConfig::default(), tx);
+        let loaded = engine.bootstrap_pools(config_path.to_str().unwrap()).await;
+        assert_eq!(loaded, 1, "Bancor V3 should be accepted");
+    }
+
+    // ---- token_label short unknown address ----
+
+    #[test]
+    fn test_token_label_short_unknown() {
+        let addr = Address::repeat_byte(0x01);
+        let label = token_label(&addr);
+        assert!(label.contains("…"), "unknown address should be truncated with ellipsis");
+        assert!(label.starts_with("0x"), "label should be hex-formatted");
+    }
+
+    // ---- build_new_arb u8 hop overflow ----
+
+    #[test]
+    fn test_build_new_arb_many_hops_clamps() {
+        let mut hops = Vec::new();
+        for i in 0u64..300 {
+            hops.push(ArbHop {
+                protocol: ProtocolType::UniswapV2,
+                pool_address: Address::repeat_byte((i % 256) as u8),
+                token_in: Address::repeat_byte(((i + 10) % 256) as u8),
+                token_out: Address::repeat_byte(((i + 20) % 256) as u8),
+                amount_in: U256::from(1000u64),
+                expected_out: U256::from(990u64),
+                estimated_gas: 150000,
+            });
+        }
+        let opp = ArbOpportunity {
+            id: "test-many-hops".into(),
+            hops,
+            total_profit_wei: U256::from(100u64),
+            total_gas: 300000 * 300,
+            gas_cost_wei: U256::from(5000u64),
+            net_profit_wei: U256::from(500u64),
+            block_number: 18_000_000,
+            timestamp_ns: 1_700_000_000_000_000_000,
+        };
+        let new_arb = build_new_arb(
+            &opp,
+            Address::repeat_byte(0x01),
+            U256::from(1000u64),
+            500,
+            9000,
+            500,
+            "WETH -> ... -> WETH",
+        );
+        assert_eq!(new_arb.hops, u8::MAX, ">255 hops should clamp to u8::MAX");
+    }
+
+    // ---- u256_to_f64 edge cases ----
+
+    #[test]
+    fn test_u256_to_f64_one() {
+        let f = u256_to_f64(U256::from(1u64));
+        assert!((f - 1.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn test_u256_to_f64_two_pow_192() {
+        let val = U256::from(1u128) << 192;
+        let f = u256_to_f64(val);
+        assert!((f - 1.157_920_892_373_162e77).abs() / f < 1e-10);
+    }
+
+    // ---- accessor tests ----
+
+    #[test]
+    fn test_snapshot_manager_accessor() {
+        let (tx, _rx) = broadcast::channel(100);
+        let engine = AetherEngine::new(EngineConfig::default(), tx);
+        let _sm = engine.snapshot_manager();
+    }
+
+    #[test]
+    fn test_current_block_accessor_default() {
+        let (tx, _rx) = broadcast::channel(100);
+        let engine = AetherEngine::new(EngineConfig::default(), tx);
+        let cb = engine.current_block();
+        assert_eq!(cb.load().number, 0);
+        assert_eq!(cb.load().timestamp, 0);
+        assert_eq!(cb.load().base_fee, 0);
+    }
+
+    #[test]
+    fn test_pool_registry_accessor_after_register() {
+        let (tx, _rx) = broadcast::channel(100);
+        let engine = AetherEngine::new(EngineConfig::default(), tx);
+        assert!(engine.pool_registry().load().is_empty());
+
+        let addr = Address::repeat_byte(0xCC);
+        let t0 = Address::repeat_byte(0x01);
+        let t1 = Address::repeat_byte(0x02);
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(engine.register_pool(addr, t0, t1, ProtocolType::UniswapV2, 30));
+
+        assert!(engine.pool_registry().load().contains_key(&addr));
+    }
+
+    #[test]
+    fn test_token_index_accessor_after_register() {
+        let (tx, _rx) = broadcast::channel(100);
+        let engine = AetherEngine::new(EngineConfig::default(), tx);
+        assert_eq!(engine.token_index().load().len(), 0);
+
+        let t0 = Address::repeat_byte(0x01);
+        let t1 = Address::repeat_byte(0x02);
+        let addr = Address::repeat_byte(0xCC);
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(engine.register_pool(addr, t0, t1, ProtocolType::UniswapV2, 30));
+
+        let ti = engine.token_index().load();
+        assert_eq!(ti.len(), 2);
+        assert!(ti.contains(&t0));
+        assert!(ti.contains(&t1));
+    }
+
+    // ---- register_pool graph_integrated gating ----
+
+    #[tokio::test]
+    async fn test_register_pool_balancer_v2_no_graph_edges() {
+        let (tx, _rx) = broadcast::channel(100);
+        let engine = AetherEngine::new(EngineConfig::default(), tx);
+
+        let pool = Address::repeat_byte(0xDD);
+        let t0 = Address::repeat_byte(0x01);
+        let t1 = Address::repeat_byte(0x02);
+
+        engine
+            .register_pool(pool, t0, t1, ProtocolType::BalancerV2, 10)
+            .await;
+
+        {
+            let graph = engine.working_graph.lock().await;
+            assert_eq!(
+                graph.num_edges(),
+                0,
+                "Balancer V2 should not create graph edges (not graph_integrated)"
+            );
+        }
+        assert!(engine.pool_registry().load().contains_key(&pool));
+    }
+
+    #[tokio::test]
+    async fn test_register_pool_bancor_v3_no_graph_edges() {
+        let (tx, _rx) = broadcast::channel(100);
+        let engine = AetherEngine::new(EngineConfig::default(), tx);
+
+        let pool = Address::repeat_byte(0xEE);
+        let t0 = Address::repeat_byte(0x01);
+        let t1 = Address::repeat_byte(0x02);
+
+        engine
+            .register_pool(pool, t0, t1, ProtocolType::BancorV3, 20)
+            .await;
+
+        {
+            let graph = engine.working_graph.lock().await;
+            assert_eq!(graph.num_edges(), 0, "Bancor V3 should not create graph edges");
+        }
+    }
+
+    #[tokio::test]
+    async fn test_register_pool_curve_no_graph_edges() {
+        let (tx, _rx) = broadcast::channel(100);
+        let engine = AetherEngine::new(EngineConfig::default(), tx);
+
+        let pool = Address::repeat_byte(0xEF);
+        let t0 = Address::repeat_byte(0x01);
+        let t1 = Address::repeat_byte(0x02);
+
+        engine
+            .register_pool(pool, t0, t1, ProtocolType::Curve, 4)
+            .await;
+
+        {
+            let graph = engine.working_graph.lock().await;
+            assert_eq!(graph.num_edges(), 0, "Curve should not create graph edges");
+        }
+    }
+
+    // ---- register_pool WETH vertex registration ----
+
+    #[tokio::test]
+    async fn test_register_pool_with_weth_token0() {
+        use alloy::primitives::address;
+        let (tx, _rx) = broadcast::channel(100);
+        let engine = AetherEngine::new(EngineConfig::default(), tx);
+
+        let weth = address!("C02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2");
+        let token1 = Address::repeat_byte(0x02);
+        let pool = Address::repeat_byte(0xF0);
+
+        engine
+            .register_pool(pool, weth, token1, ProtocolType::UniswapV2, 30)
+            .await;
+
+        let graph = engine.working_graph.lock().await;
+        assert_eq!(graph.num_edges(), 2);
+    }
+
+    #[tokio::test]
+    async fn test_register_pool_with_weth_token1() {
+        use alloy::primitives::address;
+        let (tx, _rx) = broadcast::channel(100);
+        let engine = AetherEngine::new(EngineConfig::default(), tx);
+
+        let token0 = Address::repeat_byte(0x01);
+        let weth = address!("C02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2");
+        let pool = Address::repeat_byte(0xF1);
+
+        engine
+            .register_pool(pool, token0, weth, ProtocolType::UniswapV2, 30)
+            .await;
+
+        let graph = engine.working_graph.lock().await;
+        assert_eq!(graph.num_edges(), 2);
+    }
+
+    // ---- register_pool_with_tick_spacing defaults ----
+
+    #[tokio::test]
+    async fn test_register_pool_with_tick_spacing_none() {
+        let (tx, _rx) = broadcast::channel(100);
+        let engine = AetherEngine::new(EngineConfig::default(), tx);
+
+        let pool = Address::repeat_byte(0xF2);
+        let t0 = Address::repeat_byte(0x01);
+        let t1 = Address::repeat_byte(0x02);
+
+        engine
+            .register_pool_with_tick_spacing(pool, t0, t1, ProtocolType::UniswapV3, 5, None)
+            .await;
+
+        let meta = engine.pool_registry().load().get(&pool).cloned().unwrap();
+        assert_eq!(meta.tick_spacing, None);
+        assert!(meta.bytecode_warmed, "with no bytecode cache, warmed should be true");
+    }
+
+    // ---- handle_pool_update V3Update with sqrt_price=0 ----
+
+    #[tokio::test]
+    async fn test_handle_pool_update_v3_zero_price() {
+        let (tx, _rx) = broadcast::channel(100);
+        let engine = AetherEngine::new(EngineConfig::default(), tx);
+
+        let pool = Address::repeat_byte(0xF3);
+        let t0 = Address::repeat_byte(0x01);
+        let t1 = Address::repeat_byte(0x02);
+        engine
+            .register_pool(pool, t0, t1, ProtocolType::UniswapV3, 5)
+            .await;
+        {
+            let mut graph = engine.working_graph.lock().await;
+            graph.clear_dirty();
+        }
+
+        engine
+            .handle_pool_update(PoolEvent::V3Update {
+                pool,
+                sqrt_price_x96: U256::ZERO,
+                liquidity: 1_000_000,
+                tick: -100,
+            })
+            .await;
+
+        {
+            let graph = engine.working_graph.lock().await;
+            assert!(
+                !graph.has_dirty_edges(),
+                "zero sqrt_price should not dirty any edges"
+            );
+        }
+    }
+
+    // ---- handle_pool_update V3Update with zero liquidity ----
+
+    #[tokio::test]
+    async fn test_handle_pool_update_v3_zero_liquidity() {
+        let (tx, _rx) = broadcast::channel(100);
+        let engine = AetherEngine::new(EngineConfig::default(), tx);
+
+        let pool = Address::repeat_byte(0xF4);
+        let t0 = Address::repeat_byte(0x01);
+        let t1 = Address::repeat_byte(0x02);
+        engine
+            .register_pool(pool, t0, t1, ProtocolType::UniswapV3, 5)
+            .await;
+        {
+            let mut graph = engine.working_graph.lock().await;
+            graph.clear_dirty();
+        }
+
+        let sqrt = U256::from(1u128) << 96;
+        engine
+            .handle_pool_update(PoolEvent::V3Update {
+                pool,
+                sqrt_price_x96: sqrt,
+                liquidity: 0,
+                tick: 0,
+            })
+            .await;
+
+        {
+            let graph = engine.working_graph.lock().await;
+            assert!(graph.has_dirty_edges(), "nonzero price should still dirty edges");
+        }
+    }
+
+    // ---- PoolMetadata tick_spacing stored correctly ----
+
+    #[test]
+    fn test_pool_metadata_tick_spacing_none() {
+        let meta = PoolMetadata {
+            token0_idx: 0,
+            token1_idx: 1,
+            token0: Address::ZERO,
+            token1: Address::repeat_byte(1),
+            pool_id: PoolId {
+                address: Address::repeat_byte(2),
+                protocol: ProtocolType::UniswapV3,
+            },
+            protocol: ProtocolType::UniswapV3,
+            fee_bps: 5,
+            tick_spacing: None,
+            bytecode_warmed: true,
+        };
+        assert_eq!(meta.tick_spacing, None);
+    }
+
+    #[test]
+    fn test_pool_metadata_tick_spacing_value() {
+        let meta = PoolMetadata {
+            token0_idx: 0,
+            token1_idx: 1,
+            token0: Address::ZERO,
+            token1: Address::repeat_byte(1),
+            pool_id: PoolId {
+                address: Address::repeat_byte(2),
+                protocol: ProtocolType::UniswapV3,
+            },
+            protocol: ProtocolType::UniswapV3,
+            fee_bps: 10,
+            tick_spacing: Some(60),
+            bytecode_warmed: false,
+        };
+        assert_eq!(meta.tick_spacing, Some(60));
+    }
+
+    // ---- detection cycle with hot cache filtering ----
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn test_detection_cycle_with_hot_cache_filters_pools() {
+        let (tx, _rx) = broadcast::channel(100);
+        let engine = AetherEngine::new(
+            EngineConfig {
+                gating: GatingConfig::permissive(),
+                min_profit_threshold_wei: 0,
+                gas_price_gwei: 0.0,
+                ..EngineConfig::default()
+            },
+            tx,
+        );
+
+        let token_a = Address::repeat_byte(0x01);
+        let token_b = Address::repeat_byte(0x02);
+        let pool_in = Address::repeat_byte(0x11);
+        let pool_out = Address::repeat_byte(0x22);
+
+        engine
+            .register_pool(pool_in, token_a, token_b, ProtocolType::UniswapV2, 0)
+            .await;
+        engine
+            .register_pool(pool_out, token_b, token_a, ProtocolType::UniswapV2, 0)
+            .await;
+
+        {
+            let reg = engine.pool_registry.load();
+            let meta_in = reg.get(&pool_in).unwrap().clone();
+            let meta_out = reg.get(&pool_out).unwrap().clone();
+            drop(reg);
+
+            let mut graph = engine.working_graph.lock().await;
+            graph.add_edge(
+                meta_in.token0_idx, meta_in.token1_idx, 2.0,
+                meta_in.pool_id, pool_in, ProtocolType::UniswapV2, U256::from(1_000_000u64),
+            );
+            graph.add_edge(
+                meta_out.token0_idx, meta_out.token1_idx, 0.6,
+                meta_out.pool_id, pool_out, ProtocolType::UniswapV2, U256::from(1_000_000u64),
+            );
+        }
+
+        let registry = prometheus::Registry::new();
+        let metrics = aether_state::hot_cache::HotCacheMetrics::register(&registry);
+        let cache = Arc::new(HotCache::new(metrics));
+        cache.apply_diff(aether_state::hot_cache::HotCacheDiff {
+            new_addresses: std::iter::once(pool_in).collect(),
+            new_infos: vec![sample_pool_info(0x11)],
+            added: 1,
+            removed: 0,
+            added_pools: vec![],
+            removed_addresses: vec![],
+        });
+        engine.set_hot_cache(cache);
+
+        engine.current_block.store(Arc::new(BlockInfo {
+            number: 18_000_000,
+            timestamp: 1_700_000_000,
+            base_fee: 0,
+        }));
+
+        engine.run_detection_cycle().await;
+    }
+
+    // ---- bootstrap_pools with tick_spacing ----
+
+    #[tokio::test]
+    async fn test_bootstrap_pools_with_tick_spacing() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_path = dir.path().join("pools.toml");
+        let toml_content = r#"
+[[pools]]
+protocol = "uniswap_v3"
+address = "0x1111111111111111111111111111111111111111"
+token0 = "0x0101010101010101010101010101010101010101"
+token1 = "0x0202020202020202020202020202020202020202"
+fee_bps = 5
+tick_spacing = 10
+"#;
+        tokio::fs::write(&config_path, toml_content).await.unwrap();
+
+        let (tx, _rx) = broadcast::channel(100);
+        let engine = AetherEngine::new(EngineConfig::default(), tx);
+        let loaded = engine.bootstrap_pools(config_path.to_str().unwrap()).await;
+        assert_eq!(loaded, 1);
+
+        let addr: Address = "0x1111111111111111111111111111111111111111".parse().unwrap();
+        let meta = engine.pool_registry().load().get(&addr).cloned().unwrap();
+        assert_eq!(meta.tick_spacing, Some(10));
+        assert_eq!(meta.fee_bps, 5);
+    }
+
+    // ---- bootstrap_pools with tier field ----
+
+    #[tokio::test]
+    async fn test_bootstrap_pools_with_tier_field() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_path = dir.path().join("pools.toml");
+        let toml_content = r#"
+[[pools]]
+protocol = "uniswap_v2"
+address = "0x1111111111111111111111111111111111111111"
+token0 = "0x0101010101010101010101010101010101010101"
+token1 = "0x0202020202020202020202020202020202020202"
+fee_bps = 30
+tier = "hot"
+"#;
+        tokio::fs::write(&config_path, toml_content).await.unwrap();
+
+        let (tx, _rx) = broadcast::channel(100);
+        let engine = AetherEngine::new(EngineConfig::default(), tx);
+        let loaded = engine.bootstrap_pools(config_path.to_str().unwrap()).await;
+        assert_eq!(loaded, 1);
+    }
+
+    // ---- block_info clone and Debug ----
+
+    #[test]
+    fn test_block_info_clone_and_debug() {
+        let info = BlockInfo {
+            number: 42,
+            timestamp: 1234567890,
+            base_fee: 100_000_000_000,
+        };
+        let cloned = info.clone();
+        assert_eq!(info.number, cloned.number);
+        assert_eq!(info.timestamp, cloned.timestamp);
+        assert_eq!(info.base_fee, cloned.base_fee);
+
+        let debug_str = format!("{:?}", info);
+        assert!(debug_str.contains("42"));
+    }
+
+    // ---- PoolMetadata Debug ----
+
+    #[test]
+    fn test_pool_metadata_debug() {
+        let meta = PoolMetadata {
+            token0_idx: 0,
+            token1_idx: 1,
+            token0: Address::ZERO,
+            token1: Address::repeat_byte(1),
+            pool_id: PoolId {
+                address: Address::repeat_byte(2),
+                protocol: ProtocolType::UniswapV2,
+            },
+            protocol: ProtocolType::UniswapV2,
+            fee_bps: 30,
+            tick_spacing: None,
+            bytecode_warmed: true,
+        };
+        let debug_str = format!("{:?}", meta);
+        assert!(debug_str.contains("UniswapV2"));
+        assert!(debug_str.contains("30"));
+    }
+
+    // ---- detection cycle with dirty edges but no profitable cycle ----
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn test_detection_cycle_unprofitable_no_publish() {
+        let (tx, mut rx) = broadcast::channel(100);
+        let engine = AetherEngine::new(
+            EngineConfig {
+                gating: GatingConfig::permissive(),
+                min_profit_threshold_wei: u128::MAX,
+                gas_price_gwei: 0.0,
+                ..EngineConfig::default()
+            },
+            tx,
+        );
+
+        let token_b = Address::repeat_byte(0x02);
+        let pool_ab = Address::repeat_byte(0x11);
+        let pool_bc = Address::repeat_byte(0x22);
+        let pool_ca = Address::repeat_byte(0x33);
+        let token_a = Address::repeat_byte(0x01);
+        let token_c = Address::repeat_byte(0x03);
+
+        engine.register_pool(pool_ab, token_a, token_b, ProtocolType::UniswapV2, 30).await;
+        engine.register_pool(pool_bc, token_b, token_c, ProtocolType::UniswapV2, 30).await;
+        engine.register_pool(pool_ca, token_c, token_a, ProtocolType::UniswapV2, 30).await;
+
+        {
+            let reg = engine.pool_registry.load();
+            let meta_ab = reg.get(&pool_ab).unwrap().clone();
+            let meta_bc = reg.get(&pool_bc).unwrap().clone();
+            let meta_ca = reg.get(&pool_ca).unwrap().clone();
+            drop(reg);
+
+            let mut graph = engine.working_graph.lock().await;
+            graph.add_edge(
+                meta_ab.token0_idx, meta_ab.token1_idx, 1.5,
+                meta_ab.pool_id, pool_ab, ProtocolType::UniswapV2, U256::from(1_000_000u64),
+            );
+            graph.add_edge(
+                meta_bc.token0_idx, meta_bc.token1_idx, 1.5,
+                meta_bc.pool_id, pool_bc, ProtocolType::UniswapV2, U256::from(1_000_000u64),
+            );
+            graph.add_edge(
+                meta_ca.token0_idx, meta_ca.token1_idx, 1.5,
+                meta_ca.pool_id, pool_ca, ProtocolType::UniswapV2, U256::from(1_000_000u64),
+            );
+        }
+
+        engine.current_block.store(Arc::new(BlockInfo {
+            number: 18_000_000,
+            timestamp: 1_700_000_000,
+            base_fee: 0,
+        }));
+
+        engine.run_detection_cycle().await;
+        assert!(
+            rx.try_recv().is_err(),
+            "no arb should be published when profit threshold is u128::MAX"
+        );
+    }
+
+    // ---- handle_pool_update for unknown pool (ReserveUpdate) ----
+
+    #[tokio::test]
+    async fn test_handle_pool_update_reserve_unknown_pool() {
+        let (tx, _rx) = broadcast::channel(100);
+        let engine = AetherEngine::new(EngineConfig::default(), tx);
+
+        engine
+            .handle_pool_update(PoolEvent::ReserveUpdate {
+                pool: Address::repeat_byte(0xFF),
+                protocol: ProtocolType::UniswapV2,
+                reserve0: U256::from(1_000_000u64),
+                reserve1: U256::from(2_000_000u64),
+            })
+            .await;
+
+        assert!(!engine.pool_registry().load().contains_key(&Address::repeat_byte(0xFF)));
+    }
+
+    // ---- sync_hot_cache_pools with both added and removed ----
+
+    #[tokio::test]
+    async fn test_sync_hot_cache_pools_add_and_remove() {
+        let (tx, _rx) = broadcast::channel(100);
+        let engine = AetherEngine::new(EngineConfig::default(), tx);
+
+        let pool_old = sample_pool_info(0xA0);
+        let pool_new = sample_pool_info(0xB0);
+
+        engine.sync_hot_cache_pools(&[pool_old.clone()], &[]).await;
+        assert!(engine.pool_registry().load().contains_key(&pool_old.address));
+
+        engine.sync_hot_cache_pools(&[pool_new], &[pool_old.address]).await;
+        assert!(!engine.pool_registry().load().contains_key(&pool_old.address));
+        assert!(engine.pool_registry().load().contains_key(&Address::from([0xB0u8; 20])));
+    }
+
+    // ---- register_pool multiple times idempotent (re-register same address) ----
+
+    #[tokio::test]
+    async fn test_register_pool_replaces_existing() {
+        let (tx, _rx) = broadcast::channel(100);
+        let engine = AetherEngine::new(EngineConfig::default(), tx);
+
+        let pool = Address::repeat_byte(0xAA);
+        let t0 = Address::repeat_byte(0x01);
+        let t1 = Address::repeat_byte(0x02);
+
+        engine.register_pool(pool, t0, t1, ProtocolType::UniswapV2, 30).await;
+        engine.register_pool(pool, t0, t1, ProtocolType::SushiSwap, 20).await;
+
+        let meta = engine.pool_registry().load().get(&pool).cloned().unwrap();
+        assert_eq!(meta.protocol, ProtocolType::SushiSwap);
+        assert_eq!(meta.fee_bps, 20);
+    }
 }

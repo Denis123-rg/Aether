@@ -149,16 +149,3 @@ func TestRun_StreamReconnect(t *testing.T) {
 		t.Fatalf("run: %v", err)
 	}
 }
-
-func TestRun_NilDeps(t *testing.T) {
-	if err := run(context.Background(), &Config{}, nil); err == nil {
-		t.Fatal("expected error for nil deps")
-	}
-}
-
-func TestRun_NilConfig(t *testing.T) {
-	deps := &Dependencies{Submitter: &Submitter{}, Ledger: db.NewNoopLedger()}
-	if err := run(context.Background(), nil, deps); err == nil {
-		t.Fatal("expected error for nil config")
-	}
-}

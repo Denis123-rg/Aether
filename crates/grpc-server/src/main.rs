@@ -1098,4 +1098,315 @@ mod tests {
         std::env::remove_var("AETHER_EXECUTOR_ADDRESS");
         std::env::remove_var("AETHER_MEMPOOL_GAS_PRICE_GWEI");
     }
+
+    #[test]
+    fn build_backrun_validator_config_nan_gas_price() {
+        std::env::set_var("AETHER_EXECUTOR_ADDRESS", "0x1111111111111111111111111111111111111111");
+        std::env::set_var("AETHER_MEMPOOL_GAS_PRICE_GWEI", "NaN");
+        std::env::remove_var("AETHER_EXECUTOR_BYTECODE_PATH");
+        let config = build_backrun_validator_config(None).unwrap();
+        assert!((config.gas_price_gwei - 20.0).abs() < f64::EPSILON);
+        std::env::remove_var("AETHER_EXECUTOR_ADDRESS");
+        std::env::remove_var("AETHER_MEMPOOL_GAS_PRICE_GWEI");
+    }
+
+    #[test]
+    fn build_backrun_validator_config_infinity_gas_price() {
+        std::env::set_var("AETHER_EXECUTOR_ADDRESS", "0x1111111111111111111111111111111111111111");
+        std::env::set_var("AETHER_MEMPOOL_GAS_PRICE_GWEI", "inf");
+        std::env::remove_var("AETHER_EXECUTOR_BYTECODE_PATH");
+        let config = build_backrun_validator_config(None).unwrap();
+        assert!((config.gas_price_gwei - 20.0).abs() < f64::EPSILON);
+        std::env::remove_var("AETHER_EXECUTOR_ADDRESS");
+        std::env::remove_var("AETHER_MEMPOOL_GAS_PRICE_GWEI");
+    }
+
+    #[test]
+    fn build_backrun_validator_config_zero_gas_price() {
+        std::env::set_var("AETHER_EXECUTOR_ADDRESS", "0x1111111111111111111111111111111111111111");
+        std::env::set_var("AETHER_MEMPOOL_GAS_PRICE_GWEI", "0.0");
+        std::env::remove_var("AETHER_EXECUTOR_BYTECODE_PATH");
+        let config = build_backrun_validator_config(None).unwrap();
+        assert!((config.gas_price_gwei - 20.0).abs() < f64::EPSILON);
+        std::env::remove_var("AETHER_EXECUTOR_ADDRESS");
+        std::env::remove_var("AETHER_MEMPOOL_GAS_PRICE_GWEI");
+    }
+
+    #[test]
+    fn build_backrun_validator_config_custom_min_profit_wei() {
+        std::env::set_var("AETHER_EXECUTOR_ADDRESS", "0x1111111111111111111111111111111111111111");
+        std::env::set_var("AETHER_MEMPOOL_MIN_PROFIT_WEI", "999999999999999999");
+        std::env::remove_var("AETHER_EXECUTOR_BYTECODE_PATH");
+        std::env::remove_var("AETHER_MEMPOOL_INPUT_AMOUNT_WEI");
+        let config = build_backrun_validator_config(None).unwrap();
+        use std::str::FromStr;
+        assert_eq!(
+            config.min_profit_wei,
+            alloy::primitives::U256::from_str("999999999999999999").unwrap()
+        );
+        std::env::remove_var("AETHER_EXECUTOR_ADDRESS");
+        std::env::remove_var("AETHER_MEMPOOL_MIN_PROFIT_WEI");
+    }
+
+    #[test]
+    fn build_backrun_validator_config_custom_input_amount_wei() {
+        std::env::set_var("AETHER_EXECUTOR_ADDRESS", "0x1111111111111111111111111111111111111111");
+        std::env::set_var("AETHER_MEMPOOL_INPUT_AMOUNT_WEI", "50000000000000000");
+        std::env::remove_var("AETHER_EXECUTOR_BYTECODE_PATH");
+        std::env::remove_var("AETHER_MEMPOOL_MIN_PROFIT_WEI");
+        let config = build_backrun_validator_config(None).unwrap();
+        assert_eq!(
+            config.input_amount_wei,
+            alloy::primitives::U256::from(50_000_000_000_000_000u64)
+        );
+        std::env::remove_var("AETHER_EXECUTOR_ADDRESS");
+        std::env::remove_var("AETHER_MEMPOOL_INPUT_AMOUNT_WEI");
+    }
+
+    #[test]
+    fn build_backrun_validator_config_invalid_searcher_caller_falls_back() {
+        std::env::set_var("AETHER_EXECUTOR_ADDRESS", "0x1111111111111111111111111111111111111111");
+        std::env::set_var("AETHER_SEARCHER_CALLER", "not_valid");
+        std::env::remove_var("AETHER_EXECUTOR_BYTECODE_PATH");
+        let config = build_backrun_validator_config(None).unwrap();
+        let executor_addr: alloy::primitives::Address =
+            "0x1111111111111111111111111111111111111111".parse().unwrap();
+        assert_eq!(config.searcher_caller, executor_addr);
+        std::env::remove_var("AETHER_EXECUTOR_ADDRESS");
+        std::env::remove_var("AETHER_SEARCHER_CALLER");
+    }
+
+    #[test]
+    fn build_backrun_validator_config_invalid_profit_token_falls_back() {
+        std::env::set_var("AETHER_EXECUTOR_ADDRESS", "0x1111111111111111111111111111111111111111");
+        std::env::set_var("AETHER_PROFIT_TOKEN", "not_valid");
+        std::env::remove_var("AETHER_EXECUTOR_BYTECODE_PATH");
+        let config = build_backrun_validator_config(None).unwrap();
+        let weth: alloy::primitives::Address =
+            "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2".parse().unwrap();
+        assert_eq!(config.profit_token, weth);
+        std::env::remove_var("AETHER_EXECUTOR_ADDRESS");
+        std::env::remove_var("AETHER_PROFIT_TOKEN");
+    }
+
+    #[test]
+    fn build_backrun_validator_config_invalid_balance_slot_falls_back() {
+        std::env::set_var("AETHER_EXECUTOR_ADDRESS", "0x1111111111111111111111111111111111111111");
+        std::env::set_var("AETHER_PROFIT_TOKEN_BALANCE_SLOT", "not_a_number");
+        std::env::remove_var("AETHER_EXECUTOR_BYTECODE_PATH");
+        let config = build_backrun_validator_config(None).unwrap();
+        assert_eq!(config.balance_slot, alloy::primitives::U256::from(3u64));
+        std::env::remove_var("AETHER_EXECUTOR_ADDRESS");
+        std::env::remove_var("AETHER_PROFIT_TOKEN_BALANCE_SLOT");
+    }
+
+    #[test]
+    fn build_backrun_validator_config_invalid_chain_id_falls_back() {
+        std::env::set_var("AETHER_EXECUTOR_ADDRESS", "0x1111111111111111111111111111111111111111");
+        std::env::set_var("AETHER_CHAIN_ID", "not_a_number");
+        std::env::remove_var("AETHER_EXECUTOR_BYTECODE_PATH");
+        let config = build_backrun_validator_config(None).unwrap();
+        assert_eq!(config.chain_id, 1);
+        std::env::remove_var("AETHER_EXECUTOR_ADDRESS");
+        std::env::remove_var("AETHER_CHAIN_ID");
+    }
+
+    #[test]
+    fn build_backrun_validator_config_invalid_min_profit_wei_falls_back() {
+        std::env::set_var("AETHER_EXECUTOR_ADDRESS", "0x1111111111111111111111111111111111111111");
+        std::env::set_var("AETHER_MEMPOOL_MIN_PROFIT_WEI", "not_a_number");
+        std::env::remove_var("AETHER_EXECUTOR_BYTECODE_PATH");
+        let config = build_backrun_validator_config(None).unwrap();
+        assert_eq!(
+            config.min_profit_wei,
+            alloy::primitives::U256::from(1_000_000_000_000_000u64)
+        );
+        std::env::remove_var("AETHER_EXECUTOR_ADDRESS");
+        std::env::remove_var("AETHER_MEMPOOL_MIN_PROFIT_WEI");
+    }
+
+    #[test]
+    fn build_backrun_validator_config_invalid_input_amount_wei_falls_back() {
+        std::env::set_var("AETHER_EXECUTOR_ADDRESS", "0x1111111111111111111111111111111111111111");
+        std::env::set_var("AETHER_MEMPOOL_INPUT_AMOUNT_WEI", "not_a_number");
+        std::env::remove_var("AETHER_EXECUTOR_BYTECODE_PATH");
+        let config = build_backrun_validator_config(None).unwrap();
+        assert_eq!(
+            config.input_amount_wei,
+            alloy::primitives::U256::from(10_000_000_000_000_000u64)
+        );
+        std::env::remove_var("AETHER_EXECUTOR_ADDRESS");
+        std::env::remove_var("AETHER_MEMPOOL_INPUT_AMOUNT_WEI");
+    }
+
+    #[test]
+    fn build_backrun_validator_config_invalid_sim_concurrency_falls_back() {
+        std::env::set_var("AETHER_EXECUTOR_ADDRESS", "0x1111111111111111111111111111111111111111");
+        std::env::set_var("AETHER_MEMPOOL_SIM_CONCURRENCY", "not_a_number");
+        std::env::remove_var("AETHER_EXECUTOR_BYTECODE_PATH");
+        let config = build_backrun_validator_config(None).unwrap();
+        assert_eq!(config.sim_semaphore.available_permits(), 8);
+        std::env::remove_var("AETHER_EXECUTOR_ADDRESS");
+        std::env::remove_var("AETHER_MEMPOOL_SIM_CONCURRENCY");
+    }
+
+    #[test]
+    fn splice_immutable_no_deployed_bytecode_key() {
+        let mut bytes = vec![0x42u8; 64];
+        let artifact = serde_json::json!({ "someOtherKey": {} });
+        let result = splice_immutable_aave_pool(&mut bytes, &artifact);
+        assert!(result.is_ok());
+        assert!(bytes.iter().all(|&b| b == 0x42));
+    }
+
+    #[test]
+    fn splice_immutable_references_not_an_object() {
+        let mut bytes = vec![0x42u8; 64];
+        let artifact = serde_json::json!({
+            "deployedBytecode": {
+                "immutableReferences": "not_an_object"
+            }
+        });
+        let result = splice_immutable_aave_pool(&mut bytes, &artifact);
+        assert!(result.is_ok());
+        assert!(bytes.iter().all(|&b| b == 0x42));
+    }
+
+    #[test]
+    fn splice_immutable_references_is_array() {
+        let mut bytes = vec![0x42u8; 64];
+        let artifact = serde_json::json!({
+            "deployedBytecode": {
+                "immutableReferences": [1, 2, 3]
+            }
+        });
+        let result = splice_immutable_aave_pool(&mut bytes, &artifact);
+        assert!(result.is_ok());
+        assert!(bytes.iter().all(|&b| b == 0x42));
+    }
+
+    #[test]
+    fn splice_immutable_references_is_null() {
+        let mut bytes = vec![0x42u8; 64];
+        let artifact = serde_json::json!({
+            "deployedBytecode": {
+                "immutableReferences": null
+            }
+        });
+        let result = splice_immutable_aave_pool(&mut bytes, &artifact);
+        assert!(result.is_ok());
+        assert!(bytes.iter().all(|&b| b == 0x42));
+    }
+
+    #[test]
+    fn splice_immutable_start_not_a_number() {
+        let mut bytes = vec![0x00u8; 64];
+        let artifact = serde_json::json!({
+            "deployedBytecode": {
+                "immutableReferences": {
+                    "4878": [{ "start": "not_a_number", "length": 32 }]
+                }
+            }
+        });
+        let result = splice_immutable_aave_pool(&mut bytes, &artifact);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("missing numeric start"));
+    }
+
+    #[test]
+    fn splice_immutable_length_not_a_number() {
+        let mut bytes = vec![0x00u8; 64];
+        let artifact = serde_json::json!({
+            "deployedBytecode": {
+                "immutableReferences": {
+                    "4878": [{ "start": 0, "length": "not_a_number" }]
+                }
+            }
+        });
+        let result = splice_immutable_aave_pool(&mut bytes, &artifact);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("missing numeric length"));
+    }
+
+    #[test]
+    fn splice_immutable_offset_overflow() {
+        let mut bytes = vec![0x00u8; 64];
+        let artifact_str =
+            r#"{"deployedBytecode":{"immutableReferences":{"4878":[{"start":18446744073709551615,"length":32}]}}}"#;
+        let artifact: serde_json::Value = serde_json::from_str(artifact_str).unwrap();
+        let result = splice_immutable_aave_pool(&mut bytes, &artifact);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("overflow"));
+    }
+
+    #[test]
+    fn splice_immutable_end_exactly_at_boundary() {
+        let mut bytes = vec![0x00u8; 64];
+        let aave_pool = aether_common::types::addresses::AAVE_V3_POOL;
+        let artifact = serde_json::json!({
+            "deployedBytecode": {
+                "immutableReferences": {
+                    "4878": [{ "start": 32, "length": 32 }]
+                }
+            }
+        });
+        let result = splice_immutable_aave_pool(&mut bytes, &artifact);
+        assert!(result.is_ok());
+        assert_eq!(&bytes[44..64], aave_pool.as_slice());
+    }
+
+    #[test]
+    fn load_executor_runtime_bytecode_null_object() {
+        let artifact = serde_json::json!({
+            "deployedBytecode": { "object": null }
+        });
+        let result = load_executor_runtime_bytecode(&artifact.to_string());
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn load_executor_runtime_bytecode_array_object() {
+        let artifact = serde_json::json!({
+            "deployedBytecode": { "object": [1, 2, 3] }
+        });
+        let result = load_executor_runtime_bytecode(&artifact.to_string());
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn load_executor_runtime_bytecode_invalid_hex_chars() {
+        let artifact = serde_json::json!({
+            "deployedBytecode": { "object": "0xZZZZ" }
+        });
+        let result = load_executor_runtime_bytecode(&artifact.to_string());
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn load_executor_runtime_bytecode_odd_length_hex() {
+        let artifact = serde_json::json!({
+            "deployedBytecode": { "object": "0x001" }
+        });
+        let result = load_executor_runtime_bytecode(&artifact.to_string());
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn load_executor_runtime_bytecode_deployed_bytecode_is_null() {
+        let artifact = serde_json::json!({ "deployedBytecode": null });
+        let result = load_executor_runtime_bytecode(&artifact.to_string());
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn load_executor_runtime_bytecode_with_single_immutable_valid_splice() {
+        let artifact = serde_json::json!({
+            "deployedBytecode": {
+                "object": "0x0000000000000000000000000000000000000000000000000000000000000000"
+            }
+        });
+        let bytecode = load_executor_runtime_bytecode(&artifact.to_string()).unwrap();
+        assert_eq!(bytecode.len(), 32);
+        assert!(bytecode.iter().all(|&b| b == 0x00));
+    }
 }

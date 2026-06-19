@@ -1088,4 +1088,719 @@ mod tests {
         let ingested = process_logs_with_metrics(&service, &entries, vec![log], None).await;
         assert_eq!(ingested, 1);
     }
+
+    // ── WsHealth ──
+
+    #[test]
+    fn ws_health_new_starts_unhealthy() {
+        let h = WsHealth::new();
+        assert!(!h.is_healthy());
+    }
+
+    #[test]
+    fn ws_health_default_starts_unhealthy() {
+        let h = WsHealth::default();
+        assert!(!h.is_healthy());
+    }
+
+    #[test]
+    fn ws_health_set_healthy_true() {
+        let h = WsHealth::new();
+        h.set_healthy(true);
+        assert!(h.is_healthy());
+    }
+
+    #[test]
+    fn ws_health_set_healthy_toggle() {
+        let h = WsHealth::new();
+        assert!(!h.is_healthy());
+        h.set_healthy(true);
+        assert!(h.is_healthy());
+        h.set_healthy(false);
+        assert!(!h.is_healthy());
+    }
+
+    #[test]
+    fn ws_health_clone_shares_state() {
+        let h1 = WsHealth::new();
+        let h2 = h1.clone();
+        h1.set_healthy(true);
+        assert!(h2.is_healthy());
+        h2.set_healthy(false);
+        assert!(!h1.is_healthy());
+    }
+
+    // ── decode_factory_log edge cases ──
+
+    #[test]
+    fn decode_factory_log_plain_pool_wrong_topic() {
+        let pool = Address::from([0xAA; 20]);
+        let token0 = address!("A0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48");
+        let token1 = address!("C02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2");
+        let (topics, data) = mock_plain_pool_deployed_log(pool, token0, token1, 5_000_000);
+        let mut bad_topics = topics;
+        bad_topics[0] = B256::from([0xFF; 32]);
+        let result = decode_factory_log(
+            address!("F18056Bbd9e56aC88eefA885588501c1806Be1D8"),
+            ProtocolType::Curve,
+            4,
+            FactoryEventType::PlainPoolDeployed,
+            &bad_topics,
+            &data,
+        );
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn decode_factory_log_pool_registered_wrong_topic() {
+        let pool = Address::from([0xCC; 20]);
+        let token0 = address!("A0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48");
+        let token1 = address!("C02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2");
+        let (topics, data) = mock_pool_registered_log(
+            pool,
+            address!("bA1333333333a1BA1108E8412f11850A5C319bA9"),
+            token0,
+            token1,
+            U256::from(1_000_000_000_000_000u64),
+        );
+        let mut bad_topics = topics;
+        bad_topics[0] = B256::from([0xFF; 32]);
+        let result = decode_factory_log(
+            address!("bA1333333333a1BA1108E8412f11850A5C319bA9"),
+            ProtocolType::BalancerV3,
+            10,
+            FactoryEventType::PoolRegistered,
+            &bad_topics,
+            &data,
+        );
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn decode_factory_log_pair_created_full_fields() {
+        let token0 = address!("A0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48");
+        let token1 = address!("C02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2");
+        let pair = address!("B4e16d0168e52d35CaCD2c6185b44281Ec28C9Dc");
+        let (topics, data) = mock_pair_created_log(uni_v2_factory(), token0, token1, pair, 42);
+        let result = decode_factory_log(
+            uni_v2_factory(),
+            ProtocolType::UniswapV2,
+            30,
+            FactoryEventType::PairCreated,
+            &topics,
+            &data,
+        )
+        .unwrap();
+        assert_eq!(result.pool, pair);
+        assert_eq!(result.token0, token0);
+        assert_eq!(result.token1, token1);
+        assert_eq!(result.fee_bps, 30);
+        assert_eq!(result.protocol, ProtocolType::UniswapV2);
+        assert_eq!(result.factory, uni_v2_factory());
+    }
+
+    #[test]
+    fn decode_factory_log_plain_pool_deployed_empty_data() {
+        let topics = vec![EventSignatures::plain_pool_deployed_topic()];
+        let result = decode_factory_log(
+            address!("F18056Bbd9e56aC88eefA885588501c1806Be1D8"),
+            ProtocolType::Curve,
+            4,
+            FactoryEventType::PlainPoolDeployed,
+            &topics,
+            &[],
+        );
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn decode_factory_log_pool_registered_empty_data() {
+        let topics = vec![EventSignatures::pool_registered_v3_topic()];
+        let result = decode_factory_log(
+            address!("bA1333333333a1BA1108E8412f11850A5C319bA9"),
+            ProtocolType::BalancerV3,
+            10,
+            FactoryEventType::PoolRegistered,
+            &topics,
+            &[],
+        );
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn decode_factory_log_pair_created_valid_event_type_mismatch() {
+        let result = decode_factory_log(
+            uni_v2_factory(),
+            ProtocolType::UniswapV2,
+            30,
+            FactoryEventType::PlainPoolDeployed,
+            &[EventSignatures::pair_created_topic()],
+            &[],
+        );
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn decode_factory_log_pair_created_empty_data_returns_none() {
+        let factory = address!("5C69bEe701ef814a2B6a3EDD4B1652CB9cc5aA6f");
+        let token0 = address!("A0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48");
+        let token1 = address!("C02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2");
+        let topics = vec![
+            EventSignatures::pair_created_topic(),
+            B256::left_padding_from(token0.as_slice()),
+            B256::left_padding_from(token1.as_slice()),
+        ];
+        let result = decode_factory_log(
+            factory,
+            ProtocolType::UniswapV2,
+            30,
+            FactoryEventType::PairCreated,
+            &topics,
+            &[],
+        );
+        assert!(result.is_none());
+    }
+
+    // ── http_to_ws_url edge cases ──
+
+    #[test]
+    fn http_to_ws_passthrough_wss_uppercase() {
+        let url = "WSS://example.com/ws";
+        assert_eq!(http_to_ws_url(url), Some(url.to_string()));
+    }
+
+    #[test]
+    fn http_to_ws_passthrough_ws_uppercase() {
+        let url = "WS://example.com/ws";
+        assert_eq!(http_to_ws_url(url), Some(url.to_string()));
+    }
+
+    #[test]
+    fn http_to_ws_mixed_case_http() {
+        let url = "HtTp://127.0.0.1:8545";
+        let result = http_to_ws_url(url);
+        assert!(result.is_some());
+    }
+
+    #[test]
+    fn http_to_ws_mixed_case_https() {
+        let url = "HtTpS://example.com";
+        let result = http_to_ws_url(url);
+        assert!(result.is_some());
+    }
+
+    #[test]
+    fn http_to_ws_complex_https_url() {
+        let url = "https://eth-mainnet.alchemyapi.io/v2/abc123def456";
+        assert_eq!(
+            http_to_ws_url(url),
+            Some("wss://eth-mainnet.alchemyapi.io/v2/abc123def456".to_string())
+        );
+    }
+
+    #[test]
+    fn http_to_ws_local_rpc() {
+        let url = "http://localhost:8545";
+        assert_eq!(
+            http_to_ws_url(url),
+            Some("ws://localhost:8545".to_string())
+        );
+    }
+
+    // ── resolve_ws_url edge cases ──
+
+    #[test]
+    fn resolve_ws_url_empty_no_env() {
+        std::env::remove_var("ETH_WS_URL");
+        std::env::remove_var("ETH_RPC_URL");
+        let result = resolve_ws_url("");
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn resolve_ws_url_env_ws_url() {
+        std::env::remove_var("ETH_RPC_URL");
+        std::env::set_var("ETH_WS_URL", "wss://env-test.example/ws");
+        let result = resolve_ws_url("");
+        assert_eq!(result, Some("wss://env-test.example/ws".to_string()));
+        std::env::remove_var("ETH_WS_URL");
+    }
+
+    #[test]
+    fn resolve_ws_url_env_ws_empty_falls_through() {
+        std::env::remove_var("ETH_RPC_URL");
+        std::env::set_var("ETH_WS_URL", "");
+        let result = resolve_ws_url("");
+        assert!(result.is_none());
+        std::env::remove_var("ETH_WS_URL");
+    }
+
+    #[test]
+    fn resolve_ws_url_env_rpc_url() {
+        std::env::remove_var("ETH_WS_URL");
+        std::env::set_var("ETH_RPC_URL", "https://eth-mainnet.g.alchemy.com/v2/key");
+        let result = resolve_ws_url("");
+        assert_eq!(
+            result,
+            Some("wss://eth-mainnet.g.alchemy.com/v2/key".to_string())
+        );
+        std::env::remove_var("ETH_RPC_URL");
+    }
+
+    #[test]
+    fn resolve_ws_url_env_rpc_not_http() {
+        std::env::remove_var("ETH_WS_URL");
+        std::env::set_var("ETH_RPC_URL", "grpc://example.com");
+        let result = resolve_ws_url("");
+        assert!(result.is_none());
+        std::env::remove_var("ETH_RPC_URL");
+    }
+
+    #[test]
+    fn resolve_ws_url_env_ws_priority_over_rpc() {
+        std::env::set_var("ETH_WS_URL", "wss://ws-priority.example/ws");
+        std::env::set_var("ETH_RPC_URL", "https://rpc-priority.example/v2/key");
+        let result = resolve_ws_url("");
+        assert_eq!(
+            result,
+            Some("wss://ws-priority.example/ws".to_string())
+        );
+        std::env::remove_var("ETH_WS_URL");
+        std::env::remove_var("ETH_RPC_URL");
+    }
+
+    // ── build_factory_filter edge cases ──
+
+    #[test]
+    fn build_factory_filter_empty() {
+        let entries = vec![];
+        let _filter = build_factory_filter(&entries);
+    }
+
+    // ── process_logs rejection / mixed paths ──
+
+    #[tokio::test]
+    async fn process_logs_rejects_duplicate_pool() {
+        use alloy::primitives::LogData;
+        let service =
+            crate::service::DiscoveryService::new(crate::config::DiscoveryConfig::default());
+        let factory = address!("5C69bEe701ef814a2B6a3EDD4B1652CB9cc5aA6f");
+        let token0 = address!("A0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48");
+        let token1 = address!("C02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2");
+        let pair = Address::from([0xAA; 20]);
+        let (topics, data) = mock_pair_created_log(factory, token0, token1, pair, 1);
+        let entries = vec![FactoryEntry {
+            address: factory,
+            protocol: ProtocolType::UniswapV2,
+            fee_bps: 30,
+            event_type: FactoryEventType::PairCreated,
+        }];
+
+        let make_log = || {
+            alloy::rpc::types::Log {
+                inner: alloy::primitives::Log {
+                    address: factory,
+                    data: LogData::new_unchecked(topics.clone(), data.clone().into()),
+                },
+                ..Default::default()
+            }
+        };
+
+        let first = process_logs(&service, &entries, vec![make_log()]).await;
+        assert_eq!(first, 1);
+
+        let second = process_logs(&service, &entries, vec![make_log()]).await;
+        assert_eq!(second, 0);
+    }
+
+    #[tokio::test]
+    async fn process_logs_with_metrics_rejects_duplicate() {
+        use alloy::primitives::LogData;
+        let service =
+            crate::service::DiscoveryService::new(crate::config::DiscoveryConfig::default());
+        let metrics = DiscoveryMetrics::noop();
+        let factory = address!("5C69bEe701ef814a2B6a3EDD4B1652CB9cc5aA6f");
+        let token0 = address!("A0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48");
+        let token1 = address!("C02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2");
+        let pair = Address::from([0xBB; 20]);
+        let (topics, data) = mock_pair_created_log(factory, token0, token1, pair, 1);
+        let entries = vec![FactoryEntry {
+            address: factory,
+            protocol: ProtocolType::UniswapV2,
+            fee_bps: 30,
+            event_type: FactoryEventType::PairCreated,
+        }];
+
+        let make_log = || {
+            alloy::rpc::types::Log {
+                inner: alloy::primitives::Log {
+                    address: factory,
+                    data: LogData::new_unchecked(topics.clone(), data.clone().into()),
+                },
+                ..Default::default()
+            }
+        };
+
+        let first = process_logs_with_metrics(
+            &service,
+            &entries,
+            vec![make_log()],
+            Some(metrics.clone()),
+        )
+        .await;
+        assert_eq!(first, 1);
+
+        let second = process_logs_with_metrics(
+            &service,
+            &entries,
+            vec![make_log()],
+            Some(metrics.clone()),
+        )
+        .await;
+        assert_eq!(second, 0);
+        assert!(metrics.pools_rejected.get() > 0.0);
+    }
+
+    #[tokio::test]
+    async fn process_logs_mixed_valid_and_invalid_logs() {
+        use alloy::primitives::LogData;
+        let service =
+            crate::service::DiscoveryService::new(crate::config::DiscoveryConfig::default());
+        let factory = address!("5C69bEe701ef814a2B6a3EDD4B1652CB9cc5aA6f");
+        let token0 = address!("A0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48");
+        let token1 = address!("C02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2");
+        let entries = vec![FactoryEntry {
+            address: factory,
+            protocol: ProtocolType::UniswapV2,
+            fee_bps: 30,
+            event_type: FactoryEventType::PairCreated,
+        }];
+
+        let pair = Address::from([0xAA; 20]);
+        let (topics, data) = mock_pair_created_log(factory, token0, token1, pair, 1);
+
+        let valid_log = alloy::rpc::types::Log {
+            inner: alloy::primitives::Log {
+                address: factory,
+                data: LogData::new_unchecked(topics, data.into()),
+            },
+            ..Default::default()
+        };
+
+        let invalid_log = alloy::rpc::types::Log {
+            inner: alloy::primitives::Log {
+                address: factory,
+                data: LogData::new_unchecked(
+                    vec![EventSignatures::pair_created_topic()],
+                    vec![].into(),
+                ),
+            },
+            ..Default::default()
+        };
+
+        let ingested = process_logs(&service, &entries, vec![valid_log, invalid_log]).await;
+        assert_eq!(ingested, 1);
+    }
+
+    #[tokio::test]
+    async fn process_logs_with_metrics_bad_decode() {
+        use alloy::primitives::LogData;
+        let service =
+            crate::service::DiscoveryService::new(crate::config::DiscoveryConfig::default());
+        let metrics = DiscoveryMetrics::noop();
+        let factory = address!("5C69bEe701ef814a2B6a3EDD4B1652CB9cc5aA6f");
+        let entries = vec![FactoryEntry {
+            address: factory,
+            protocol: ProtocolType::UniswapV2,
+            fee_bps: 30,
+            event_type: FactoryEventType::PairCreated,
+        }];
+
+        let bad_log = alloy::rpc::types::Log {
+            inner: alloy::primitives::Log {
+                address: factory,
+                data: LogData::new_unchecked(
+                    vec![EventSignatures::pair_created_topic()],
+                    vec![0xFF; 5].into(),
+                ),
+            },
+            ..Default::default()
+        };
+
+        let ingested =
+            process_logs_with_metrics(&service, &entries, vec![bad_log], Some(metrics.clone()))
+                .await;
+        assert_eq!(ingested, 0);
+        assert!(metrics.events_received.get() > 0.0);
+    }
+
+    #[tokio::test]
+    async fn process_logs_with_metrics_unknown_factory_with_metrics() {
+        use alloy::primitives::LogData;
+        let service =
+            crate::service::DiscoveryService::new(crate::config::DiscoveryConfig::default());
+        let metrics = DiscoveryMetrics::noop();
+        let factory = address!("5C69bEe701ef814a2B6a3EDD4B1652CB9cc5aA6f");
+        let unknown_factory = address!("0000000000000000000000000000000000000001");
+        let entries = vec![FactoryEntry {
+            address: factory,
+            protocol: ProtocolType::UniswapV2,
+            fee_bps: 30,
+            event_type: FactoryEventType::PairCreated,
+        }];
+
+        let unknown_log = alloy::rpc::types::Log {
+            inner: alloy::primitives::Log {
+                address: unknown_factory,
+                data: LogData::new_unchecked(
+                    vec![EventSignatures::pair_created_topic()],
+                    vec![].into(),
+                ),
+            },
+            ..Default::default()
+        };
+
+        let before = metrics.events_received.get();
+        let ingested = process_logs_with_metrics(
+            &service,
+            &entries,
+            vec![unknown_log],
+            Some(metrics.clone()),
+        )
+        .await;
+        assert_eq!(ingested, 0);
+        assert!(metrics.events_received.get() > before);
+    }
+
+    // ── FactoryPoolCreated derives ──
+
+    #[test]
+    fn factory_pool_created_debug_format() {
+        let fpc = FactoryPoolCreated {
+            factory: uni_v2_factory(),
+            protocol: ProtocolType::UniswapV2,
+            fee_bps: 30,
+            token0: Address::ZERO,
+            token1: Address::ZERO,
+            pool: Address::ZERO,
+        };
+        let debug_str = format!("{:?}", fpc);
+        assert!(debug_str.contains("FactoryPoolCreated"));
+        assert!(debug_str.contains("UniswapV2"));
+    }
+
+    #[test]
+    fn factory_pool_created_clone() {
+        let fpc = FactoryPoolCreated {
+            factory: uni_v2_factory(),
+            protocol: ProtocolType::Curve,
+            fee_bps: 4,
+            token0: Address::from([0xAA; 20]),
+            token1: Address::from([0xBB; 20]),
+            pool: Address::from([0xCC; 20]),
+        };
+        let cloned = fpc.clone();
+        assert_eq!(fpc, cloned);
+    }
+
+    // ── Mock log roundtrips ──
+
+    #[test]
+    fn mock_plain_pool_deployed_log_roundtrip() {
+        let pool = Address::from([0x01; 20]);
+        let token0 = address!("A0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48");
+        let token1 = address!("C02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2");
+        let (topics, data) = mock_plain_pool_deployed_log(pool, token0, token1, 3_000_000);
+        assert_eq!(topics.len(), 1);
+        assert!(!data.is_empty());
+        let result = decode_factory_log(
+            address!("F18056Bbd9e56aC88eefA885588501c1806Be1D8"),
+            ProtocolType::Curve,
+            4,
+            FactoryEventType::PlainPoolDeployed,
+            &topics,
+            &data,
+        );
+        assert!(result.is_some());
+        let created = result.unwrap();
+        assert_eq!(created.pool, pool);
+        assert_eq!(created.token0, token0);
+        assert_eq!(created.token1, token1);
+    }
+
+    #[test]
+    fn mock_pool_registered_log_roundtrip() {
+        let pool = Address::from([0x02; 20]);
+        let factory = address!("bA1333333333a1BA1108E8412f11850A5C319bA9");
+        let token0 = address!("A0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48");
+        let token1 = address!("C02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2");
+        let (topics, data) = mock_pool_registered_log(
+            pool,
+            factory,
+            token0,
+            token1,
+            U256::from(1_000_000_000_000_000u64),
+        );
+        assert_eq!(topics.len(), 3);
+        assert!(!data.is_empty());
+        let result = decode_factory_log(
+            factory,
+            ProtocolType::BalancerV3,
+            10,
+            FactoryEventType::PoolRegistered,
+            &topics,
+            &data,
+        );
+        assert!(result.is_some());
+        let created = result.unwrap();
+        assert_eq!(created.pool, pool);
+        assert_eq!(created.token0, token0);
+        assert_eq!(created.token1, token1);
+    }
+
+    // ── spawn_factory_listener mode branches ──
+
+    #[tokio::test]
+    async fn spawn_factory_listener_poll_no_provider() {
+        let service = Arc::new(crate::service::DiscoveryService::new(
+            crate::config::DiscoveryConfig::default(),
+        ));
+        let entries = vec![];
+        let (_, shutdown_rx) = tokio::sync::watch::channel(false);
+        let ws_health = WsHealth::new();
+        let handles = spawn_factory_listener(
+            None,
+            service,
+            entries,
+            "poll",
+            "",
+            5,
+            false,
+            false,
+            ws_health,
+            None,
+            shutdown_rx,
+        );
+        assert!(handles.is_empty());
+    }
+
+    #[tokio::test]
+    async fn spawn_factory_listener_websocket_no_url() {
+        let service = Arc::new(crate::service::DiscoveryService::new(
+            crate::config::DiscoveryConfig::default(),
+        ));
+        let entries = vec![];
+        let (_, shutdown_rx) = tokio::sync::watch::channel(false);
+        let ws_health = WsHealth::new();
+        let handles = spawn_factory_listener(
+            None,
+            service,
+            entries,
+            "websocket",
+            "",
+            5,
+            false,
+            false,
+            ws_health,
+            None,
+            shutdown_rx,
+        );
+        assert!(handles.is_empty());
+    }
+
+    #[tokio::test]
+    async fn spawn_factory_listener_auto_no_ws_no_poll() {
+        let service = Arc::new(crate::service::DiscoveryService::new(
+            crate::config::DiscoveryConfig::default(),
+        ));
+        let entries = vec![];
+        let (_, shutdown_rx) = tokio::sync::watch::channel(false);
+        let ws_health = WsHealth::new();
+        let handles = spawn_factory_listener(
+            None,
+            service,
+            entries,
+            "auto",
+            "",
+            5,
+            false,
+            false,
+            ws_health,
+            None,
+            shutdown_rx,
+        );
+        assert!(handles.is_empty());
+    }
+
+    #[tokio::test]
+    async fn spawn_factory_listener_auto_fallback_poll_no_provider() {
+        let service = Arc::new(crate::service::DiscoveryService::new(
+            crate::config::DiscoveryConfig::default(),
+        ));
+        let entries = vec![];
+        let (_, shutdown_rx) = tokio::sync::watch::channel(false);
+        let ws_health = WsHealth::new();
+        let handles = spawn_factory_listener(
+            None,
+            service,
+            entries,
+            "auto",
+            "",
+            5,
+            true,
+            false,
+            ws_health,
+            None,
+            shutdown_rx,
+        );
+        assert!(handles.is_empty());
+    }
+
+    #[tokio::test]
+    async fn spawn_factory_listener_websocket_fallback_poll_no_provider() {
+        let service = Arc::new(crate::service::DiscoveryService::new(
+            crate::config::DiscoveryConfig::default(),
+        ));
+        let entries = vec![];
+        let (_, shutdown_rx) = tokio::sync::watch::channel(false);
+        let ws_health = WsHealth::new();
+        let handles = spawn_factory_listener(
+            None,
+            service,
+            entries,
+            "websocket",
+            "",
+            5,
+            true,
+            false,
+            ws_health,
+            None,
+            shutdown_rx,
+        );
+        assert!(handles.is_empty());
+    }
+
+    #[tokio::test]
+    async fn spawn_factory_listener_unknown_mode() {
+        let service = Arc::new(crate::service::DiscoveryService::new(
+            crate::config::DiscoveryConfig::default(),
+        ));
+        let entries = vec![];
+        let (_, shutdown_rx) = tokio::sync::watch::channel(false);
+        let ws_health = WsHealth::new();
+        let handles = spawn_factory_listener(
+            None,
+            service,
+            entries,
+            "unknown",
+            "",
+            5,
+            false,
+            false,
+            ws_health,
+            None,
+            shutdown_rx,
+        );
+        assert!(handles.is_empty());
+    }
 }

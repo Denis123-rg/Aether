@@ -451,6 +451,7 @@ impl DiscoveryService {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::types::DiscoveryEvent;
     use alloy::primitives::address;
 
     fn test_config() -> DiscoveryConfig {
@@ -917,5 +918,897 @@ mod tests {
         let svc = DiscoveryService::new(test_config());
         let _rx1 = svc.subscribe_events();
         let _rx2 = svc.subscribe_events();
+    }
+
+    // ───────────────────────── OnChainMetricsSource slippage clamping ─────────
+
+    #[test]
+    fn on_chain_metrics_slippage_clamped_at_99_percent() {
+        let mut cfg = test_config();
+        cfg.scoring.slippage_estimate_bps = 99_999;
+        let source = OnChainMetricsSource::new(None, &cfg);
+        let result = source.fetch_metrics(
+            Address::from([0xAA; 20]),
+            usdc(),
+            weth(),
+            ProtocolType::UniswapV2,
+        );
+        assert!(result.slippage_estimate <= 0.99);
+        assert!(result.slippage_estimate > 0.0);
+    }
+
+    #[test]
+    fn on_chain_metrics_slippage_zero_bps() {
+        let mut cfg = test_config();
+        cfg.scoring.slippage_estimate_bps = 0;
+        let source = OnChainMetricsSource::new(None, &cfg);
+        let result = source.fetch_metrics(
+            Address::from([0xBB; 20]),
+            usdc(),
+            weth(),
+            ProtocolType::UniswapV2,
+        );
+        assert_eq!(result.slippage_estimate, 0.0);
+    }
+
+    #[test]
+    fn on_chain_metrics_slippage_exact_10000_bps() {
+        let mut cfg = test_config();
+        cfg.scoring.slippage_estimate_bps = 10_000;
+        let source = OnChainMetricsSource::new(None, &cfg);
+        let result = source.fetch_metrics(
+            Address::from([0xCC; 20]),
+            usdc(),
+            weth(),
+            ProtocolType::UniswapV2,
+        );
+        assert!(result.slippage_estimate <= 0.99);
+    }
+
+    // ──────────────── DiscoveryService::prune edge cases ──────────────────
+
+    #[test]
+    fn prune_zero_removes_nothing_by_score() {
+        let svc = DiscoveryService::new(test_config());
+        let inputs = PoolScoreInputs {
+            tvl_usd: 1_000_000.0,
+            volume_24h_usd: 100_000.0,
+            fee_bps: 30,
+            slippage_estimate: 0.01,
+        };
+        svc.insert_validated(
+            PoolInfo {
+                address: Address::from([0xA1; 20]),
+                token0: usdc(),
+                token1: weth(),
+                protocol: ProtocolType::UniswapV2,
+                fee_bps: 30,
+                score: 0.0,
+                tvl_usd: 0.0,
+                volume_24h_usd: 0.0,
+                slippage_estimate: 0.0,
+                discovered_at: 0,
+            },
+            inputs,
+        );
+        let removed = svc.prune(0.0);
+        assert_eq!(removed, 0);
+        assert_eq!(svc.get_top_n(10).len(), 1);
+    }
+
+    #[test]
+    fn prune_very_high_removes_all_by_score() {
+        let svc = DiscoveryService::new(test_config());
+        let inputs = PoolScoreInputs {
+            tvl_usd: 1_000.0,
+            volume_24h_usd: 100.0,
+            fee_bps: 30,
+            slippage_estimate: 0.5,
+        };
+        svc.insert_validated(
+            PoolInfo {
+                address: Address::from([0xA2; 20]),
+                token0: usdc(),
+                token1: weth(),
+                protocol: ProtocolType::UniswapV2,
+                fee_bps: 30,
+                score: 0.0,
+                tvl_usd: 0.0,
+                volume_24h_usd: 0.0,
+                slippage_estimate: 0.0,
+                discovered_at: 0,
+            },
+            inputs,
+        );
+        let removed = svc.prune(f64::MAX);
+        assert_eq!(removed, 1);
+        assert!(svc.get_top_n(10).is_empty());
+    }
+
+    #[test]
+    fn prune_equal_scores_keeps_all() {
+        let svc = DiscoveryService::new(test_config());
+        let inputs = PoolScoreInputs {
+            tvl_usd: 500_000.0,
+            volume_24h_usd: 50_000.0,
+            fee_bps: 30,
+            slippage_estimate: 0.01,
+        };
+        svc.insert_validated(
+            PoolInfo {
+                address: Address::from([0xB1; 20]),
+                token0: usdc(),
+                token1: weth(),
+                protocol: ProtocolType::UniswapV2,
+                fee_bps: 30,
+                score: 0.0,
+                tvl_usd: 0.0,
+                volume_24h_usd: 0.0,
+                slippage_estimate: 0.0,
+                discovered_at: 0,
+            },
+            inputs,
+        );
+        svc.insert_validated(
+            PoolInfo {
+                address: Address::from([0xB2; 20]),
+                token0: usdc(),
+                token1: weth(),
+                protocol: ProtocolType::UniswapV2,
+                fee_bps: 30,
+                score: 0.0,
+                tvl_usd: 0.0,
+                volume_24h_usd: 0.0,
+                slippage_estimate: 0.0,
+                discovered_at: 0,
+            },
+            inputs,
+        );
+        let removed = svc.prune(0.0001);
+        assert_eq!(removed, 0);
+        assert_eq!(svc.get_top_n(10).len(), 2);
+    }
+
+    #[test]
+    fn prune_just_above_low_score_removes_low_only() {
+        let svc = DiscoveryService::new(test_config());
+        let high_inputs = PoolScoreInputs {
+            tvl_usd: 10_000_000.0,
+            volume_24h_usd: 1_000_000.0,
+            fee_bps: 30,
+            slippage_estimate: 0.01,
+        };
+        svc.insert_validated(
+            PoolInfo {
+                address: Address::from([0xC1; 20]),
+                token0: usdc(),
+                token1: weth(),
+                protocol: ProtocolType::UniswapV2,
+                fee_bps: 30,
+                score: 0.0,
+                tvl_usd: 0.0,
+                volume_24h_usd: 0.0,
+                slippage_estimate: 0.0,
+                discovered_at: 0,
+            },
+            high_inputs,
+        );
+        let low_inputs = PoolScoreInputs {
+            tvl_usd: 100.0,
+            volume_24h_usd: 10.0,
+            fee_bps: 30,
+            slippage_estimate: 0.8,
+        };
+        svc.insert_validated(
+            PoolInfo {
+                address: Address::from([0xC2; 20]),
+                token0: usdc(),
+                token1: weth(),
+                protocol: ProtocolType::UniswapV2,
+                fee_bps: 30,
+                score: 0.0,
+                tvl_usd: 0.0,
+                volume_24h_usd: 0.0,
+                slippage_estimate: 0.0,
+                discovered_at: 0,
+            },
+            low_inputs,
+        );
+        let removed = svc.prune(0.01);
+        assert!(removed >= 1);
+        assert_eq!(svc.get_top_n(10).len(), 1);
+        assert_eq!(svc.get_top_n(10)[0].address, Address::from([0xC1; 20]));
+    }
+
+    // ────────────────── DiscoveryService::get_top_n edge cases ─────────────
+
+    #[test]
+    fn get_top_n_zero_returns_empty() {
+        let svc = DiscoveryService::new(test_config());
+        let inputs = PoolScoreInputs {
+            tvl_usd: 1_000_000.0,
+            volume_24h_usd: 100_000.0,
+            fee_bps: 30,
+            slippage_estimate: 0.01,
+        };
+        svc.insert_validated(
+            PoolInfo {
+                address: Address::from([0xD1; 20]),
+                token0: usdc(),
+                token1: weth(),
+                protocol: ProtocolType::UniswapV2,
+                fee_bps: 30,
+                score: 0.0,
+                tvl_usd: 0.0,
+                volume_24h_usd: 0.0,
+                slippage_estimate: 0.0,
+                discovered_at: 0,
+            },
+            inputs,
+        );
+        assert!(svc.get_top_n(0).is_empty());
+    }
+
+    #[test]
+    fn get_top_n_one_returns_highest() {
+        let svc = DiscoveryService::new(test_config());
+        let high_inputs = PoolScoreInputs {
+            tvl_usd: 10_000_000.0,
+            volume_24h_usd: 1_000_000.0,
+            fee_bps: 30,
+            slippage_estimate: 0.01,
+        };
+        svc.insert_validated(
+            PoolInfo {
+                address: Address::from([0xE1; 20]),
+                token0: usdc(),
+                token1: weth(),
+                protocol: ProtocolType::UniswapV2,
+                fee_bps: 30,
+                score: 0.0,
+                tvl_usd: 0.0,
+                volume_24h_usd: 0.0,
+                slippage_estimate: 0.0,
+                discovered_at: 0,
+            },
+            high_inputs,
+        );
+        let low_inputs = PoolScoreInputs {
+            tvl_usd: 1.0,
+            volume_24h_usd: 0.5,
+            fee_bps: 30,
+            slippage_estimate: 0.5,
+        };
+        svc.insert_validated(
+            PoolInfo {
+                address: Address::from([0xE2; 20]),
+                token0: usdc(),
+                token1: weth(),
+                protocol: ProtocolType::UniswapV2,
+                fee_bps: 30,
+                score: 0.0,
+                tvl_usd: 0.0,
+                volume_24h_usd: 0.0,
+                slippage_estimate: 0.0,
+                discovered_at: 0,
+            },
+            low_inputs,
+        );
+        let top = svc.get_top_n(1);
+        assert_eq!(top.len(), 1);
+        assert_eq!(top[0].address, Address::from([0xE1; 20]));
+    }
+
+    #[test]
+    fn get_top_n_larger_than_cache_returns_all() {
+        let svc = DiscoveryService::new(test_config());
+        for i in 1u8..=3 {
+            let inputs = PoolScoreInputs {
+                tvl_usd: i as f64 * 100_000.0,
+                volume_24h_usd: i as f64 * 10_000.0,
+                fee_bps: 30,
+                slippage_estimate: 0.01,
+            };
+            svc.insert_validated(
+                PoolInfo {
+                    address: Address::from([i; 20]),
+                    token0: usdc(),
+                    token1: weth(),
+                    protocol: ProtocolType::UniswapV2,
+                    fee_bps: 30,
+                    score: 0.0,
+                    tvl_usd: 0.0,
+                    volume_24h_usd: 0.0,
+                    slippage_estimate: 0.0,
+                    discovered_at: 0,
+                },
+                inputs,
+            );
+        }
+        assert_eq!(svc.get_top_n(100).len(), 3);
+    }
+
+    #[test]
+    fn get_top_n_scores_descending() {
+        let svc = DiscoveryService::new(test_config());
+        for i in 1u8..=5 {
+            let inputs = PoolScoreInputs {
+                tvl_usd: i as f64 * 200_000.0,
+                volume_24h_usd: i as f64 * 20_000.0,
+                fee_bps: 30,
+                slippage_estimate: 0.01,
+            };
+            svc.insert_validated(
+                PoolInfo {
+                    address: Address::from([i; 20]),
+                    token0: usdc(),
+                    token1: weth(),
+                    protocol: ProtocolType::UniswapV2,
+                    fee_bps: 30,
+                    score: 0.0,
+                    tvl_usd: 0.0,
+                    volume_24h_usd: 0.0,
+                    slippage_estimate: 0.0,
+                    discovered_at: 0,
+                },
+                inputs,
+            );
+        }
+        let top = svc.get_top_n(3);
+        assert_eq!(top.len(), 3);
+        assert!(top[0].score >= top[1].score);
+        assert!(top[1].score >= top[2].score);
+    }
+
+    // ────────────────── u256_to_f64 overflow / edge cases ──────────────────
+
+    #[test]
+    fn u256_to_f64_max_value_converts() {
+        let max_u256 = U256::MAX;
+        let result = u256_to_f64(max_u256);
+        assert!(result > 0.0);
+        assert!(result.is_finite());
+    }
+
+    #[test]
+    fn u256_to_f64_one_eth() {
+        let one_eth = U256::from(1_000_000_000_000_000_000u64);
+        let result = u256_to_f64(one_eth);
+        assert!((result - 1.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn u256_to_f64_very_small() {
+        let small = U256::from(1);
+        let result = u256_to_f64(small);
+        assert!((result - 1e-18).abs() < 1e-24);
+    }
+
+    #[test]
+    fn u256_to_f64_exact_boundary() {
+        let val = U256::from(9_007_199_254_740_992u64)
+            * U256::from(1_000_000_000_000_000_000u64);
+        let result = u256_to_f64(val);
+        assert!(result > 0.0);
+        assert!(result.is_finite());
+    }
+
+    // ──────────────── estimate_tvl_usd edge cases ─────────────────────
+
+    #[test]
+    fn estimate_tvl_usd_both_weth() {
+        let tvl = estimate_tvl_usd(weth(), weth(), 100.0, 200.0);
+        assert!((tvl - 100.0 * 3000.0 * 2.0).abs() < 1.0);
+    }
+
+    #[test]
+    fn estimate_tvl_usd_both_usdc() {
+        let tvl = estimate_tvl_usd(usdc(), usdc(), 100.0, 200.0);
+        assert!((tvl - 300.0 * 2.0).abs() < 1.0);
+    }
+
+    #[test]
+    fn estimate_tvl_usd_neither_weth_nor_usdc_zero() {
+        let token_a = address!("6B175474E89094C44Da98b954EedeAC495271d0F");
+        let token_b = address!("dAC17F958D2ee523a2206206994597C13D831ec7");
+        let tvl = estimate_tvl_usd(token_a, token_b, 0.0, 0.0);
+        assert_eq!(tvl, 1.0);
+    }
+
+    #[test]
+    fn estimate_tvl_usd_huge_reserves() {
+        let huge = 1e20;
+        let tvl = estimate_tvl_usd(weth(), usdc(), huge, huge);
+        assert!(tvl > 0.0);
+        assert!(tvl.is_finite());
+    }
+
+    #[test]
+    fn estimate_tvl_usd_usdc_token0() {
+        let other = address!("6B175474E89094C44Da98b954EedeAC495271d0F");
+        let tvl = estimate_tvl_usd(usdc(), other, 500.0, 100.0);
+        assert!((tvl - 600.0 * 2.0).abs() < 1.0);
+    }
+
+    #[test]
+    fn estimate_tvl_usd_usdc_token1() {
+        let other = address!("6B175474E89094C44Da98b954EedeAC495271d0F");
+        let tvl = estimate_tvl_usd(other, usdc(), 100.0, 500.0);
+        assert!((tvl - 600.0 * 2.0).abs() < 1.0);
+    }
+
+    #[test]
+    fn estimate_tvl_usd_weth_wins_over_usdc() {
+        let tvl = estimate_tvl_usd(weth(), usdc(), 10.0, 30000.0);
+        assert!((tvl - 10.0 * 3000.0 * 2.0).abs() < 1.0);
+    }
+
+    // ──────────────── connect_rpc_provider edge cases ──────────────────
+
+    #[tokio::test]
+    async fn connect_rpc_provider_invalid_url() {
+        let result = connect_rpc_provider("not-a-url").await;
+        assert!(result.is_none());
+    }
+
+    #[tokio::test]
+    async fn connect_rpc_provider_empty_string() {
+        let result = connect_rpc_provider("").await;
+        assert!(result.is_none());
+    }
+
+    #[tokio::test]
+    async fn connect_rpc_provider_garbage_scheme() {
+        let result = connect_rpc_provider("ftp://127.0.0.1:8545").await;
+        assert!(result.is_none());
+    }
+
+    // ──────────────── set_metrics overwriting ──────────────────────────
+
+    #[test]
+    fn set_metrics_overwrites_previous() {
+        let mut svc = DiscoveryService::new(test_config());
+        let m1 = DiscoveryMetrics::noop();
+        svc.set_metrics(m1);
+        assert!(svc.metrics().is_some());
+        let m2 = DiscoveryMetrics::noop();
+        svc.set_metrics(m2);
+        assert!(svc.metrics().is_some());
+    }
+
+    #[test]
+    fn set_metrics_none_initially() {
+        let svc = DiscoveryService::new(test_config());
+        assert!(svc.metrics().is_none());
+    }
+
+    // ──────────────── offline_validate boundary cases ──────────────────
+
+    #[test]
+    fn offline_validate_unknown_fee_exactly_10000_valid() {
+        let event = FactoryPoolCreated {
+            factory: Address::ZERO,
+            protocol: ProtocolType::BancorV3,
+            fee_bps: 10_000,
+            token0: usdc(),
+            token1: weth(),
+            pool: Address::from([0xF1; 20]),
+        };
+        let result = offline_validate(&event, 0.001);
+        assert_eq!(result, ValidationResult::Valid);
+    }
+
+    #[test]
+    fn offline_validate_unknown_fee_10001_invalid() {
+        let event = FactoryPoolCreated {
+            factory: Address::ZERO,
+            protocol: ProtocolType::BancorV3,
+            fee_bps: 10_001,
+            token0: usdc(),
+            token1: weth(),
+            pool: Address::from([0xF2; 20]),
+        };
+        let result = offline_validate(&event, 0.001);
+        assert!(matches!(result, ValidationResult::Invalid(_)));
+    }
+
+    #[test]
+    fn offline_validate_unknown_fee_zero_valid() {
+        let event = FactoryPoolCreated {
+            factory: Address::ZERO,
+            protocol: ProtocolType::BancorV3,
+            fee_bps: 0,
+            token0: usdc(),
+            token1: weth(),
+            pool: Address::from([0xF3; 20]),
+        };
+        let result = offline_validate(&event, 0.001);
+        assert_eq!(result, ValidationResult::Valid);
+    }
+
+    #[test]
+    fn offline_validate_uniswap_v2_valid() {
+        let event = FactoryPoolCreated {
+            factory: Address::ZERO,
+            protocol: ProtocolType::UniswapV2,
+            fee_bps: 30,
+            token0: usdc(),
+            token1: weth(),
+            pool: Address::from([0xF4; 20]),
+        };
+        let result = offline_validate(&event, 0.001);
+        assert_eq!(result, ValidationResult::Valid);
+    }
+
+    // ──────────────── ingest_pool_created edge cases ───────────────────
+
+    #[tokio::test]
+    async fn ingest_slippage_zero_gets_default() {
+        let mut cfg = test_config();
+        cfg.scoring.slippage_estimate_bps = 100;
+        let svc = DiscoveryService::new(cfg);
+        let pool_addr = Address::from([0xF5; 20]);
+        let event = FactoryPoolCreated {
+            factory: Address::ZERO,
+            protocol: ProtocolType::UniswapV2,
+            fee_bps: 30,
+            token0: usdc(),
+            token1: weth(),
+            pool: pool_addr,
+        };
+        assert!(svc.ingest_pool_created(event).await);
+        let top = svc.get_top_n(10);
+        assert_eq!(top.len(), 1);
+        assert!(top[0].slippage_estimate > 0.0);
+    }
+
+    #[tokio::test]
+    async fn ingest_preserves_event_fee_bps() {
+        let svc = DiscoveryService::new(test_config());
+        let pool_addr = Address::from([0xF6; 20]);
+        let event = FactoryPoolCreated {
+            factory: Address::ZERO,
+            protocol: ProtocolType::UniswapV2,
+            fee_bps: 50,
+            token0: usdc(),
+            token1: weth(),
+            pool: pool_addr,
+        };
+        assert!(svc.ingest_pool_created(event).await);
+        let top = svc.get_top_n(10);
+        assert_eq!(top[0].fee_bps, 50);
+    }
+
+    #[tokio::test]
+    async fn ingest_two_different_pools_both_admitted() {
+        let svc = DiscoveryService::new(test_config());
+        let event1 = FactoryPoolCreated {
+            factory: Address::ZERO,
+            protocol: ProtocolType::UniswapV2,
+            fee_bps: 30,
+            token0: usdc(),
+            token1: weth(),
+            pool: Address::from([0xF7; 20]),
+        };
+        let event2 = FactoryPoolCreated {
+            factory: Address::ZERO,
+            protocol: ProtocolType::UniswapV2,
+            fee_bps: 30,
+            token0: usdc(),
+            token1: weth(),
+            pool: Address::from([0xF8; 20]),
+        };
+        assert!(svc.ingest_pool_created(event1).await);
+        assert!(svc.ingest_pool_created(event2).await);
+        assert_eq!(svc.get_top_n(10).len(), 2);
+    }
+
+    #[tokio::test]
+    async fn ingest_sushiswap_offline_accepted() {
+        let svc = DiscoveryService::new(test_config());
+        let event = FactoryPoolCreated {
+            factory: address!("C0AEe478e3658e2610c5F7A4A2D1773cDCC8b275"),
+            protocol: ProtocolType::SushiSwap,
+            fee_bps: 25,
+            token0: usdc(),
+            token1: weth(),
+            pool: Address::from([0xF9; 20]),
+        };
+        assert!(svc.ingest_pool_created(event).await);
+    }
+
+    // ──────────────── insert_validated + score normalisation ────────────
+
+    #[test]
+    fn insert_validated_score_normalised_to_one_for_single() {
+        let svc = DiscoveryService::new(test_config());
+        let inputs = PoolScoreInputs {
+            tvl_usd: 1_000_000.0,
+            volume_24h_usd: 100_000.0,
+            fee_bps: 30,
+            slippage_estimate: 0.01,
+        };
+        let info = svc.insert_validated(
+            PoolInfo {
+                address: Address::from([0xFA; 20]),
+                token0: usdc(),
+                token1: weth(),
+                protocol: ProtocolType::UniswapV2,
+                fee_bps: 30,
+                score: 0.0,
+                tvl_usd: 0.0,
+                volume_24h_usd: 0.0,
+                slippage_estimate: 0.0,
+                discovered_at: 0,
+            },
+            inputs,
+        );
+        assert_eq!(info.score, 1.0);
+    }
+
+    #[test]
+    fn insert_validated_low_score_nonzero() {
+        let svc = DiscoveryService::new(test_config());
+        let high_inputs = PoolScoreInputs {
+            tvl_usd: 10_000_000.0,
+            volume_24h_usd: 1_000_000.0,
+            fee_bps: 30,
+            slippage_estimate: 0.01,
+        };
+        svc.insert_validated(
+            PoolInfo {
+                address: Address::from([0xFB; 20]),
+                token0: usdc(),
+                token1: weth(),
+                protocol: ProtocolType::UniswapV2,
+                fee_bps: 30,
+                score: 0.0,
+                tvl_usd: 0.0,
+                volume_24h_usd: 0.0,
+                slippage_estimate: 0.0,
+                discovered_at: 0,
+            },
+            high_inputs,
+        );
+        let low_inputs = PoolScoreInputs {
+            tvl_usd: 100.0,
+            volume_24h_usd: 10.0,
+            fee_bps: 30,
+            slippage_estimate: 0.01,
+        };
+        let info = svc.insert_validated(
+            PoolInfo {
+                address: Address::from([0xFC; 20]),
+                token0: usdc(),
+                token1: weth(),
+                protocol: ProtocolType::UniswapV2,
+                fee_bps: 30,
+                score: 0.0,
+                tvl_usd: 0.0,
+                volume_24h_usd: 0.0,
+                slippage_estimate: 0.0,
+                discovered_at: 0,
+            },
+            low_inputs,
+        );
+        assert!(info.score > 0.0);
+        assert!(info.score < 1.0);
+    }
+
+    // ──────────────── config accessor deeper checks ────────────────────
+
+    #[test]
+    fn config_scoring_defaults() {
+        let svc = DiscoveryService::new(test_config());
+        assert_eq!(svc.config().scoring.tvl_weight, 1.0);
+        assert_eq!(svc.config().scoring.volume_weight, 1.0);
+        assert_eq!(svc.config().scoring.slippage_estimate_bps, 50);
+    }
+
+    #[test]
+    fn config_hot_cache_defaults() {
+        let svc = DiscoveryService::new(test_config());
+        assert_eq!(svc.config().hot_cache.top_n, 500);
+        assert_eq!(svc.config().hot_cache.update_interval_secs, 5);
+    }
+
+    // ──────────────── with_provider stores provider ────────────────────
+
+    #[test]
+    fn with_provider_none() {
+        let svc = DiscoveryService::with_provider(test_config(), None);
+        assert!(svc.provider.is_none());
+    }
+
+    #[test]
+    fn cache_returns_shared_reference() {
+        let svc = DiscoveryService::new(test_config());
+        let c1 = svc.cache();
+        let c2 = svc.cache();
+        assert!(Arc::ptr_eq(c1, c2));
+    }
+
+    // ──────────────── on_chain_metrics various protocols no provider ───
+
+    #[test]
+    fn on_chain_metrics_fetch_uniswap_v3_no_provider() {
+        let cfg = test_config();
+        let source = OnChainMetricsSource::new(None, &cfg);
+        let result = source.fetch_metrics(
+            Address::from([0x11; 20]),
+            usdc(),
+            weth(),
+            ProtocolType::UniswapV3,
+        );
+        assert_eq!(result.tvl_usd, 100_000.0);
+    }
+
+    #[test]
+    fn on_chain_metrics_fetch_bancor_v3_no_provider() {
+        let cfg = test_config();
+        let source = OnChainMetricsSource::new(None, &cfg);
+        let result = source.fetch_metrics(
+            Address::from([0x11; 20]),
+            usdc(),
+            weth(),
+            ProtocolType::BancorV3,
+        );
+        assert_eq!(result.tvl_usd, 100_000.0);
+    }
+
+    // ──────────────── spawn_prune_task shutdown test ───────────────────
+
+    #[tokio::test]
+    async fn spawn_prune_task_shutdown() {
+        let cfg = DiscoveryConfig {
+            discovery: crate::config::DiscoverySettings {
+                prune_interval_secs: 10,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let svc = Arc::new(DiscoveryService::new(cfg));
+        let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+        svc.spawn_prune_task(shutdown_rx);
+        shutdown_tx.send(true).unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+
+    // ──────────────── metrics noop ─────────────────────────────────────
+
+    #[test]
+    fn discovery_metrics_noop_record_validation() {
+        let m = DiscoveryMetrics::noop();
+        m.record_validation("uniswap_v2", "valid");
+        m.record_validation("curve", "invalid");
+    }
+
+    #[test]
+    fn discovery_metrics_accessors() {
+        let m = DiscoveryMetrics::noop();
+        assert!(m.events_received.get() == 0.0);
+        assert!(m.pools_validated.get() == 0.0);
+        assert!(m.pools_rejected.get() == 0.0);
+    }
+
+    // ──────────────── ingest with validation_swap_eth varied ───────────
+
+    #[tokio::test]
+    async fn ingest_offline_with_high_swap_eth() {
+        let mut cfg = test_config();
+        cfg.discovery.validation_swap_eth = 100.0;
+        let svc = DiscoveryService::new(cfg);
+        let event = FactoryPoolCreated {
+            factory: Address::ZERO,
+            protocol: ProtocolType::UniswapV2,
+            fee_bps: 30,
+            token0: usdc(),
+            token1: weth(),
+            pool: Address::from([0xAA; 20]),
+        };
+        let _ = svc.ingest_pool_created(event).await;
+    }
+
+    #[tokio::test]
+    async fn ingest_offline_with_zero_swap_eth() {
+        let mut cfg = test_config();
+        cfg.discovery.validation_swap_eth = 0.0;
+        let svc = DiscoveryService::new(cfg);
+        let event = FactoryPoolCreated {
+            factory: Address::ZERO,
+            protocol: ProtocolType::UniswapV2,
+            fee_bps: 30,
+            token0: usdc(),
+            token1: weth(),
+            pool: Address::from([0xAB; 20]),
+        };
+        let _ = svc.ingest_pool_created(event).await;
+    }
+
+    // ──────────────── multiple events in broadcast channel ─────────────
+
+    #[test]
+    fn subscribe_events_after_insert_sees_pool_added() {
+        let svc = DiscoveryService::new(test_config());
+        let mut rx = svc.subscribe_events();
+        let inputs = PoolScoreInputs {
+            tvl_usd: 100_000.0,
+            volume_24h_usd: 10_000.0,
+            fee_bps: 30,
+            slippage_estimate: 0.01,
+        };
+        svc.insert_validated(
+            PoolInfo {
+                address: Address::from([0xAA; 20]),
+                token0: usdc(),
+                token1: weth(),
+                protocol: ProtocolType::UniswapV2,
+                fee_bps: 30,
+                score: 0.0,
+                tvl_usd: 0.0,
+                volume_24h_usd: 0.0,
+                slippage_estimate: 0.0,
+                discovered_at: 0,
+            },
+            inputs,
+        );
+        let event = rx.try_recv();
+        assert!(event.is_ok());
+        assert!(matches!(event.unwrap(), DiscoveryEvent::PoolAdded(_)));
+    }
+
+    #[test]
+    fn subscribe_events_before_and_after_update() {
+        let svc = DiscoveryService::new(test_config());
+        let mut rx = svc.subscribe_events();
+        let inputs1 = PoolScoreInputs {
+            tvl_usd: 100_000.0,
+            volume_24h_usd: 10_000.0,
+            fee_bps: 30,
+            slippage_estimate: 0.01,
+        };
+        svc.insert_validated(
+            PoolInfo {
+                address: Address::from([0xAC; 20]),
+                token0: usdc(),
+                token1: weth(),
+                protocol: ProtocolType::UniswapV2,
+                fee_bps: 30,
+                score: 0.0,
+                tvl_usd: 0.0,
+                volume_24h_usd: 0.0,
+                slippage_estimate: 0.0,
+                discovered_at: 0,
+            },
+            inputs1,
+        );
+        let inputs2 = PoolScoreInputs {
+            tvl_usd: 200_000.0,
+            volume_24h_usd: 20_000.0,
+            fee_bps: 30,
+            slippage_estimate: 0.01,
+        };
+        svc.insert_validated(
+            PoolInfo {
+                address: Address::from([0xAC; 20]),
+                token0: usdc(),
+                token1: weth(),
+                protocol: ProtocolType::UniswapV2,
+                fee_bps: 30,
+                score: 0.0,
+                tvl_usd: 0.0,
+                volume_24h_usd: 0.0,
+                slippage_estimate: 0.0,
+                discovered_at: 0,
+            },
+            inputs2,
+        );
+        assert!(rx.try_recv().is_ok());
+        let update_event = rx.try_recv();
+        assert!(update_event.is_ok());
+        assert!(matches!(
+            update_event.unwrap(),
+            DiscoveryEvent::PoolUpdated(_)
+        ));
     }
 }

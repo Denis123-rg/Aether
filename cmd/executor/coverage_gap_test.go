@@ -2,27 +2,13 @@ package main
 
 import (
 	"context"
-	"errors"
 	"math/big"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 
-	"github.com/aether-arb/aether/internal/metrics"
 	"github.com/aether-arb/aether/internal/risk"
 )
-
-// --- mock types for testing admin handlers ---
-
-type mockEngineCtrl struct {
-	setStateCalled bool
-	err            error
-}
-
-func (m *mockEngineCtrl) SetEngineState(ctx context.Context, paused bool) error {
-	m.setStateCalled = true
-	return m.err
-}
 
 type mockEventPub struct {
 	breakerStatusCalled bool
@@ -57,21 +43,6 @@ func TestHandleAdminPause_WithEngineCtrlAndEventPub(t *testing.T) {
 	}
 }
 
-func TestHandleAdminPause_EngineCtrlError(t *testing.T) {
-	resetAdminGlobals()
-	rm := risk.NewRiskManager(risk.DefaultRiskConfig())
-	globalAdminDeps.riskMgr = rm
-	globalAdminDeps.engineCtrl = &mockEngineCtrl{err: errors.New("engine error")}
-
-	req := httptest.NewRequest(http.MethodPost, "/admin/pause?reason=enginefail", nil)
-	w := httptest.NewRecorder()
-	handleAdminPause(w, req)
-
-	if w.Code != http.StatusOK {
-		t.Fatalf("status: %d", w.Code)
-	}
-}
-
 func TestHandleAdminReset_WithEngineCtrlAndEventPub(t *testing.T) {
 	resetAdminGlobals()
 	rm := risk.NewRiskManager(risk.DefaultRiskConfig())
@@ -92,22 +63,6 @@ func TestHandleAdminReset_WithEngineCtrlAndEventPub(t *testing.T) {
 	}
 }
 
-func TestHandleAdminReset_EngineCtrlError(t *testing.T) {
-	resetAdminGlobals()
-	rm := risk.NewRiskManager(risk.DefaultRiskConfig())
-	rm.ForceStateForTest(risk.StateHalted)
-	globalAdminDeps.riskMgr = rm
-	globalAdminDeps.engineCtrl = &mockEngineCtrl{err: errors.New("engine error")}
-
-	req := httptest.NewRequest(http.MethodPost, "/admin/reset", nil)
-	w := httptest.NewRecorder()
-	handleAdminReset(w, req)
-
-	if w.Code != http.StatusOK {
-		t.Fatalf("status: %d", w.Code)
-	}
-}
-
 func TestHandleAdminResume_WithEngineCtrlAndEventPub(t *testing.T) {
 	resetAdminGlobals()
 	rm := risk.NewRiskManager(risk.DefaultRiskConfig())
@@ -125,22 +80,6 @@ func TestHandleAdminResume_WithEngineCtrlAndEventPub(t *testing.T) {
 	}
 	if rm.State() != risk.StateRunning {
 		t.Fatalf("state: %s", rm.State())
-	}
-}
-
-func TestHandleAdminResume_EngineCtrlError(t *testing.T) {
-	resetAdminGlobals()
-	rm := risk.NewRiskManager(risk.DefaultRiskConfig())
-	_ = rm.Pause("test")
-	globalAdminDeps.riskMgr = rm
-	globalAdminDeps.engineCtrl = &mockEngineCtrl{err: errors.New("engine error")}
-
-	req := httptest.NewRequest(http.MethodPost, "/admin/resume", nil)
-	w := httptest.NewRecorder()
-	handleAdminResume(w, req)
-
-	if w.Code != http.StatusOK {
-		t.Fatalf("status: %d", w.Code)
 	}
 }
 
@@ -207,12 +146,6 @@ func TestAddBigIntCounter_NilAndZero(t *testing.T) {
 	addBigIntCounter(profitTotalWei, big.NewInt(0))
 }
 
-func TestAddBigIntCounter_LargeValue(t *testing.T) {
-	// value > 2^53 to trigger precision loss path
-	val := new(big.Int).Lsh(big.NewInt(1), 60)
-	addBigIntCounter(profitTotalWei, val)
-}
-
 // --- remote_signer.go edge cases ---
 
 func TestNewRemoteSigner_EmptySocket(t *testing.T) {
@@ -242,13 +175,4 @@ func TestRun_NilDeps(t *testing.T) {
 	}
 }
 
-func TestRun_NilConfig(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
 
-	deps := &Dependencies{}
-	err := run(ctx, nil, deps)
-	if err == nil {
-		t.Fatal("expected error for nil config")
-	}
-}

@@ -2617,6 +2617,9 @@ fn decode_error_label(err: &DecodeError) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::mempool_writer::NoopMempoolSink;
+    use aether_pools::balancer::BalancerPostState;
+    use aether_pools::new_pool_state_cache;
     use aether_pools::router_decoder::IUniswapV2Router02::swapExactTokensForTokensCall;
     use alloy::primitives::{address, B256, U256};
     use alloy::sol_types::SolCall;
@@ -4160,5 +4163,997 @@ mod tests {
             U256::ZERO,
         );
         assert!(matches!(outcome, SizingOutcome::BelowMinProfit));
+    }
+
+    // ===== NEW COVERAGE TESTS =====
+
+    // ----- unified_to_post_reserves V3 arm -----
+
+    #[test]
+    fn unified_to_post_reserves_v3_token0_to_token1() {
+        use aether_pools::uniswap_v3::V3PostState;
+        let weth = address!("C02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2");
+        let usdc = address!("A0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48");
+        let meta = PoolMetadata {
+            token0_idx: 0,
+            token1_idx: 1,
+            token0: weth,
+            token1: usdc,
+            pool_id: PoolId {
+                address: address!("88e6A0c2dDD26FEEb64F039a2c41296FcB3f5640"),
+                protocol: ProtocolType::UniswapV3,
+            },
+            protocol: ProtocolType::UniswapV3,
+            fee_bps: 30,
+            tick_spacing: Some(60),
+            bytecode_warmed: true,
+        };
+        let post = UnifiedPostState::UniswapV3(V3PostState {
+            new_sqrt_price_x96: U256::from(1_600_000_000_000_000_000u128),
+            new_liquidity: 1_000_000_000_000u128,
+            amount_out: U256::from(500_000u64),
+            single_tick: true,
+        });
+        let (pin, pout) = unified_to_post_reserves(weth, &meta, &post);
+        assert!(pin > 0.0);
+        assert!(pout > 0.0);
+        assert!(pin.is_finite());
+        assert!(pout.is_finite());
+    }
+
+    #[test]
+    fn unified_to_post_reserves_v3_reverse_direction() {
+        use aether_pools::uniswap_v3::V3PostState;
+        let weth = address!("C02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2");
+        let usdc = address!("A0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48");
+        let meta = PoolMetadata {
+            token0_idx: 0,
+            token1_idx: 1,
+            token0: weth,
+            token1: usdc,
+            pool_id: PoolId {
+                address: address!("88e6A0c2dDD26FEEb64F039a2c41296FcB3f5640"),
+                protocol: ProtocolType::UniswapV3,
+            },
+            protocol: ProtocolType::UniswapV3,
+            fee_bps: 30,
+            tick_spacing: Some(60),
+            bytecode_warmed: true,
+        };
+        let post = UnifiedPostState::UniswapV3(V3PostState {
+            new_sqrt_price_x96: U256::from(1_600_000_000_000_000_000u128),
+            new_liquidity: 1_000_000_000_000u128,
+            amount_out: U256::from(500_000u64),
+            single_tick: true,
+        });
+        let (pin, pout) = unified_to_post_reserves(usdc, &meta, &post);
+        assert!(pin > 0.0);
+        assert!(pout > 0.0);
+        let (pin_fwd, pout_fwd) = unified_to_post_reserves(weth, &meta, &post);
+        assert!((pin - pout_fwd).abs() < 1e-6);
+        assert!((pout - pin_fwd).abs() < 1e-6);
+    }
+
+    #[test]
+    fn unified_to_post_reserves_v3_zero_liquidity() {
+        use aether_pools::uniswap_v3::V3PostState;
+        let weth = address!("C02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2");
+        let usdc = address!("A0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48");
+        let meta = PoolMetadata {
+            token0_idx: 0,
+            token1_idx: 1,
+            token0: weth,
+            token1: usdc,
+            pool_id: PoolId {
+                address: address!("88e6A0c2dDD26FEEb64F039a2c41296FcB3f5640"),
+                protocol: ProtocolType::UniswapV3,
+            },
+            protocol: ProtocolType::UniswapV3,
+            fee_bps: 30,
+            tick_spacing: Some(60),
+            bytecode_warmed: true,
+        };
+        let post = UnifiedPostState::UniswapV3(V3PostState {
+            new_sqrt_price_x96: U256::ZERO,
+            new_liquidity: 0,
+            amount_out: U256::ZERO,
+            single_tick: false,
+        });
+        let (pin, pout) = unified_to_post_reserves(weth, &meta, &post);
+        assert_eq!(pin, 0.0);
+        assert_eq!(pout, 0.0);
+    }
+
+    // ----- unified_to_post_reserves Balancer arm -----
+
+    #[test]
+    fn unified_to_post_reserves_balancer_token0_direction() {
+        let weth = address!("C02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2");
+        let usdc = address!("A0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48");
+        let meta = PoolMetadata {
+            token0_idx: 0,
+            token1_idx: 1,
+            token0: weth,
+            token1: usdc,
+            pool_id: PoolId {
+                address: address!("5c6Ee304399DBdB9C8Ef030aB642B10820DB8F56"),
+                protocol: ProtocolType::BalancerV2,
+            },
+            protocol: ProtocolType::BalancerV2,
+            fee_bps: 10,
+            tick_spacing: None,
+            bytecode_warmed: true,
+        };
+        let post = UnifiedPostState::Balancer(BalancerPostState {
+            new_balance0: U256::from(1_000_000_000_000_000_000_000u128),
+            new_balance1: U256::from(2_000_000_000_000u128),
+            amount_out: U256::from(900_000u64),
+            analytical: true,
+        });
+        let (pin, pout) = unified_to_post_reserves(weth, &meta, &post);
+        assert!((pin - 1_000_000_000_000_000_000_000.0).abs() < 1e6);
+        assert!((pout - 2_000_000_000_000.0).abs() < 1e0);
+    }
+
+    #[test]
+    fn unified_to_post_reserves_balancer_reverse_direction() {
+        let weth = address!("C02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2");
+        let usdc = address!("A0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48");
+        let meta = PoolMetadata {
+            token0_idx: 0,
+            token1_idx: 1,
+            token0: weth,
+            token1: usdc,
+            pool_id: PoolId {
+                address: address!("5c6Ee304399DBdB9C8Ef030aB642B10820DB8F56"),
+                protocol: ProtocolType::BalancerV2,
+            },
+            protocol: ProtocolType::BalancerV2,
+            fee_bps: 10,
+            tick_spacing: None,
+            bytecode_warmed: true,
+        };
+        let post = UnifiedPostState::Balancer(BalancerPostState {
+            new_balance0: U256::from(1_000_000_000_000_000_000_000u128),
+            new_balance1: U256::from(2_000_000_000_000u128),
+            amount_out: U256::from(900_000u64),
+            analytical: true,
+        });
+        let (pin, pout) = unified_to_post_reserves(usdc, &meta, &post);
+        assert!((pin - 2_000_000_000_000.0).abs() < 1e0);
+        assert!((pout - 1_000_000_000_000_000_000_000.0).abs() < 1e6);
+    }
+
+    // ----- decoder_protocol_to_type additional variants -----
+
+    #[test]
+    fn decoder_protocol_to_type_curve_and_bancor() {
+        assert_eq!(decoder_protocol_to_type(Protocol::Curve), Some(ProtocolType::Curve));
+        assert_eq!(decoder_protocol_to_type(Protocol::BancorV3), Some(ProtocolType::BancorV3));
+    }
+
+    #[test]
+    fn decoder_protocol_to_type_oneinch_returns_none() {
+        assert_eq!(decoder_protocol_to_type(Protocol::OneInchV6), None);
+    }
+
+    // ----- victim_post_reserves happy paths -----
+
+    #[test]
+    fn victim_post_reserves_happy_token0_direction() {
+        let weth = address!("C02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2");
+        let usdc = address!("A0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48");
+        let pool = UniswapV2Pool::new(address!("0000000000000000000000000000000000000011"), weth, usdc, 30);
+        let result = victim_post_reserves(&pool, weth, 1_000_000.0, 2_000_000.0);
+        assert!(result.is_some());
+        let (r0, r1) = result.unwrap();
+        assert!((r0.to::<u128>() as f64 - 1_000_000.0).abs() < 1.0);
+        assert!((r1.to::<u128>() as f64 - 2_000_000.0).abs() < 1.0);
+    }
+
+    #[test]
+    fn victim_post_reserves_happy_reverse_direction() {
+        let weth = address!("C02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2");
+        let usdc = address!("A0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48");
+        let pool = UniswapV2Pool::new(address!("0000000000000000000000000000000000000011"), weth, usdc, 30);
+        let result = victim_post_reserves(&pool, usdc, 1_000_000.0, 2_000_000.0);
+        assert!(result.is_some());
+        let (r0, r1) = result.unwrap();
+        assert!((r0.to::<u128>() as f64 - 2_000_000.0).abs() < 1.0);
+        assert!((r1.to::<u128>() as f64 - 1_000_000.0).abs() < 1.0);
+    }
+
+    #[test]
+    fn victim_post_reserves_negative_yields_none() {
+        let pool = UniswapV2Pool::new(
+            address!("0000000000000000000000000000000000000011"),
+            address!("C02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2"),
+            address!("A0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"), 30,
+        );
+        assert!(victim_post_reserves(&pool, address!("C02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2"), -1.0, 1.0).is_none());
+        assert!(victim_post_reserves(&pool, address!("C02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2"), 1.0, -1.0).is_none());
+    }
+
+    #[test]
+    fn victim_post_reserves_clamps_to_u112() {
+        let pool = UniswapV2Pool::new(
+            address!("0000000000000000000000000000000000000011"),
+            address!("C02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2"),
+            address!("A0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"), 30,
+        );
+        let huge = f64::MAX;
+        let result = victim_post_reserves(&pool, address!("C02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2"), huge, 1.0);
+        assert!(result.is_some());
+        let max_u112: u128 = (1u128 << 112) - 1;
+        let (r0, _) = result.unwrap();
+        assert_eq!(r0, U256::from(max_u112));
+    }
+
+    #[test]
+    fn victim_post_reserves_zero_yields_none() {
+        let pool = UniswapV2Pool::new(
+            address!("0000000000000000000000000000000000000011"),
+            address!("C02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2"),
+            address!("A0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"), 30,
+        );
+        assert!(victim_post_reserves(&pool, address!("C02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2"), 0.0, 1.0).is_none());
+        assert!(victim_post_reserves(&pool, address!("C02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2"), 1.0, 0.0).is_none());
+    }
+
+    // ----- u256_from_f64_saturating additional -----
+
+    #[test]
+    fn u256_from_f64_positive_normal() {
+        assert_eq!(u256_from_f64_saturating(42.5), U256::from(42u64));
+    }
+
+    #[test]
+    fn u256_from_f64_zero() {
+        assert_eq!(u256_from_f64_saturating(0.0), U256::ZERO);
+    }
+
+    // ----- cycle_to_swap_steps with proper graph -----
+
+    #[test]
+    fn cycle_to_swap_steps_with_edges() {
+        let weth = address!("C02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2");
+        let usdc = address!("A0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48");
+        let mut ti = TokenIndex::default();
+        let idx0 = ti.get_or_insert(weth);
+        let idx1 = ti.get_or_insert(usdc);
+        let mut graph = PriceGraph::new(2);
+        let pool_id = PoolId { address: address!("0000000000000000000000000000000000000011"), protocol: ProtocolType::UniswapV2 };
+        graph.add_edge(idx0, idx1, 0.5, pool_id, address!("0000000000000000000000000000000000000011"), ProtocolType::UniswapV2, U256::from(1_000_000u64));
+        graph.add_edge(idx1, idx0, 0.5, pool_id, address!("0000000000000000000000000000000000000011"), ProtocolType::UniswapV2, U256::from(1_000_000u64));
+        graph.update_edge_from_reserves(idx0, idx1, pool_id, 1_000_000.0, 2_000_000.0, 0.997);
+        graph.update_edge_from_reserves(idx1, idx0, pool_id, 2_000_000.0, 1_000_000.0, 0.997);
+        let cycle = aether_detector::opportunity::DetectedCycle { path: vec![idx0, idx1, idx0], total_weight: -0.01 };
+        let steps = cycle_to_swap_steps(&graph, &ti, &cycle, U256::from(1_000_000_000_000_000_000u128));
+        assert!(steps.is_some());
+        let steps = steps.unwrap();
+        assert_eq!(steps.len(), 2);
+        assert_eq!(steps[0].token_in, weth);
+        assert_eq!(steps[0].token_out, usdc);
+        assert_eq!(steps[1].token_in, usdc);
+        assert_eq!(steps[1].token_out, weth);
+    }
+
+    #[test]
+    fn cycle_to_swap_steps_missing_token_address() {
+        let mut ti = TokenIndex::default();
+        ti.get_or_insert(address!("C02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2"));
+        let graph = PriceGraph::new(2);
+        let cycle = aether_detector::opportunity::DetectedCycle { path: vec![0, 1], total_weight: -0.01 };
+        assert!(cycle_to_swap_steps(&graph, &ti, &cycle, U256::from(1000u64)).is_none());
+    }
+
+    #[test]
+    fn cycle_to_swap_steps_missing_edge() {
+        let weth = address!("C02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2");
+        let usdc = address!("A0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48");
+        let mut ti = TokenIndex::default();
+        let idx0 = ti.get_or_insert(weth);
+        let idx1 = ti.get_or_insert(usdc);
+        let graph = PriceGraph::new(2);
+        let cycle = aether_detector::opportunity::DetectedCycle { path: vec![idx0, idx1], total_weight: -0.01 };
+        assert!(cycle_to_swap_steps(&graph, &ti, &cycle, U256::from(1000u64)).is_none());
+    }
+
+    // ----- pre_sim_filter Bancor single-leg with BNT -----
+
+    #[test]
+    fn pre_sim_filter_bancor_single_leg_with_bnt_passes() {
+        let metrics = EngineMetrics::new();
+        let weth = address!("C02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2");
+        let pool_addr = address!("aaaa000000000000000000000000000000000001");
+        let mut token_index = TokenIndex::default();
+        let weth_idx = token_index.get_or_insert(weth);
+        let bnt_idx = token_index.get_or_insert(BNT_ADDRESS);
+        let mut registry: HashMap<Address, PoolMetadata> = HashMap::new();
+        registry.insert(pool_addr, PoolMetadata {
+            token0_idx: weth_idx, token1_idx: bnt_idx, token0: weth, token1: BNT_ADDRESS,
+            pool_id: PoolId { address: pool_addr, protocol: ProtocolType::BancorV3 },
+            protocol: ProtocolType::BancorV3, fee_bps: 30, tick_spacing: None, bytecode_warmed: true,
+        });
+        let mut graph = PriceGraph::new(2);
+        let pool_id = registry.values().next().unwrap().pool_id;
+        graph.add_edge(weth_idx, bnt_idx, 1.0, pool_id, pool_addr, ProtocolType::BancorV3, U256::from(1u64));
+        graph.add_edge(bnt_idx, weth_idx, 1.0, pool_id, pool_addr, ProtocolType::BancorV3, U256::from(1u64));
+        graph.update_edge_from_reserves(weth_idx, bnt_idx, pool_id, 1_000_000.0, 2_000_000.0, 0.997);
+        graph.update_edge_from_reserves(bnt_idx, weth_idx, pool_id, 2_000_000.0, 1_000_000.0, 0.997);
+        let ctx = Arc::new(SimContext::new(
+            Arc::new(ArcSwap::from_pointee(registry)),
+            Arc::new(ArcSwap::from_pointee(token_index)),
+            Arc::new(SnapshotManager::new(graph)),
+            BellmanFord::new(3, 1_000), new_pool_state_cache(),
+            Arc::new(NoopMempoolSink::new()), None,
+        ));
+        let swap = fake_swap(Protocol::BancorV3, weth, BNT_ADDRESS, U256::from(1_000u64));
+        assert!(pre_sim_filter(&metrics, &ctx, &swap));
+    }
+
+    // ----- try_post_state_scan skip paths -----
+
+    #[test]
+    fn try_post_state_scan_token_in_unknown() {
+        let metrics = EngineMetrics::new();
+        let weth = address!("C02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2");
+        let usdc = address!("A0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48");
+        let pool_addr = address!("0000000000000000000000000000000000000011");
+        let mut ti = TokenIndex::default();
+        let usdc_idx = ti.get_or_insert(usdc);
+        // Register only token_out; token_in is NOT in the token_index
+        let mut registry: HashMap<Address, PoolMetadata> = HashMap::new();
+        let pool_id = PoolId { address: pool_addr, protocol: ProtocolType::UniswapV2 };
+        registry.insert(pool_addr, PoolMetadata {
+            token0_idx: 0, token1_idx: usdc_idx, token0: weth, token1: usdc, pool_id,
+            protocol: ProtocolType::UniswapV2, fee_bps: 30, tick_spacing: None, bytecode_warmed: true,
+        });
+        let ctx = Arc::new(SimContext::new(
+            Arc::new(ArcSwap::from_pointee(registry)),
+            Arc::new(ArcSwap::from_pointee(ti)),
+            Arc::new(SnapshotManager::new(PriceGraph::new(0))),
+            BellmanFord::new(3, 1_000), new_pool_state_cache(),
+            Arc::new(NoopMempoolSink::new()), None,
+        ));
+        let swap = fake_swap(Protocol::UniswapV2, weth, usdc, U256::from(1_000u64));
+        let event = fake_pending_event(address!("7a250d5630B4cF539739dF2C5dAcb4c659F2488D"));
+        try_post_state_scan(&metrics, &ctx, "router", &swap, event.tx_hash, event.to.unwrap(), &event);
+        assert_eq!(metrics.pending_arb_sim_skipped_count("token_in_unknown"), 1);
+    }
+
+    #[test]
+    fn try_post_state_scan_token_out_unknown() {
+        let metrics = EngineMetrics::new();
+        let weth = address!("C02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2");
+        let usdc = address!("A0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48");
+        let pool_addr = address!("0000000000000000000000000000000000000011");
+        let mut ti = TokenIndex::default();
+        let weth_idx = ti.get_or_insert(weth);
+        // Register token_in but NOT token_out in the token index
+        let mut registry: HashMap<Address, PoolMetadata> = HashMap::new();
+        let pool_id = PoolId { address: pool_addr, protocol: ProtocolType::UniswapV2 };
+        registry.insert(pool_addr, PoolMetadata {
+            token0_idx: weth_idx, token1_idx: 1, token0: weth, token1: usdc, pool_id,
+            protocol: ProtocolType::UniswapV2, fee_bps: 30, tick_spacing: None, bytecode_warmed: true,
+        });
+        let ctx = Arc::new(SimContext::new(
+            Arc::new(ArcSwap::from_pointee(registry)),
+            Arc::new(ArcSwap::from_pointee(ti)),
+            Arc::new(SnapshotManager::new(PriceGraph::new(0))),
+            BellmanFord::new(3, 1_000), new_pool_state_cache(),
+            Arc::new(NoopMempoolSink::new()), None,
+        ));
+        let swap = fake_swap(Protocol::UniswapV2, weth, usdc, U256::from(1_000u64));
+        let event = fake_pending_event(address!("7a250d5630B4cF539739dF2C5dAcb4c659F2488D"));
+        try_post_state_scan(&metrics, &ctx, "router", &swap, event.tx_hash, event.to.unwrap(), &event);
+        assert_eq!(metrics.pending_arb_sim_skipped_count("token_out_unknown"), 1);
+    }
+
+    #[test]
+    fn try_post_state_scan_graph_edge_missing() {
+        let metrics = EngineMetrics::new();
+        let weth = address!("C02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2");
+        let usdc = address!("A0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48");
+        let pool_addr = address!("0000000000000000000000000000000000000011");
+        let mut ti = TokenIndex::default();
+        let weth_idx = ti.get_or_insert(weth);
+        let usdc_idx = ti.get_or_insert(usdc);
+        let mut registry: HashMap<Address, PoolMetadata> = HashMap::new();
+        registry.insert(pool_addr, PoolMetadata {
+            token0_idx: weth_idx, token1_idx: usdc_idx, token0: weth, token1: usdc,
+            pool_id: PoolId { address: pool_addr, protocol: ProtocolType::UniswapV2 },
+            protocol: ProtocolType::UniswapV2, fee_bps: 30, tick_spacing: None, bytecode_warmed: true,
+        });
+        let graph = PriceGraph::new(2);
+        let ctx = Arc::new(SimContext::new(
+            Arc::new(ArcSwap::from_pointee(registry)),
+            Arc::new(ArcSwap::from_pointee(ti)),
+            Arc::new(SnapshotManager::new(graph)),
+            BellmanFord::new(3, 1_000), new_pool_state_cache(),
+            Arc::new(NoopMempoolSink::new()), None,
+        ));
+        let swap = fake_swap(Protocol::UniswapV2, weth, usdc, U256::from(1_000u64));
+        let event = fake_pending_event(address!("7a250d5630B4cF539739dF2C5dAcb4c659F2488D"));
+        try_post_state_scan(&metrics, &ctx, "router", &swap, event.tx_hash, event.to.unwrap(), &event);
+        assert_eq!(metrics.pending_arb_sim_skipped_count("graph_edge_missing"), 1);
+    }
+
+    #[test]
+    fn try_post_state_scan_reserves_zero() {
+        let metrics = EngineMetrics::new();
+        let weth = address!("C02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2");
+        let usdc = address!("A0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48");
+        let pool_addr = address!("0000000000000000000000000000000000000011");
+        let mut ti = TokenIndex::default();
+        let weth_idx = ti.get_or_insert(weth);
+        let usdc_idx = ti.get_or_insert(usdc);
+        let mut registry: HashMap<Address, PoolMetadata> = HashMap::new();
+        let pool_id = PoolId { address: pool_addr, protocol: ProtocolType::UniswapV2 };
+        registry.insert(pool_addr, PoolMetadata {
+            token0_idx: weth_idx, token1_idx: usdc_idx, token0: weth, token1: usdc, pool_id,
+            protocol: ProtocolType::UniswapV2, fee_bps: 30, tick_spacing: None, bytecode_warmed: true,
+        });
+        let mut graph = PriceGraph::new(2);
+        graph.add_edge(weth_idx, usdc_idx, 0.5, pool_id, pool_addr, ProtocolType::UniswapV2, U256::from(1u64));
+        graph.add_edge(usdc_idx, weth_idx, 0.5, pool_id, pool_addr, ProtocolType::UniswapV2, U256::from(1u64));
+        graph.update_edge_from_reserves(weth_idx, usdc_idx, pool_id, 0.0, 0.0, 0.997);
+        graph.update_edge_from_reserves(usdc_idx, weth_idx, pool_id, 0.0, 0.0, 0.997);
+        let ctx = Arc::new(SimContext::new(
+            Arc::new(ArcSwap::from_pointee(registry)),
+            Arc::new(ArcSwap::from_pointee(ti)),
+            Arc::new(SnapshotManager::new(graph)),
+            BellmanFord::new(3, 1_000), new_pool_state_cache(),
+            Arc::new(NoopMempoolSink::new()), None,
+        ));
+        let swap = fake_swap(Protocol::UniswapV2, weth, usdc, U256::from(1_000u64));
+        let event = fake_pending_event(address!("7a250d5630B4cF539739dF2C5dAcb4c659F2488D"));
+        try_post_state_scan(&metrics, &ctx, "router", &swap, event.tx_hash, event.to.unwrap(), &event);
+        assert_eq!(metrics.pending_arb_sim_skipped_count("reserves_zero"), 1);
+    }
+
+    #[test]
+    fn try_post_state_scan_v3_pool_state_missing() {
+        let metrics = EngineMetrics::new();
+        let weth = address!("C02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2");
+        let usdc = address!("A0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48");
+        let pool_addr = address!("88e6A0c2dDD26FEEb64F039a2c41296FcB3f5640");
+        let mut ti = TokenIndex::default();
+        let weth_idx = ti.get_or_insert(weth);
+        let usdc_idx = ti.get_or_insert(usdc);
+        let mut registry: HashMap<Address, PoolMetadata> = HashMap::new();
+        let pool_id = PoolId { address: pool_addr, protocol: ProtocolType::UniswapV3 };
+        registry.insert(pool_addr, PoolMetadata {
+            token0_idx: weth_idx, token1_idx: usdc_idx, token0: weth, token1: usdc, pool_id,
+            protocol: ProtocolType::UniswapV3, fee_bps: 30, tick_spacing: Some(60), bytecode_warmed: true,
+        });
+        let mut graph = PriceGraph::new(2);
+        graph.add_edge(weth_idx, usdc_idx, 0.5, pool_id, pool_addr, ProtocolType::UniswapV3, U256::from(1u64));
+        graph.add_edge(usdc_idx, weth_idx, 0.5, pool_id, pool_addr, ProtocolType::UniswapV3, U256::from(1u64));
+        graph.update_edge_from_reserves(weth_idx, usdc_idx, pool_id, 1_000_000.0, 2_000_000.0, 0.997);
+        graph.update_edge_from_reserves(usdc_idx, weth_idx, pool_id, 2_000_000.0, 1_000_000.0, 0.997);
+        let ctx = Arc::new(SimContext::new(
+            Arc::new(ArcSwap::from_pointee(registry)),
+            Arc::new(ArcSwap::from_pointee(ti)),
+            Arc::new(SnapshotManager::new(graph)),
+            BellmanFord::new(3, 1_000), new_pool_state_cache(),
+            Arc::new(NoopMempoolSink::new()), None,
+        ));
+        let swap = fake_swap(Protocol::UniswapV3, weth, usdc, U256::from(1_000u64));
+        let event = fake_pending_event(address!("7a250d5630B4cF539739dF2C5dAcb4c659F2488D"));
+        try_post_state_scan(&metrics, &ctx, "router", &swap, event.tx_hash, event.to.unwrap(), &event);
+        assert_eq!(metrics.pending_arb_sim_skipped_count("pool_state_missing"), 1);
+    }
+
+    #[test]
+    fn try_post_state_scan_v2_no_profitable_cycle_persists_prediction() {
+        let metrics = EngineMetrics::new();
+        let weth = address!("C02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2");
+        let usdc = address!("A0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48");
+        let pool_addr = address!("0000000000000000000000000000000000000011");
+        let mut ti = TokenIndex::default();
+        let weth_idx = ti.get_or_insert(weth);
+        let usdc_idx = ti.get_or_insert(usdc);
+        let mut registry: HashMap<Address, PoolMetadata> = HashMap::new();
+        let pool_id = PoolId { address: pool_addr, protocol: ProtocolType::UniswapV2 };
+        registry.insert(pool_addr, PoolMetadata {
+            token0_idx: weth_idx, token1_idx: usdc_idx, token0: weth, token1: usdc, pool_id,
+            protocol: ProtocolType::UniswapV2, fee_bps: 30, tick_spacing: None, bytecode_warmed: true,
+        });
+        let mut graph = PriceGraph::new(2);
+        graph.add_edge(weth_idx, usdc_idx, 0.5, pool_id, pool_addr, ProtocolType::UniswapV2, U256::from(1u64));
+        graph.add_edge(usdc_idx, weth_idx, 0.5, pool_id, pool_addr, ProtocolType::UniswapV2, U256::from(1u64));
+        graph.update_edge_from_reserves(weth_idx, usdc_idx, pool_id, 1_000_000.0, 2_000_000.0, 0.997);
+        graph.update_edge_from_reserves(usdc_idx, weth_idx, pool_id, 2_000_000.0, 1_000_000.0, 0.997);
+        let sink = Arc::new(LocalCapturingSink::new());
+        let ctx = Arc::new(SimContext::new(
+            Arc::new(ArcSwap::from_pointee(registry)),
+            Arc::new(ArcSwap::from_pointee(ti)),
+            Arc::new(SnapshotManager::new(graph)),
+            BellmanFord::new(3, 1_000), new_pool_state_cache(),
+            sink.clone() as Arc<dyn crate::mempool_writer::MempoolPredictionSink>,
+            None,
+        ));
+        let swap = fake_swap(Protocol::UniswapV2, weth, usdc, U256::from(1_000_000_000_000_000u64));
+        let event = fake_pending_event(address!("7a250d5630B4cF539739dF2C5dAcb4c659F2488D"));
+        try_post_state_scan(&metrics, &ctx, "router", &swap, event.tx_hash, event.to.unwrap(), &event);
+        let rows = sink.snapshot();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].pool_address, Some(pool_addr));
+        assert_eq!(rows[0].protocol, "uni_v2");
+    }
+
+    #[test]
+    fn try_post_state_scan_v3_balancer_predictor_low_confidence() {
+        let metrics = EngineMetrics::new();
+        let weth = address!("C02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2");
+        let usdc = address!("A0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48");
+        let pool_addr = address!("5c6Ee304399DBdB9C8Ef030aB642B10820DB8F56");
+        let mut ti = TokenIndex::default();
+        let weth_idx = ti.get_or_insert(weth);
+        let usdc_idx = ti.get_or_insert(usdc);
+        let mut registry: HashMap<Address, PoolMetadata> = HashMap::new();
+        let pool_id = PoolId { address: pool_addr, protocol: ProtocolType::BalancerV2 };
+        registry.insert(pool_addr, PoolMetadata {
+            token0_idx: weth_idx, token1_idx: usdc_idx, token0: weth, token1: usdc, pool_id,
+            protocol: ProtocolType::BalancerV2, fee_bps: 10, tick_spacing: None, bytecode_warmed: true,
+        });
+        let mut graph = PriceGraph::new(2);
+        graph.add_edge(weth_idx, usdc_idx, 0.5, pool_id, pool_addr, ProtocolType::BalancerV2, U256::from(1u64));
+        graph.add_edge(usdc_idx, weth_idx, 0.5, pool_id, pool_addr, ProtocolType::BalancerV2, U256::from(1u64));
+        graph.update_edge_from_reserves(weth_idx, usdc_idx, pool_id, 1_000_000.0, 2_000_000.0, 0.997);
+        graph.update_edge_from_reserves(usdc_idx, weth_idx, pool_id, 2_000_000.0, 1_000_000.0, 0.997);
+        let bal_pool = synthetic_balancer_pool_state(weth, usdc);
+        let pool_states = new_pool_state_cache();
+        pool_states.insert(pool_addr, std::sync::Arc::new(bal_pool));
+        let ctx = Arc::new(SimContext::new(
+            Arc::new(ArcSwap::from_pointee(registry)),
+            Arc::new(ArcSwap::from_pointee(ti)),
+            Arc::new(SnapshotManager::new(graph)),
+            BellmanFord::new(3, 1_000), pool_states,
+            Arc::new(NoopMempoolSink::new()), None,
+        ));
+        let swap = fake_swap(Protocol::BalancerV2, weth, usdc, U256::from(1_000u64));
+        let event = fake_pending_event(address!("7a250d5630B4cF539739dF2C5dAcb4c659F2488D"));
+        try_post_state_scan(&metrics, &ctx, "router", &swap, event.tx_hash, event.to.unwrap(), &event);
+        assert_eq!(metrics.pending_arb_sim_skipped_count("predictor_low_confidence"), 1);
+    }
+
+    // ----- resolve_swap_pool OneInch paths -----
+
+    #[test]
+    fn resolve_swap_pool_oneinch_unresolved_executor() {
+        let metrics = EngineMetrics::new();
+        let ctx = empty_sim_ctx();
+        let weth = address!("C02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2");
+        let usdc = address!("A0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48");
+        let mut swap = fake_swap(Protocol::OneInchV6, weth, usdc, U256::from(1_000u64));
+        swap.pool_address = None;
+        let result = resolve_swap_pool(&metrics, &ctx, &swap);
+        assert!(result.is_none());
+        assert_eq!(metrics.pending_arb_sim_skipped_count("unresolved_executor"), 1);
+    }
+
+    #[test]
+    fn resolve_swap_pool_oneinch_pool_not_registered() {
+        let metrics = EngineMetrics::new();
+        let ctx = empty_sim_ctx();
+        let weth = address!("C02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2");
+        let usdc = address!("A0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48");
+        let mut swap = fake_swap(Protocol::OneInchV6, weth, usdc, U256::from(1_000u64));
+        swap.pool_address = Some(address!("00000000000000000000000000000000000000AA"));
+        let result = resolve_swap_pool(&metrics, &ctx, &swap);
+        assert!(result.is_none());
+        assert_eq!(metrics.pending_arb_sim_skipped_count("pool_not_registered"), 1);
+    }
+
+    #[test]
+    fn resolve_swap_pool_oneinch_found() {
+        let metrics = EngineMetrics::new();
+        let weth = address!("C02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2");
+        let usdc = address!("A0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48");
+        let pool_addr = address!("00000000000000000000000000000000000000AA");
+        let meta = PoolMetadata {
+            token0_idx: 0, token1_idx: 1, token0: weth, token1: usdc,
+            pool_id: PoolId { address: pool_addr, protocol: ProtocolType::UniswapV2 },
+            protocol: ProtocolType::UniswapV2, fee_bps: 30, tick_spacing: None, bytecode_warmed: true,
+        };
+        let mut registry = HashMap::new();
+        registry.insert(pool_addr, meta);
+        let ctx = Arc::new(SimContext::new(
+            Arc::new(ArcSwap::from_pointee(registry)),
+            Arc::new(ArcSwap::from_pointee(TokenIndex::default())),
+            Arc::new(SnapshotManager::new(PriceGraph::new(0))),
+            BellmanFord::new(3, 1_000), new_pool_state_cache(),
+            Arc::new(NoopMempoolSink::new()), None,
+        ));
+        let mut swap = fake_swap(Protocol::OneInchV6, weth, usdc, U256::from(1_000u64));
+        swap.pool_address = Some(pool_addr);
+        swap.one_inch_zero_for_one = Some(true);
+        let result = resolve_swap_pool(&metrics, &ctx, &swap);
+        assert!(result.is_some());
+        let (meta_out, token_in, token_out, proto) = result.unwrap();
+        assert_eq!(meta_out.pool_id.address, pool_addr);
+        assert_eq!(token_in, weth);
+        assert_eq!(token_out, usdc);
+        assert_eq!(proto, ProtocolType::UniswapV2);
+    }
+
+    #[test]
+    fn resolve_swap_pool_oneinch_reverse_direction() {
+        let metrics = EngineMetrics::new();
+        let weth = address!("C02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2");
+        let usdc = address!("A0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48");
+        let pool_addr = address!("00000000000000000000000000000000000000AA");
+        let meta = PoolMetadata {
+            token0_idx: 0, token1_idx: 1, token0: weth, token1: usdc,
+            pool_id: PoolId { address: pool_addr, protocol: ProtocolType::UniswapV2 },
+            protocol: ProtocolType::UniswapV2, fee_bps: 30, tick_spacing: None, bytecode_warmed: true,
+        };
+        let mut registry = HashMap::new();
+        registry.insert(pool_addr, meta);
+        let ctx = Arc::new(SimContext::new(
+            Arc::new(ArcSwap::from_pointee(registry)),
+            Arc::new(ArcSwap::from_pointee(TokenIndex::default())),
+            Arc::new(SnapshotManager::new(PriceGraph::new(0))),
+            BellmanFord::new(3, 1_000), new_pool_state_cache(),
+            Arc::new(NoopMempoolSink::new()), None,
+        ));
+        let mut swap = fake_swap(Protocol::OneInchV6, weth, usdc, U256::from(1_000u64));
+        swap.pool_address = Some(pool_addr);
+        swap.one_inch_zero_for_one = Some(false);
+        let result = resolve_swap_pool(&metrics, &ctx, &swap);
+        assert!(result.is_some());
+        let (_meta_out, token_in, token_out, _proto) = result.unwrap();
+        assert_eq!(token_in, usdc);
+        assert_eq!(token_out, weth);
+    }
+
+    #[test]
+    fn resolve_swap_pool_non_oneinch_not_registered() {
+        let metrics = EngineMetrics::new();
+        let ctx = empty_sim_ctx();
+        let weth = address!("C02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2");
+        let usdc = address!("A0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48");
+        let swap = fake_swap(Protocol::UniswapV2, weth, usdc, U256::from(1_000u64));
+        assert!(resolve_swap_pool(&metrics, &ctx, &swap).is_none());
+    }
+
+    #[test]
+    fn resolve_swap_pool_non_oneinch_not_in_index() {
+        let metrics = EngineMetrics::new();
+        let weth = address!("C02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2");
+        let usdc = address!("A0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48");
+        let pool_addr = address!("00000000000000000000000000000000000000AA");
+        let meta = PoolMetadata {
+            token0_idx: 0, token1_idx: 1, token0: weth, token1: usdc,
+            pool_id: PoolId { address: pool_addr, protocol: ProtocolType::UniswapV3 },
+            protocol: ProtocolType::UniswapV3, fee_bps: 30, tick_spacing: Some(60), bytecode_warmed: true,
+        };
+        let mut registry = HashMap::new();
+        registry.insert(pool_addr, meta);
+        let ctx = Arc::new(SimContext::new(
+            Arc::new(ArcSwap::from_pointee(registry)),
+            Arc::new(ArcSwap::from_pointee(TokenIndex::default())),
+            Arc::new(SnapshotManager::new(PriceGraph::new(0))),
+            BellmanFord::new(3, 1_000), new_pool_state_cache(),
+            Arc::new(NoopMempoolSink::new()), None,
+        ));
+        let swap = fake_swap(Protocol::UniswapV2, weth, usdc, U256::from(1_000u64));
+        // lookup_pool filters by protocol type in the pair index, so a UniswapV3
+        // entry is not found when looking up UniswapV2 — returns None.
+        assert!(resolve_swap_pool(&metrics, &ctx, &swap).is_none());
+    }
+
+    // ----- predict_v2_post_state additional -----
+
+    #[test]
+    fn predict_v2_post_state_large_swap_near_depletion() {
+        let (post_in, post_out) = predict_v2_post_state(1000.0, 1000.0, 999.0, 0.997);
+        assert!(post_in > 0.0);
+        assert!(post_out >= 1.0);
+    }
+
+    #[test]
+    fn predict_v2_post_state_very_small_input() {
+        let (post_in, post_out) = predict_v2_post_state(1_000_000.0, 1_000_000.0, 0.001, 0.997);
+        assert!((post_in - 1_000_000.001).abs() < 1e-6);
+        assert!(post_out > 0.0);
+    }
+
+    #[test]
+    fn predict_v2_post_state_negative_fee() {
+        assert_eq!(predict_v2_post_state(1000.0, 1000.0, 100.0, -0.5), (0.0, 0.0));
+    }
+
+    // ----- poolstate_quote coverage -----
+
+    #[test]
+    fn poolstate_quote_uniswap_v2() {
+        let weth = address!("C02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2");
+        let usdc = address!("A0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48");
+        let mut v2 = UniswapV2Pool::new(address!("0000000000000000000000000000000000000011"), weth, usdc, 30);
+        v2.update_state(U256::from(1_000_000_000_000_000_000_000u128), U256::from(2_000_000_000_000u128));
+        let ps = PoolState::UniswapV2(v2);
+        let result = poolstate_quote(&ps, weth, U256::from(1_000_000_000_000_000_000u128));
+        assert!(result.is_some());
+        assert!(result.unwrap() > U256::ZERO);
+    }
+
+    #[test]
+    fn poolstate_quote_sushiswap() {
+        let weth = address!("C02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2");
+        let usdc = address!("A0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48");
+        let mut v2 = UniswapV2Pool::new(address!("0000000000000000000000000000000000000022"), weth, usdc, 30);
+        v2.update_state(U256::from(1_000_000_000_000_000_000_000u128), U256::from(2_000_000_000_000u128));
+        let ps = PoolState::SushiSwap(v2);
+        let result = poolstate_quote(&ps, weth, U256::from(1_000_000_000_000_000_000u128));
+        assert!(result.is_some());
+    }
+
+    #[test]
+    fn poolstate_quote_v3() {
+        let weth = address!("C02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2");
+        let ps = synthetic_v3_pool_state();
+        // Synthetic V3 pool has zero reserves/liquidity — get_amount_out may
+        // return None. The test exercises the dispatch path, not the math.
+        let _ = poolstate_quote(&ps, weth, U256::from(1_000_000_000_000_000_000u128));
+    }
+
+    #[test]
+    fn poolstate_quote_curve() {
+        let usdc = address!("A0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48");
+        let usdt = address!("dAC17F958D2ee523a2206206994597C13D831ec7");
+        let ps = synthetic_curve_pool_state([usdc, usdt]);
+        // Synthetic Curve pool has zero balances — get_amount_out may
+        // return None. The test exercises the dispatch path.
+        let _ = poolstate_quote(&ps, usdc, U256::from(1_000_000u64));
+    }
+
+    #[test]
+    fn poolstate_quote_balancer() {
+        let weth = address!("C02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2");
+        let usdc = address!("A0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48");
+        let ps = synthetic_balancer_pool_state(weth, usdc);
+        // Exercises the Balancer dispatch path in poolstate_quote.
+        let _ = poolstate_quote(&ps, weth, U256::from(1_000_000_000_000_000_000u128));
+    }
+
+    #[test]
+    fn poolstate_quote_bancor() {
+        let weth = address!("C02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2");
+        let mut pool = BancorPool::new(address!("0000000000000000000000000000000000000033"), weth, BNT_ADDRESS, 30);
+        pool.update_state(U256::from(1_000_000_000_000_000_000_000u128), U256::from(2_000_000_000_000_000_000_000u128));
+        let ps = PoolState::Bancor(pool);
+        let result = poolstate_quote(&ps, weth, U256::from(1_000_000_000_000_000_000u128));
+        assert!(result.is_some());
+    }
+
+    // ----- handle_event with SimContext -----
+
+    #[test]
+    fn handle_event_with_sim_ctx_does_not_panic() {
+        let metrics = Arc::new(EngineMetrics::new());
+        let ctx = empty_sim_ctx();
+        let weth = address!("C02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2");
+        let usdc = address!("A0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48");
+        let calldata = swapExactTokensForTokensCall {
+            amountIn: U256::from(1_000_000_000_000_000_000u128),
+            amountOutMin: U256::from(900_000_000_000_000_000u128),
+            path: vec![weth, usdc],
+            to: address!("0000000000000000000000000000000000000001"),
+            deadline: U256::ZERO,
+        }
+        .abi_encode();
+        let to = address!("7a250d5630B4cF539739dF2C5dAcb4c659F2488D");
+        handle_event(&metrics, Some(&ctx), pending_event(Some(to), calldata));
+    }
+
+    // ----- try_post_state_scan for Curve pool_state_missing -----
+
+    #[test]
+    fn try_post_state_scan_curve_pool_state_missing() {
+        let metrics = EngineMetrics::new();
+        let weth = address!("C02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2");
+        let usdc = address!("A0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48");
+        let pool_addr = address!("bEbc44782C7dB0a1A60Cb6fe97d0b483032FF1C7");
+        let mut ti = TokenIndex::default();
+        let weth_idx = ti.get_or_insert(weth);
+        let usdc_idx = ti.get_or_insert(usdc);
+        let mut registry: HashMap<Address, PoolMetadata> = HashMap::new();
+        let pool_id = PoolId { address: pool_addr, protocol: ProtocolType::Curve };
+        registry.insert(pool_addr, PoolMetadata {
+            token0_idx: weth_idx, token1_idx: usdc_idx, token0: weth, token1: usdc, pool_id,
+            protocol: ProtocolType::Curve, fee_bps: 4, tick_spacing: None, bytecode_warmed: true,
+        });
+        let mut graph = PriceGraph::new(2);
+        graph.add_edge(weth_idx, usdc_idx, 0.5, pool_id, pool_addr, ProtocolType::Curve, U256::from(1u64));
+        graph.add_edge(usdc_idx, weth_idx, 0.5, pool_id, pool_addr, ProtocolType::Curve, U256::from(1u64));
+        graph.update_edge_from_reserves(weth_idx, usdc_idx, pool_id, 1_000_000.0, 1_000_000.0, 0.9996);
+        graph.update_edge_from_reserves(usdc_idx, weth_idx, pool_id, 1_000_000.0, 1_000_000.0, 0.9996);
+        let ctx = Arc::new(SimContext::new(
+            Arc::new(ArcSwap::from_pointee(registry)),
+            Arc::new(ArcSwap::from_pointee(ti)),
+            Arc::new(SnapshotManager::new(graph)),
+            BellmanFord::new(3, 1_000), new_pool_state_cache(),
+            Arc::new(NoopMempoolSink::new()), None,
+        ));
+        let swap = fake_swap(Protocol::Curve, weth, usdc, U256::from(1_000_000u64));
+        let event = fake_pending_event(address!("7a250d5630B4cF539739dF2C5dAcb4c659F2488D"));
+        try_post_state_scan(&metrics, &ctx, "router", &swap, event.tx_hash, event.to.unwrap(), &event);
+        assert_eq!(metrics.pending_arb_sim_skipped_count("pool_state_missing"), 1);
+    }
+
+    // ----- Bancor single-leg through try_post_state_scan -----
+
+    #[test]
+    fn try_post_state_scan_bancor_single_leg_pool_state_missing() {
+        let metrics = EngineMetrics::new();
+        let weth = address!("C02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2");
+        let pool_addr = address!("aaaa000000000000000000000000000000000001");
+        let mut ti = TokenIndex::default();
+        let weth_idx = ti.get_or_insert(weth);
+        let bnt_idx = ti.get_or_insert(BNT_ADDRESS);
+        let mut registry: HashMap<Address, PoolMetadata> = HashMap::new();
+        let pool_id = PoolId { address: pool_addr, protocol: ProtocolType::BancorV3 };
+        registry.insert(pool_addr, PoolMetadata {
+            token0_idx: weth_idx, token1_idx: bnt_idx, token0: weth, token1: BNT_ADDRESS, pool_id,
+            protocol: ProtocolType::BancorV3, fee_bps: 30, tick_spacing: None, bytecode_warmed: true,
+        });
+        let mut graph = PriceGraph::new(2);
+        graph.add_edge(weth_idx, bnt_idx, 1.0, pool_id, pool_addr, ProtocolType::BancorV3, U256::from(1u64));
+        graph.add_edge(bnt_idx, weth_idx, 1.0, pool_id, pool_addr, ProtocolType::BancorV3, U256::from(1u64));
+        graph.update_edge_from_reserves(weth_idx, bnt_idx, pool_id, 1_000_000.0, 2_000_000.0, 0.997);
+        graph.update_edge_from_reserves(bnt_idx, weth_idx, pool_id, 2_000_000.0, 1_000_000.0, 0.997);
+        let ctx = Arc::new(SimContext::new(
+            Arc::new(ArcSwap::from_pointee(registry)),
+            Arc::new(ArcSwap::from_pointee(ti)),
+            Arc::new(SnapshotManager::new(graph)),
+            BellmanFord::new(3, 1_000), new_pool_state_cache(),
+            Arc::new(NoopMempoolSink::new()), None,
+        ));
+        let swap = fake_swap(Protocol::BancorV3, weth, BNT_ADDRESS, U256::from(1_000_000u64));
+        let event = fake_pending_event(address!("7a250d5630B4cF539739dF2C5dAcb4c659F2488D"));
+        try_post_state_scan(&metrics, &ctx, "router", &swap, event.tx_hash, event.to.unwrap(), &event);
+        assert_eq!(metrics.pending_arb_sim_skipped_count("pool_state_missing"), 1);
+    }
+
+    // ----- bancor multihop additional paths -----
+
+    #[test]
+    fn bancor_multihop_skips_when_token_in_unknown() {
+        let metrics = EngineMetrics::new();
+        let sink: Arc<dyn crate::mempool_writer::MempoolPredictionSink> = Arc::new(LocalCapturingSink::new());
+        let ctx = multihop_sim_ctx(sink, true);
+        let mut swap = bancor_multihop_swap();
+        swap.token_in = address!("000000000000000000000000000000000000DEAD");
+        let event = bancor_pending_event();
+        try_post_state_scan_bancor_multihop(&metrics, &ctx, "router", &swap, event.tx_hash, event.to.unwrap(), &event);
+        assert_eq!(metrics.pending_arb_sim_skipped_count("token_in_unknown"), 1);
+    }
+
+    #[test]
+    fn bancor_multihop_skips_when_token_out_unknown() {
+        let metrics = EngineMetrics::new();
+        let sink: Arc<dyn crate::mempool_writer::MempoolPredictionSink> = Arc::new(LocalCapturingSink::new());
+        let ctx = multihop_sim_ctx(sink, true);
+        let mut swap = bancor_multihop_swap();
+        swap.token_out = address!("000000000000000000000000000000000000DEAD");
+        let event = bancor_pending_event();
+        try_post_state_scan_bancor_multihop(&metrics, &ctx, "router", &swap, event.tx_hash, event.to.unwrap(), &event);
+        assert_eq!(metrics.pending_arb_sim_skipped_count("token_out_unknown"), 1);
+    }
+
+    #[test]
+    fn bancor_multihop_skips_on_state_mismatch() {
+        use aether_pools::uniswap_v3::UniswapV3Pool;
+        let metrics = EngineMetrics::new();
+        let sink: Arc<dyn crate::mempool_writer::MempoolPredictionSink> = Arc::new(LocalCapturingSink::new());
+        let ctx = multihop_sim_ctx(sink, true);
+        let leg_a_addr = address!("aaaa000000000000000000000000000000000001");
+        ctx.pool_states.insert(leg_a_addr, std::sync::Arc::new(PoolState::UniswapV3(UniswapV3Pool::new(
+            leg_a_addr,
+            address!("C02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2"),
+            address!("A0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"),
+            30, 60,
+        ))));
+        let swap = bancor_multihop_swap();
+        let event = bancor_pending_event();
+        try_post_state_scan_bancor_multihop(&metrics, &ctx, "router", &swap, event.tx_hash, event.to.unwrap(), &event);
+        assert_eq!(metrics.pending_arb_sim_skipped_count("bancor_multihop_low_confidence"), 1);
+    }
+
+    #[test]
+    fn bancor_multihop_skips_when_graph_edge_missing() {
+        let metrics = EngineMetrics::new();
+        let sink: Arc<dyn crate::mempool_writer::MempoolPredictionSink> = Arc::new(LocalCapturingSink::new());
+        let weth = address!("C02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2");
+        let link = address!("514910771AF9Ca656af840dff83E8264EcF986CA");
+        let mut token_index = TokenIndex::default();
+        token_index.get_or_insert(weth);
+        token_index.get_or_insert(BNT_ADDRESS);
+        token_index.get_or_insert(link);
+        let leg_a_addr = address!("aaaa000000000000000000000000000000000001");
+        let leg_b_addr = address!("aaaa000000000000000000000000000000000002");
+        let mut registry: HashMap<Address, PoolMetadata> = HashMap::new();
+        registry.insert(leg_a_addr, PoolMetadata {
+            token0_idx: 0, token1_idx: 1, token0: weth, token1: BNT_ADDRESS,
+            pool_id: PoolId { address: leg_a_addr, protocol: ProtocolType::BancorV3 },
+            protocol: ProtocolType::BancorV3, fee_bps: 30, tick_spacing: None, bytecode_warmed: true,
+        });
+        registry.insert(leg_b_addr, PoolMetadata {
+            token0_idx: 2, token1_idx: 1, token0: link, token1: BNT_ADDRESS,
+            pool_id: PoolId { address: leg_b_addr, protocol: ProtocolType::BancorV3 },
+            protocol: ProtocolType::BancorV3, fee_bps: 30, tick_spacing: None, bytecode_warmed: true,
+        });
+        let graph = PriceGraph::new(3);
+        let pool_states = new_pool_state_cache();
+        let mut leg_a_pool = BancorPool::new(leg_a_addr, weth, BNT_ADDRESS, 30);
+        leg_a_pool.update_state(U256::from(1_000_000_000_000_000_000_000u128), U256::from(2_000_000_000_000_000_000_000u128));
+        pool_states.insert(leg_a_addr, std::sync::Arc::new(PoolState::Bancor(leg_a_pool)));
+        let mut leg_b_pool = BancorPool::new(leg_b_addr, link, BNT_ADDRESS, 30);
+        leg_b_pool.update_state(U256::from(500_000_000_000_000_000_000u128), U256::from(1_500_000_000_000_000_000_000u128));
+        pool_states.insert(leg_b_addr, std::sync::Arc::new(PoolState::Bancor(leg_b_pool)));
+        let ctx = Arc::new(SimContext::new(
+            Arc::new(ArcSwap::from_pointee(registry)),
+            Arc::new(ArcSwap::from_pointee(token_index)),
+            Arc::new(SnapshotManager::new(graph)),
+            BellmanFord::new(3, 1_000), pool_states, sink, None,
+        ));
+        let swap = bancor_multihop_swap();
+        let event = bancor_pending_event();
+        try_post_state_scan_bancor_multihop(&metrics, &ctx, "router", &swap, event.tx_hash, event.to.unwrap(), &event);
+        assert_eq!(metrics.pending_arb_sim_skipped_count("graph_edge_missing"), 1);
+    }
+
+    // ----- optimize_cycle_input BelowMinProfit -----
+
+    #[test]
+    fn optimize_cycle_input_below_min_profit_with_real_pools() {
+        let weth = address!("C02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2");
+        let usdc = address!("A0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48");
+        let pool_a = address!("00000000000000000000000000000000000000A1");
+        let pool_b = address!("00000000000000000000000000000000000000B2");
+        let (t0, t1) = if weth < usdc { (weth, usdc) } else { (usdc, weth) };
+        let mk = |addr, weth_res: u128, usdc_res: u128| {
+            let mut p = UniswapV2Pool::new(addr, t0, t1, 30);
+            let (r0, r1) = if t0 == weth { (weth_res, usdc_res) } else { (usdc_res, weth_res) };
+            p.update_state(U256::from(r0), U256::from(r1));
+            p
+        };
+        let pa = mk(pool_a, 1_000_000_000_000_000_000_000u128, 2_000_000_000_000u128);
+        let pb = mk(pool_b, 1_000_000_000_000_000_000_000u128, 2_000_000_000_001u128);
+        let pool_states = new_pool_state_cache();
+        pool_states.insert(pool_a, std::sync::Arc::new(PoolState::UniswapV2(pa)));
+        pool_states.insert(pool_b, std::sync::Arc::new(PoolState::UniswapV2(pb)));
+        let mk_step = |pool, ti, to| aether_common::types::SwapStep {
+            protocol: ProtocolType::UniswapV2, pool_address: pool, token_in: ti, token_out: to,
+            amount_in: U256::ZERO, min_amount_out: U256::ZERO, calldata: Vec::new(),
+        };
+        let steps = vec![mk_step(pool_a, weth, usdc), mk_step(pool_b, usdc, weth)];
+        let outcome = optimize_cycle_input(
+            &steps, &pool_states, Address::ZERO, weth, 0.0, 0.0,
+            200.0, U256::from(1_000_000_000_000_000_000u128),
+        );
+        assert!(matches!(outcome, SizingOutcome::BelowMinProfit));
+    }
+
+    // ----- u256_to_f64_saturating edge cases -----
+
+    #[test]
+    fn u256_to_f64_zero_value() {
+        assert_eq!(u256_to_f64_saturating(U256::ZERO), 0.0);
+    }
+
+    #[test]
+    fn u256_to_f64_one() {
+        assert_eq!(u256_to_f64_saturating(U256::from(1u64)), 1.0);
+    }
+
+    #[test]
+    fn u256_to_f64_large_u128() {
+        let v = u256_to_f64_saturating(U256::from(u128::MAX));
+        assert!(v.is_finite());
+        assert!(v > 0.0);
     }
 }

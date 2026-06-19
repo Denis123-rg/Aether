@@ -799,4 +799,186 @@ mod tests {
         assert_eq!(PROTOCOL_BANCOR, "bancor");
         assert_eq!(PROTOCOL_ONE_INCH_V6, "one_inch_v6");
     }
+
+    // ---- PgMempoolWriter channel Full path ----
+
+    #[test]
+    fn pg_writer_channel_full_drops_prediction() {
+        let registry = Registry::new();
+        let metrics = Arc::new(MempoolWriterMetrics::register(&registry));
+        let (tx, _rx) = mpsc::channel::<NewMempoolPrediction>(1);
+        let writer = PgMempoolWriter { tx, metrics: Arc::clone(&metrics) };
+
+        writer.insert_prediction(sample_prediction());
+        writer.insert_prediction(sample_prediction());
+
+        let output = prometheus::TextEncoder::new()
+            .encode_to_string(&registry.gather())
+            .unwrap();
+        assert!(
+            output.contains("aether_mempool_writer_drops_total 1"),
+            "expected drops=1, got: {output}"
+        );
+    }
+
+    // ---- PgMempoolWriter channel Closed path ----
+
+    #[test]
+    fn pg_writer_channel_closed_drops_prediction() {
+        let registry = Registry::new();
+        let metrics = Arc::new(MempoolWriterMetrics::register(&registry));
+        let (tx, rx) = mpsc::channel::<NewMempoolPrediction>(2);
+        drop(rx);
+        let writer = PgMempoolWriter { tx, metrics: Arc::clone(&metrics) };
+
+        writer.insert_prediction(sample_prediction());
+
+        let output = prometheus::TextEncoder::new()
+            .encode_to_string(&registry.gather())
+            .unwrap();
+        assert!(
+            !output.contains("aether_mempool_writer_drops_total 1"),
+            "Closed path should not increment drops"
+        );
+    }
+
+    // ---- PgMempoolWriter OK path ----
+
+    #[test]
+    fn pg_writer_channel_ok_increments_persisted_and_queue() {
+        let registry = Registry::new();
+        let metrics = Arc::new(MempoolWriterMetrics::register(&registry));
+        let (tx, _rx) = mpsc::channel::<NewMempoolPrediction>(256);
+        let writer = PgMempoolWriter { tx, metrics: Arc::clone(&metrics) };
+
+        writer.insert_prediction(sample_prediction());
+
+        let output = prometheus::TextEncoder::new()
+            .encode_to_string(&registry.gather())
+            .unwrap();
+        assert!(
+            output.contains(r#"aether_mempool_predictions_persisted_total{protocol="uni_v2"} 1"#),
+            "expected persisted_total inc, got: {output}"
+        );
+        assert_eq!(metrics.queue_depth.get(), 1);
+    }
+
+    // ---- mempool_writer_from_env with invalid DSN ----
+
+    #[tokio::test]
+    async fn mempool_writer_from_env_invalid_dsn_falls_back() {
+        let prev = std::env::var("MEMPOOL_LEDGER_DSN").ok();
+        unsafe {
+            std::env::set_var("MEMPOOL_LEDGER_DSN", "postgres://invalid-host:5432/noexist");
+        }
+
+        let registry = Registry::new();
+        let metrics = MempoolWriterMetrics::register(&registry);
+        let sink = mempool_writer_from_env(metrics).await;
+        sink.insert_prediction(sample_prediction());
+
+        if let Some(v) = prev {
+            unsafe { std::env::set_var("MEMPOOL_LEDGER_DSN", v); }
+        } else {
+            unsafe { std::env::remove_var("MEMPOOL_LEDGER_DSN"); }
+        }
+    }
+
+    // ---- channel_capacity constant ----
+
+    #[test]
+    fn channel_capacity_constant() {
+        assert_eq!(WRITER_CHANNEL_CAPACITY, 512);
+    }
+
+    #[test]
+    fn writer_pool_size_constant() {
+        assert_eq!(WRITER_POOL_SIZE, 4);
+    }
+
+    // ---- sample_prediction variations ----
+
+    #[test]
+    fn sample_prediction_no_pool_address() {
+        let mut p = sample_prediction();
+        p.pool_address = None;
+        assert!(p.pool_address.is_none());
+    }
+
+    #[test]
+    fn sample_prediction_with_detection_lead_ms() {
+        let mut p = sample_prediction();
+        p.detection_lead_ms = Some(42);
+        assert_eq!(p.detection_lead_ms, Some(42));
+    }
+
+    // ---- PredictedPostState all kinds ----
+
+    #[test]
+    fn predicted_post_state_serde_kind_field() {
+        for (variant, expected_kind) in [
+            (PredictedPostState::V2 { reserve_in: 1.0, reserve_out: 2.0 }, "v2"),
+            (PredictedPostState::V3 { reserve_in: 1.0, reserve_out: 2.0 }, "v3"),
+            (PredictedPostState::Balancer { reserve_in: 1.0, reserve_out: 2.0 }, "balancer"),
+            (PredictedPostState::Curve { reserve_in: 1.0, reserve_out: 2.0 }, "curve"),
+            (PredictedPostState::Bancor { reserve_in: 1.0, reserve_out: 2.0 }, "bancor"),
+            (PredictedPostState::OneInchV6 { reserve_in: 1.0, reserve_out: 2.0 }, "one_inch_v6"),
+        ] {
+            let json = serde_json::to_value(&variant).expect("serialize");
+            let kind = json.get("kind").and_then(|v| v.as_str()).expect("kind present");
+            assert_eq!(kind, expected_kind);
+        }
+    }
+
+    // ---- CapturingSink trait object ----
+
+    #[test]
+    fn capturing_sink_is_object_safe() {
+        let _: Box<dyn MempoolPredictionSink> = Box::new(CapturingSink::new());
+    }
+
+    // ---- metrics multiple observations ----
+
+    #[test]
+    fn metrics_write_latency_many_observations() {
+        let registry = Registry::new();
+        let m = MempoolWriterMetrics::register(&registry);
+        for i in 0..100 {
+            m.write_latency_ms.with_label_values(&["ok"]).observe(i as f64);
+        }
+        let output = prometheus::TextEncoder::new()
+            .encode_to_string(&registry.gather())
+            .unwrap();
+        assert!(output.contains("aether_mempool_writer_write_latency_ms"));
+    }
+
+    // ---- NoopMempoolSink multiple writes ----
+
+    #[test]
+    fn noop_sink_multiple_writes() {
+        let sink = NoopMempoolSink::new();
+        for _ in 0..100 {
+            sink.insert_prediction(sample_prediction());
+        }
+    }
+
+    // ---- u256_to_decimal very large ----
+
+    #[test]
+    fn u256_to_decimal_u256_max() {
+        let d = u256_to_decimal(U256::MAX);
+        assert_eq!(d.to_string(), U256::MAX.to_string());
+    }
+
+    // ---- NewMempoolPrediction with no profit_factor ----
+
+    #[test]
+    fn new_mempool_prediction_no_profit_factor() {
+        let mut p = sample_prediction();
+        p.profit_factor_predicted = None;
+        assert!(p.profit_factor_predicted.is_none());
+        let json = serde_json::to_string(&p).expect("serialize");
+        // profit_factor appears in JSON but value is null when None
+        assert!(json.contains("null") || !json.contains("profit_factor"));
+    }
 }

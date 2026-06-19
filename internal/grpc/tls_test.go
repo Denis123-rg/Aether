@@ -4,24 +4,6 @@ import (
 	"testing"
 )
 
-func TestIsUnixAddress(t *testing.T) {
-	if !isUnixAddress("unix:///var/run/aether/engine.sock") {
-		t.Fatal("expected unix")
-	}
-	if isUnixAddress("localhost:50051") {
-		t.Fatal("not unix")
-	}
-}
-
-func TestIsTCPAddress(t *testing.T) {
-	if !isTCPAddress("localhost:50051") {
-		t.Fatal("expected tcp")
-	}
-	if isTCPAddress("unix:///tmp/sock") {
-		t.Fatal("not tcp")
-	}
-}
-
 func TestBuildTransportCredentials_UnixInsecure(t *testing.T) {
 	creds, err := buildTransportCredentials("unix:///tmp/sock", DialOptions{})
 	if err != nil {

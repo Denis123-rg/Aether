@@ -918,4 +918,315 @@ mod tests {
         let noop: Box<dyn ProfitabilitySink> = Box::new(NoopProfitabilitySink::new());
         noop.insert_score(sample_score());
     }
+
+    // ---- PgProfitabilityWriter channel Full path ----
+
+    #[test]
+    fn pg_writer_channel_full_path() {
+        let registry = Registry::new();
+        let metrics = ProfitabilityWriterMetrics::register(&registry);
+        let (tx, _rx) = mpsc::channel::<NewProfitabilityScore>(1);
+        let writer = PgProfitabilityWriter { tx, metrics: Arc::clone(&metrics) };
+
+        writer.insert_score(sample_score());
+        writer.insert_score(sample_score());
+
+        let output = prometheus::TextEncoder::new()
+            .encode_to_string(&registry.gather())
+            .unwrap();
+        assert!(
+            output.contains("aether_mempool_profit_writer_drops_total 1"),
+            "expected drops=1, got: {output}"
+        );
+    }
+
+    // ---- PgProfitabilityWriter channel Closed path ----
+
+    #[test]
+    fn pg_writer_channel_closed_path() {
+        let registry = Registry::new();
+        let metrics = ProfitabilityWriterMetrics::register(&registry);
+        let (tx, rx) = mpsc::channel::<NewProfitabilityScore>(2);
+        drop(rx);
+        let writer = PgProfitabilityWriter { tx, metrics: Arc::clone(&metrics) };
+
+        writer.insert_score(sample_score());
+
+        let output = prometheus::TextEncoder::new()
+            .encode_to_string(&registry.gather())
+            .unwrap();
+        assert!(
+            !output.contains("aether_mempool_profit_writer_drops_total 1"),
+            "Closed path should not increment drops"
+        );
+    }
+
+    // ---- PgProfitabilityWriter OK path ----
+
+    #[test]
+    fn pg_writer_channel_ok_path() {
+        let registry = Registry::new();
+        let metrics = ProfitabilityWriterMetrics::register(&registry);
+        let (tx, _rx) = mpsc::channel::<NewProfitabilityScore>(256);
+        let writer = PgProfitabilityWriter { tx, metrics: Arc::clone(&metrics) };
+
+        writer.insert_score(NewProfitabilityScore {
+            prediction_id: Uuid::new_v4(),
+            scored_at: Utc::now(),
+            cycle_path: serde_json::json!([]),
+            realized_profit_wei: U256::ZERO,
+            gas_estimate_wei: U256::ZERO,
+            net_profit_wei: 0,
+            decision: DECISION_UNPROFITABLE,
+            reason: REASON_REVM_VERDICT,
+            scoring_engine_git_sha: None,
+        });
+
+        let output = prometheus::TextEncoder::new()
+            .encode_to_string(&registry.gather())
+            .unwrap();
+        assert!(
+            output.contains(r#"aether_mempool_profit_scored_total{decision="unprofitable",reason="revm_verdict"} 1"#),
+            "expected scored_total inc, got: {output}"
+        );
+        assert_eq!(metrics.queue_depth.get(), 1);
+    }
+
+    // ---- profit_writer_from_env with various DSN values ----
+
+    #[test]
+    fn profit_writer_from_env_unreachable_dsn_returns_noop() {
+        std::env::set_var("MEMPOOL_LEDGER_DSN", "postgres://unreachable:5432/noexist");
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let registry = Registry::new();
+        let metrics = ProfitabilityWriterMetrics::register(&registry);
+        let sink = rt.block_on(profit_writer_from_env(metrics));
+        sink.insert_score(sample_score());
+        std::env::remove_var("MEMPOOL_LEDGER_DSN");
+    }
+
+    // ---- NewProfitabilityScore with all decision types ----
+
+    #[test]
+    fn new_profitability_score_all_decisions() {
+        for decision in [DECISION_PROFITABLE, DECISION_UNPROFITABLE, DECISION_REVERTED, DECISION_NO_PATH] {
+            let score = NewProfitabilityScore {
+                prediction_id: Uuid::new_v4(),
+                scored_at: Utc::now(),
+                cycle_path: serde_json::json!([]),
+                realized_profit_wei: U256::ZERO,
+                gas_estimate_wei: U256::ZERO,
+                net_profit_wei: 0,
+                decision,
+                reason: REASON_NA,
+                scoring_engine_git_sha: None,
+            };
+            assert_eq!(score.decision, decision);
+        }
+    }
+
+    // ---- NewProfitabilityScore with all reasons ----
+
+    #[test]
+    fn new_profitability_score_all_reasons() {
+        for reason in [REASON_NA, REASON_U256_WALKER, REASON_ABSURDITY_FLOOR, REASON_REVM_REVERT, REASON_REVM_VERDICT] {
+            let score = NewProfitabilityScore {
+                prediction_id: Uuid::new_v4(),
+                scored_at: Utc::now(),
+                cycle_path: serde_json::json!([]),
+                realized_profit_wei: U256::ZERO,
+                gas_estimate_wei: U256::ZERO,
+                net_profit_wei: 0,
+                decision: DECISION_PROFITABLE,
+                reason,
+                scoring_engine_git_sha: None,
+            };
+            assert_eq!(score.reason, reason);
+        }
+    }
+
+    // ---- UnscoredConfirmedPrediction conversion edge cases ----
+
+    #[test]
+    fn unscored_from_raw_exact_20_bytes() {
+        let raw = RawUnscored {
+            prediction_id: Uuid::new_v4(),
+            protocol: "uni_v2".to_string(),
+            pool_address: vec![0x01; 20],
+            token_in: vec![0x02; 20],
+            token_out: vec![0x03; 20],
+            amount_in: BigDecimal::from(42u64),
+            actual_target_block: 12345,
+        };
+        let conv: UnscoredConfirmedPrediction = raw.into();
+        assert_eq!(conv.pool_address, Address::from([0x01; 20]));
+        assert_eq!(conv.token_in, Address::from([0x02; 20]));
+        assert_eq!(conv.token_out, Address::from([0x03; 20]));
+        assert_eq!(conv.amount_in, U256::from(42u64));
+        assert_eq!(conv.actual_target_block, 12345);
+    }
+
+    #[test]
+    fn unscored_from_raw_19_bytes() {
+        let raw = RawUnscored {
+            prediction_id: Uuid::new_v4(),
+            protocol: "uni_v2".to_string(),
+            pool_address: vec![0xab; 19],
+            token_in: vec![0xcd; 19],
+            token_out: vec![0xef; 19],
+            amount_in: BigDecimal::from(100u64),
+            actual_target_block: 50,
+        };
+        let conv: UnscoredConfirmedPrediction = raw.into();
+        assert_eq!(conv.pool_address, Address::ZERO);
+        assert_eq!(conv.token_in, Address::ZERO);
+        assert_eq!(conv.token_out, Address::ZERO);
+    }
+
+    #[test]
+    fn unscored_from_raw_21_bytes() {
+        let raw = RawUnscored {
+            prediction_id: Uuid::new_v4(),
+            protocol: "uni_v2".to_string(),
+            pool_address: vec![0xab; 21],
+            token_in: vec![0xcd; 21],
+            token_out: vec![0xef; 21],
+            amount_in: BigDecimal::from(100u64),
+            actual_target_block: 50,
+        };
+        let conv: UnscoredConfirmedPrediction = raw.into();
+        assert_eq!(conv.pool_address, Address::ZERO);
+        assert_eq!(conv.token_in, Address::ZERO);
+        assert_eq!(conv.token_out, Address::ZERO);
+    }
+
+    #[test]
+    fn unscored_from_raw_zero_length() {
+        let raw = RawUnscored {
+            prediction_id: Uuid::new_v4(),
+            protocol: "uni_v2".to_string(),
+            pool_address: vec![],
+            token_in: vec![],
+            token_out: vec![],
+            amount_in: BigDecimal::from(0u64),
+            actual_target_block: 0,
+        };
+        let conv: UnscoredConfirmedPrediction = raw.into();
+        assert_eq!(conv.pool_address, Address::ZERO);
+        assert_eq!(conv.token_in, Address::ZERO);
+        assert_eq!(conv.token_out, Address::ZERO);
+        assert_eq!(conv.amount_in, U256::ZERO);
+        assert_eq!(conv.actual_target_block, 0);
+    }
+
+    // ---- metrics multiple scored_total labels ----
+
+    #[test]
+    fn metrics_scored_total_all_combinations() {
+        let registry = Registry::new();
+        let m = ProfitabilityWriterMetrics::register(&registry);
+        let decisions = [DECISION_PROFITABLE, DECISION_UNPROFITABLE, DECISION_REVERTED, DECISION_NO_PATH];
+        let reasons = [REASON_NA, REASON_U256_WALKER, REASON_ABSURDITY_FLOOR, REASON_REVM_REVERT, REASON_REVM_VERDICT];
+        for d in &decisions {
+            for r in &reasons {
+                m.scored_total.with_label_values(&[d, r]).inc();
+            }
+        }
+        let output = prometheus::TextEncoder::new()
+            .encode_to_string(&registry.gather())
+            .unwrap();
+        assert!(output.contains("aether_mempool_profit_scored_total"));
+    }
+
+    // ---- NewProfitabilityScore with negative net_profit_wei ----
+
+    #[test]
+    fn new_profitability_score_negative_net_profit() {
+        let mut score = sample_score();
+        score.net_profit_wei = -500_000;
+        let json = serde_json::to_string(&score).expect("serialize");
+        assert!(json.contains("-500000"));
+    }
+
+    // ---- NoopProfitabilitySink trait object ----
+
+    #[test]
+    fn noop_profitability_sink_trait_object() {
+        let sink: Arc<dyn ProfitabilitySink> = Arc::new(NoopProfitabilitySink::new());
+        sink.insert_score(sample_score());
+    }
+
+    // ---- UnscoredConfirmedPrediction debug and clone ----
+
+    #[test]
+    fn unscored_confirmed_prediction_debug() {
+        let raw = RawUnscored {
+            prediction_id: Uuid::new_v4(),
+            protocol: "uni_v2".to_string(),
+            pool_address: vec![0xaa; 20],
+            token_in: vec![0xbb; 20],
+            token_out: vec![0xcc; 20],
+            amount_in: BigDecimal::from(1000u64),
+            actual_target_block: 999,
+        };
+        let conv: UnscoredConfirmedPrediction = raw.into();
+        let debug = format!("{:?}", conv);
+        assert!(debug.contains("UnscoredConfirmedPrediction"));
+        assert!(debug.contains("uni_v2"));
+    }
+
+    #[test]
+    fn unscored_confirmed_prediction_clone() {
+        let raw = RawUnscored {
+            prediction_id: Uuid::new_v4(),
+            protocol: "uni_v3".to_string(),
+            pool_address: vec![0xaa; 20],
+            token_in: vec![0xbb; 20],
+            token_out: vec![0xcc; 20],
+            amount_in: BigDecimal::from(500u64),
+            actual_target_block: 42,
+        };
+        let conv: UnscoredConfirmedPrediction = raw.into();
+        let cloned = conv.clone();
+        assert_eq!(cloned.prediction_id, conv.prediction_id);
+        assert_eq!(cloned.protocol, conv.protocol);
+        assert_eq!(cloned.actual_target_block, conv.actual_target_block);
+    }
+
+    // ---- default_reason via deserialization ----
+
+    #[test]
+    fn default_reason_deserialized_when_missing() {
+        let json = r#"{
+            "prediction_id": "00000000-0000-0000-0000-000000000001",
+            "scored_at": "2024-01-01T00:00:00Z",
+            "cycle_path": [],
+            "realized_profit_wei": "0",
+            "gas_estimate_wei": "0",
+            "net_profit_wei": 0,
+            "decision": "no_path",
+            "scoring_engine_git_sha": null
+        }"#;
+        let score: NewProfitabilityScore = serde_json::from_str(json).expect("deserialize");
+        assert_eq!(score.reason, REASON_NA);
+    }
+
+    // ---- pg_writer channel ok with large queue ----
+
+    #[test]
+    fn pg_writer_channel_ok_many_scores() {
+        let registry = Registry::new();
+        let metrics = ProfitabilityWriterMetrics::register(&registry);
+        let (tx, _rx) = mpsc::channel::<NewProfitabilityScore>(10);
+        let writer = PgProfitabilityWriter { tx, metrics: Arc::clone(&metrics) };
+
+        for _ in 0..10 {
+            writer.insert_score(sample_score());
+        }
+
+        let output = prometheus::TextEncoder::new()
+            .encode_to_string(&registry.gather())
+            .unwrap();
+        assert!(output.contains("aether_mempool_profit_writer_queue_depth"));
+    }
 }

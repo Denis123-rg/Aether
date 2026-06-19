@@ -1,0 +1,196 @@
+Prompt 1: Go – Fix Build Errors and Achieve 95% Test Coverage
+Objective
+You are a senior Go testing engineer. Your task is twofold:
+
+Fix all build and test errors in the Go project so that go test ./... runs without failures.
+
+Increase test coverage for a specific list of functions (see below) to at least 95% (preferably 100%), without changing production logic.
+
+You will work with sub‑agents if needed. All new tests must be realistic, idiomatic, and pass (green). At the end, produce a detailed report summarising the fixes, new tests, and coverage improvements.
+
+Part 1: Fix Build & Test Errors
+The current go test ./... fails due to:
+
+Syntax errors in:
+
+internal/pb/pb_proto_gap_test.go
+
+internal/strategy/strategy_gap_test.go
+
+Duplicate declarations in package cmd/executor – multiple test files define the same functions/types:
+
+TestHandleAdminPause_DefaultReason
+
+TestHandleAdminResume_EngineCtrlError
+
+TestHandleAdminReset_EngineCtrlError
+
+mockEngineCtrl (and its methods)
+
+TestRun_NilDeps, TestRun_NilConfig
+
+Conflicts between:
+
+coverage_gap_test.go
+
+coverage_extended_test.go
+
+coverage_push_test.go
+
+engine_pause_test.go
+
+run_test.go
+
+Required Actions
+Remove duplicate test files – keep only one set of tests. For example, keep coverage_gap_test.go and delete coverage_extended_test.go, coverage_push_test.go, engine_pause_test.go, run_test.go (or merge them into one file, ensuring no duplicate definitions).
+
+Fix syntax errors – correct the invalid syntax in the two files mentioned above. If they are auto‑generated and malformed, rewrite them properly or delete them if they are not needed.
+
+Run go mod tidy to clean dependencies.
+
+Run go test ./... -v – ensure all tests pass. If any existing tests fail, fix them (but do not change production code).
+
+After these steps, the test suite must compile and run successfully with zero failures.
+
+Part 2: Increase Coverage to ≥95%
+Once the project builds and tests pass, you must improve coverage for the following specific functions (listed by file and function name). The current coverage is shown; your goal is to reach at least 95% for each.
+
+File	Function	Current Coverage
+cmd/executor/admin_server.go:135	handleAdminPause	92.0%
+cmd/executor/admin_server.go:171	handleAdminReset	93.3%
+cmd/executor/admin_server.go:213	handleAdminResume	90.5%
+cmd/executor/bundle.go:87	BuildBundle	92.9%
+cmd/executor/flashbots.go:29	NewFlashbotsSigner	90.0%
+cmd/executor/flashbots.go:60	Sign	83.3%
+cmd/executor/main.go:169	main	0.0%
+cmd/executor/metrics.go:311	addBigIntCounter	87.5%
+cmd/executor/remote_signer.go:53	NewRemoteSigner	90.9%
+cmd/executor/remote_signer.go:83	SignTx	87.5%
+cmd/executor/remote_signer.go:99	Ping	66.7%
+cmd/executor/remote_signer.go:107	SignFlashbotsPayload	75.0%
+cmd/executor/run.go:58	run	82.5%
+cmd/executor/signer.go:27	NewTransactionSigner	92.3%
+cmd/executor/signer.go:72	SignAndMarshal	71.4%
+cmd/executor/startup.go:19	buildExecutorDeps	83.7%
+cmd/monitor/alerter.go:52	NewAlerter	80.0%
+cmd/monitor/notifiers.go:146	Send (DiscordNotifier)	93.8%
+cmd/monitor/process.go:15	runMonitorService	92.9%
+cmd/monitor/setup.go:25	runMonitorSetup	69.7%
+cmd/signer/main.go:130	runEncrypt	94.4%
+cmd/telebot/main.go:17	main	92.9%
+cmd/telebot/main.go:43	start	77.1%
+internal/config/production.go:59	LoadProductionConfig	91.7%
+internal/config/production.go:99	expandEnvProduction	93.8%
+internal/db/ledger.go:87	InsertBundle	0.0%
+internal/db/ledger.go:88	InsertInclusion	0.0%
+internal/db/ledger.go:89	UpsertPnLDaily	0.0%
+internal/db/ledger_pg.go:73	NewPgLedger	94.7%
+internal/db/ledger_pg.go:182	dispatch	93.3%
+internal/db/ledger_pg.go:236	insertBundleInner	88.9%
+internal/db/mempool_reconciliation_pg.go:122	NewPgMempoolReconciliation	94.7%
+internal/db/migrate.go:25	RunMigrations	90.9%
+internal/db/migrate.go:96	applyMigrationFile	92.0%
+internal/db/timescale.go:86	Record (noop)	0.0%
+internal/db/timescale.go:87	Close (noop)	0.0%
+internal/db/timescale.go:109	NewPgMetricsStore	94.7%
+internal/events/publisher.go:53	publish	80.0%
+internal/events/subscriber.go:89	run	80.0%
+internal/grpc/client.go:77	DialWithOptions	77.8%
+internal/grpc/tls.go:50	buildTransportCredentials	92.3%
+internal/pb/aether.pb.go:217	ProtoMessage (first)	0.0%
+internal/pb/aether.pb.go:309	ProtoMessage (second)	0.0%
+internal/pb/aether.pb.go:424	ProtoMessage (third)	0.0%
+internal/pb/aether.pb.go:575	ProtoMessage (fourth)	0.0%
+internal/pb/aether.pb.go:633	ProtoMessage (fifth)	0.0%
+internal/pb/aether.pb.go:676	ProtoMessage (sixth)	0.0%
+internal/pb/aether.pb.go:717	ProtoMessage (seventh)	0.0%
+internal/pb/aether.pb.go:790	ProtoMessage (eighth)	0.0%
+internal/pb/aether.pb.go:842	ProtoMessage (ninth)	0.0%
+internal/pb/aether.pb.go:893	ProtoMessage (tenth)	0.0%
+internal/pb/aether.pb.go:939	ProtoMessage (eleventh)	0.0%
+internal/pb/aether.pb.go:1136	file_proto_aether_proto_init	85.7%
+internal/pb/aether_grpc.pb.go:52	StreamArbs (client)	80.0%
+internal/pb/aether_grpc.pb.go:93	mustEmbedUnimplementedArbServiceServer	0.0%
+internal/pb/aether_grpc.pb.go:94	testEmbeddedByValue (Arb)	0.0%
+internal/pb/aether_grpc.pb.go:114	_ArbService_SubmitArb_Handler	88.9%
+internal/pb/aether_grpc.pb.go:132	_ArbService_StreamArbs_Handler	75.0%
+internal/pb/aether_grpc.pb.go:212	mustEmbedUnimplementedHealthServiceServer	0.0%
+internal/pb/aether_grpc.pb.go:213	testEmbeddedByValue (Health)	0.0%
+internal/pb/aether_grpc.pb.go:233	_HealthService_Check_Handler	88.9%
+internal/pb/aether_grpc.pb.go:330	mustEmbedUnimplementedControlServiceServer	0.0%
+internal/pb/aether_grpc.pb.go:331	testEmbeddedByValue (Control)	0.0%
+internal/pb/aether_grpc.pb.go:351	_ControlService_SetState_Handler	88.9%
+internal/pb/aether_grpc.pb.go:369	_ControlService_ReloadConfig_Handler	88.9%
+internal/risk/manager.go:352	ResetFromHalted	84.6%
+internal/risk/manager.go:373	Resume	90.9%
+internal/risk/manager.go:428	Pause	80.0%
+internal/signer/key_loader.go:127	LoadKey	93.9%
+internal/signer/key_loader.go:191	Encrypt	82.6%
+internal/signer/key_loader.go:247	newGCM	85.7%
+internal/signer/signer_server.go:86	NewServer	83.3%
+internal/strategy/abtest.go:150	score	85.7%
+internal/strategy/abtest.go:226	Pick	92.9%
+deploy/docker/mock-builder/main.go:10	main	0.0%
+General Guidelines for Writing Tests
+Do not alter production code unless absolutely necessary to expose internals (e.g., add //export or test-only helpers). Prefer testing through public interfaces.
+
+Use table‑driven tests to cover multiple scenarios concisely.
+
+Mock external dependencies (RPC, databases, signers, HTTP) using interfaces and test doubles. Use gomock, testify/mock, or write manual stubs.
+
+For main() functions (0% coverage), refactor the logic into a separate function (e.g., runMain() or realMain()) that accepts arguments (like io.Writer, context, config) and test that.
+
+For generated ProtoMessage methods, test by creating a message and calling ProtoReflect().Descriptor() or use the generated code in an integration test that marshals/unmarshals.
+
+For no‑op methods (e.g., Record, Close on NoopMetricsStore), test that they return without error and do nothing.
+
+Cover error paths – use mocks to simulate failures (DB errors, network timeouts, invalid inputs).
+
+Keep tests realistic – use actual‑looking addresses, hashes, and configuration values.
+
+Ensure no existing tests break – all tests must pass.
+
+Specific Advice per Package
+cmd/executor: Use httptest for admin endpoints, grpc_test for remote signer, and mock clients for Flashbots.
+
+internal/db: Use an in‑memory SQLite or test‑containers for Postgres, but for no‑op methods just verify they return.
+
+internal/events: Mock Redis or use in‑memory pub/sub.
+
+internal/grpc: Test DialWithOptions with invalid addresses, TLS misconfigurations.
+
+internal/risk: Test state transitions, circuit breaker, daily reset with mocked time.
+
+internal/signer: Test encryption/decryption with known key pairs, file I/O errors.
+
+internal/strategy: Test score and Pick with various A/B test data.
+
+Deliverables
+Fixed test suite – all tests compile and pass (go test ./...).
+
+New test code – added to existing *_test.go files or new files.
+
+Updated coverage report – run go test -coverprofile=cover.out ./... and go tool cover -func=cover.out to verify that each listed function now has ≥95% coverage.
+
+Final report (Markdown) containing:
+
+Build fixes: what was removed/changed to fix compilation.
+
+Coverage summary table – initial vs final coverage for each function.
+
+List of new test cases per function (e.g., “added test for timeout error”, “tested edge case with empty config”).
+
+Total new tests and lines of test code added.
+
+Challenges encountered and how they were resolved.
+
+Recommendations for maintaining high coverage in future.
+
+Acceptance Criteria
+go test ./... passes with zero failures.
+
+Each function in the list has coverage ≥95% (verified by go tool cover).
+
+No production logic was changed (only tests and possibly test‑only helpers).
+
+The final report is clear and comprehensive.

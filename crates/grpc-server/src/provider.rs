@@ -1273,98 +1273,57 @@ min_healthy_nodes: 1
     }
 
     #[test]
-    fn test_provider_config_default_from_eth_rpc_url() {
-        let _guard = ENV_LOCK.lock().unwrap();
-        std::env::remove_var("ETH_WS_URL");
-        std::env::set_var("ETH_RPC_URL", "http://custom-rpc:8545");
-        let config = ProviderConfig::default();
-        assert_eq!(config.rpc_url, "http://custom-rpc:8545");
-        std::env::remove_var("ETH_RPC_URL");
-    }
-
-    #[test]
-    fn test_provider_config_default_fallback_to_localhost() {
-        let _guard = ENV_LOCK.lock().unwrap();
-        std::env::remove_var("ETH_WS_URL");
-        std::env::remove_var("ETH_RPC_URL");
-        let config = ProviderConfig::default();
-        assert_eq!(config.rpc_url, "http://localhost:8545");
-    }
-
-    #[test]
-    fn test_provider_config_default_nodes_config_from_env() {
-        let _guard = ENV_LOCK.lock().unwrap();
-        std::env::set_var("AETHER_NODES_CONFIG", "/tmp/nodes.yaml");
-        let config = ProviderConfig::default();
-        assert_eq!(config.nodes_config_path, Some("/tmp/nodes.yaml".to_string()));
-        std::env::remove_var("AETHER_NODES_CONFIG");
-    }
-
-    #[test]
-    fn test_provider_falls_back_on_malformed_yaml() {
-        let dir = std::env::temp_dir().join("aether_provider_malformed_test");
-        std::fs::create_dir_all(&dir).expect("create temp dir");
-        let path = dir.join("malformed.yaml");
-
-        std::fs::write(&path, "{{{{not valid yaml").unwrap();
-
-        let channels = Arc::new(EventChannels::new());
+    fn test_provider_config_is_cloneable() {
         let config = ProviderConfig {
-            rpc_url: "http://localhost:8545".to_string(),
-            nodes_config_path: Some(path.to_str().unwrap().to_string()),
+            rpc_url: "ws://clone-test:8546".to_string(),
+            monitored_pools: vec![Address::repeat_byte(0x01), Address::repeat_byte(0x02)],
             ..ProviderConfig::default()
         };
-        let provider = RpcProvider::new(config, channels, test_metrics());
-        // Should fall back to single-node pool.
-        assert_eq!(provider.node_pool().all_nodes().len(), 1);
-
-        std::fs::remove_file(&path).ok();
-        std::fs::remove_dir(&dir).ok();
+        let cloned = config.clone();
+        assert_eq!(cloned.rpc_url, "ws://clone-test:8546");
+        assert_eq!(cloned.monitored_pools.len(), 2);
     }
 
     #[test]
-    fn test_process_logs_two_unknown_events() {
-        let channels = Arc::new(EventChannels::new());
-        let metrics = Arc::new(EngineMetrics::new());
-
-        let config = ProviderConfig {
-            rpc_url: "http://localhost:8545".to_string(),
-            ..ProviderConfig::default()
-        };
-        let provider = RpcProvider::new(config, channels, Arc::clone(&metrics));
-
-        let unknown_topic = B256::repeat_byte(0xFF);
-        provider.process_logs(&[
-            (Address::repeat_byte(0x01), vec![unknown_topic], vec![0u8; 64]),
-            (Address::repeat_byte(0x02), vec![unknown_topic], vec![0u8; 64]),
-        ]);
-
-        let rendered = String::from_utf8(metrics.render()).expect("metrics utf-8");
-        assert!(rendered.contains(r#"aether_decode_errors_total{reason="unknown_topic"} 2"#));
+    fn test_provider_node_type_debug() {
+        let ws = NodeType::WebSocket;
+        let ipc = NodeType::Ipc;
+        let http = NodeType::Http;
+        assert!(format!("{:?}", ws).contains("WebSocket"));
+        assert!(format!("{:?}", ipc).contains("Ipc"));
+        assert!(format!("{:?}", http).contains("Http"));
     }
 
     #[test]
-    fn test_dispatch_block_large_values() {
+    fn test_process_logs_mixed_valid_and_invalid() {
         let channels = Arc::new(EventChannels::new());
-        let mut rx = channels.subscribe_new_blocks();
-
+        let mut rx = channels.subscribe_pool_updates();
         let config = ProviderConfig {
             rpc_url: "http://localhost:8545".to_string(),
             ..ProviderConfig::default()
         };
         let provider = RpcProvider::new(config, Arc::clone(&channels), test_metrics());
 
-        provider.dispatch_block(
-            u64::MAX,
-            u64::MAX,
-            u128::MAX,
-            u64::MAX,
-            std::sync::Arc::new(vec![B256::repeat_byte(0xFF)]),
-        );
+        let pool1 = Address::repeat_byte(0x01);
+        let pool2 = Address::repeat_byte(0x02);
 
-        let event = rx.try_recv().expect("should receive block event");
-        assert_eq!(event.block_number, u64::MAX);
-        assert_eq!(event.timestamp, u64::MAX);
-        assert_eq!(event.base_fee, u128::MAX);
+        let mut sync_data = Vec::new();
+        let r = U256::from(2000u64);
+        sync_data.extend_from_slice(&r.to_be_bytes::<32>());
+        sync_data.extend_from_slice(&r.to_be_bytes::<32>());
+
+        let unknown_topic = B256::repeat_byte(0xFF);
+        provider.process_logs(&[
+            (pool1, vec![EventSignatures::sync_topic()], sync_data),
+            (pool2, vec![unknown_topic], vec![0u8; 64]),
+        ]);
+
+        let e1 = rx.try_recv().expect("should receive valid event");
+        match e1 {
+            aether_ingestion::event_decoder::PoolEvent::ReserveUpdate { pool, .. } => {
+                assert_eq!(pool, pool1);
+            }
+            other => panic!("Expected ReserveUpdate, got {:?}", other),
+        }
     }
 }

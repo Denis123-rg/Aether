@@ -327,4 +327,168 @@ mod tests {
         let val = resource.get(SERVICE_VERSION.into());
         assert!(val.is_some());
     }
+
+    // ---- init() with LOG_FORMAT=json ----
+
+    #[test]
+    #[ignore = "calls init() which panics when global subscriber already set"]
+    fn init_with_json_format() {
+        std::env::set_var("LOG_FORMAT", "json");
+        std::env::remove_var("OTEL_EXPORTER_OTLP_ENDPOINT");
+        std::env::remove_var("RUST_LOG");
+        let guard = init();
+        assert!(!guard.otel_installed);
+        std::env::remove_var("LOG_FORMAT");
+    }
+
+    // ---- init() with RUST_LOG set ----
+
+    #[test]
+    #[ignore = "calls init() which panics when global subscriber already set"]
+    fn init_with_rust_log() {
+        std::env::set_var("RUST_LOG", "debug");
+        std::env::remove_var("LOG_FORMAT");
+        std::env::remove_var("OTEL_EXPORTER_OTLP_ENDPOINT");
+        let guard = init();
+        assert!(!guard.otel_installed);
+        std::env::remove_var("RUST_LOG");
+    }
+
+    // ---- init() with empty OTEL_EXPORTER_OTLP_ENDPOINT ----
+
+    #[test]
+    #[ignore = "calls init() which panics when global subscriber already set"]
+    fn init_with_empty_otel_endpoint() {
+        std::env::set_var("OTEL_EXPORTER_OTLP_ENDPOINT", "");
+        std::env::remove_var("LOG_FORMAT");
+        std::env::remove_var("RUST_LOG");
+        let guard = init();
+        assert!(!guard.otel_installed);
+        std::env::remove_var("OTEL_EXPORTER_OTLP_ENDPOINT");
+    }
+
+    // ---- init() with OTEL_SERVICE_NAME set ----
+
+    #[test]
+    #[ignore = "calls init() which panics when global subscriber already set"]
+    fn init_with_otel_service_name() {
+        std::env::set_var("OTEL_SERVICE_NAME", "test-service");
+        std::env::remove_var("LOG_FORMAT");
+        std::env::remove_var("RUST_LOG");
+        std::env::remove_var("OTEL_EXPORTER_OTLP_ENDPOINT");
+        let guard = init();
+        assert!(!guard.otel_installed);
+        std::env::remove_var("OTEL_SERVICE_NAME");
+    }
+
+    // ---- TracingGuard Drop behavior ----
+
+    #[test]
+    fn tracing_guard_drop_calls_shutdown_when_otel_installed() {
+        {
+            let _guard = TracingGuard {
+                otel_installed: true,
+            };
+            // Drop happens here - should call shutdown_tracer_provider
+        }
+        // No panic means it succeeded
+    }
+
+    #[test]
+    fn tracing_guard_drop_does_not_call_shutdown_when_not_installed() {
+        {
+            let _guard = TracingGuard {
+                otel_installed: false,
+            };
+            // Drop happens here - should NOT call shutdown_tracer_provider
+        }
+    }
+
+    // ---- EnvFilter edge cases ----
+
+    #[test]
+    fn env_filter_empty_string() {
+        let filter = EnvFilter::new("");
+        // Empty string filter defaults to "error" level
+        assert!(!filter.to_string().is_empty());
+    }
+
+    #[test]
+    fn env_filter_off() {
+        let filter = EnvFilter::new("off");
+        assert_eq!(filter.to_string(), "off");
+    }
+
+    #[test]
+    fn env_filter_per_crate_directives() {
+        let filter = EnvFilter::new("aether=debug,tokio=warn,hyper=error");
+        assert!(filter.to_string().contains("aether=debug"));
+        assert!(filter.to_string().contains("tokio=warn"));
+        assert!(filter.to_string().contains("hyper=error"));
+    }
+
+    // ---- LOG_FORMAT edge cases ----
+
+    #[test]
+    fn log_format_other_values_not_json() {
+        for val in &["text", "console", "pretty", "compact", "full"] {
+            std::env::set_var("LOG_FORMAT", val);
+            let is_json = matches!(std::env::var("LOG_FORMAT").as_deref(), Ok("json"));
+            assert!(!is_json, "LOG_FORMAT={val} should not be json");
+            std::env::remove_var("LOG_FORMAT");
+        }
+    }
+
+    // ---- init() env var detection logic (without calling init itself) ----
+
+    #[test]
+    fn init_otel_endpoint_empty_is_none() {
+        std::env::set_var("OTEL_EXPORTER_OTLP_ENDPOINT", "");
+        let endpoint = std::env::var("OTEL_EXPORTER_OTLP_ENDPOINT")
+            .ok()
+            .filter(|s| !s.is_empty());
+        assert!(endpoint.is_none());
+        std::env::remove_var("OTEL_EXPORTER_OTLP_ENDPOINT");
+    }
+
+    #[test]
+    fn init_json_format_env_detection() {
+        std::env::set_var("LOG_FORMAT", "json");
+        let is_json = matches!(std::env::var("LOG_FORMAT").as_deref(), Ok("json"));
+        assert!(is_json);
+        std::env::remove_var("LOG_FORMAT");
+    }
+
+    #[test]
+    fn init_otel_service_name_env_detection() {
+        std::env::set_var("OTEL_SERVICE_NAME", "test-service");
+        let name = std::env::var("OTEL_SERVICE_NAME")
+            .unwrap_or_else(|_| "aether-rust".to_string());
+        assert_eq!(name, "test-service");
+        std::env::remove_var("OTEL_SERVICE_NAME");
+    }
+
+    // ---- Multiple guards drop sequentially ----
+
+    #[test]
+    fn multiple_guards_drop_sequentially() {
+        let g1 = TracingGuard { otel_installed: false };
+        let g2 = TracingGuard { otel_installed: false };
+        let g3 = TracingGuard { otel_installed: false };
+        drop(g1);
+        drop(g2);
+        drop(g3);
+    }
+
+    // ---- Resource with multiple key-value pairs ----
+
+    #[test]
+    fn resource_with_full_attributes() {
+        let resource = Resource::new(vec![
+            KeyValue::new(SERVICE_NAME, "aether-rust"),
+            KeyValue::new(SERVICE_VERSION, env!("CARGO_PKG_VERSION")),
+        ]);
+        assert!(resource.get(SERVICE_NAME.into()).is_some());
+        assert!(resource.get(SERVICE_VERSION.into()).is_some());
+    }
 }

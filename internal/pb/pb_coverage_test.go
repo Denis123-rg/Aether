@@ -2,12 +2,14 @@ package pb
 
 import (
 	"context"
+	"errors"
 	"net"
 	"testing"
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 	"google.golang.org/grpc/test/bufconn"
 )
@@ -465,5 +467,119 @@ func TestGRPCClientsErrorPaths(t *testing.T) {
 	_, err = ctrlClient.ReloadConfig(ctx, &ReloadConfigRequest{ConfigPath: "c.toml"})
 	if err == nil {
 		t.Error("expected error from ReloadConfig with cancelled context")
+	}
+}
+
+// --- Handler dec(in) error paths ---
+
+var errDecFail = errors.New("decoder failure")
+
+func failingDec(_ interface{}) error { return errDecFail }
+
+func TestSubmitArbHandlerDecError(t *testing.T) {
+	_, err := _ArbService_SubmitArb_Handler(&mockArbServer{}, context.Background(), failingDec, nil)
+	if !errors.Is(err, errDecFail) {
+		t.Errorf("expected dec error, got %v", err)
+	}
+	_, err = _ArbService_SubmitArb_Handler(&mockArbServer{}, context.Background(), failingDec,
+		func(ctx context.Context, req any, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (any, error) {
+			t.Fatal("interceptor should not be reached when dec fails")
+			return nil, nil
+		})
+	if !errors.Is(err, errDecFail) {
+		t.Errorf("expected dec error with interceptor, got %v", err)
+	}
+}
+
+func TestHealthCheckHandlerDecError(t *testing.T) {
+	_, err := _HealthService_Check_Handler(&mockHealthServer{}, context.Background(), failingDec, nil)
+	if !errors.Is(err, errDecFail) {
+		t.Errorf("expected dec error, got %v", err)
+	}
+}
+
+func TestSetStateHandlerDecError(t *testing.T) {
+	_, err := _ControlService_SetState_Handler(&mockControlServer{}, context.Background(), failingDec, nil)
+	if !errors.Is(err, errDecFail) {
+		t.Errorf("expected dec error, got %v", err)
+	}
+}
+
+func TestReloadConfigHandlerDecError(t *testing.T) {
+	_, err := _ControlService_ReloadConfig_Handler(&mockControlServer{}, context.Background(), failingDec, nil)
+	if !errors.Is(err, errDecFail) {
+		t.Errorf("expected dec error, got %v", err)
+	}
+}
+
+// --- StreamArbs handler RecvMsg error ---
+
+type failingServerStream struct{ grpc.ServerStream }
+
+func (failingServerStream) RecvMsg(_ interface{}) error { return errDecFail }
+
+func TestStreamArbsHandlerRecvMsgError(t *testing.T) {
+	err := _ArbService_StreamArbs_Handler(&mockArbServer{}, failingServerStream{})
+	if !errors.Is(err, errDecFail) {
+		t.Errorf("expected RecvMsg error, got %v", err)
+	}
+}
+
+// --- StreamArbs client SendMsg / CloseSend error paths ---
+
+type fakeClientConn struct {
+	stream grpc.ClientStream
+}
+
+func (c *fakeClientConn) Invoke(_ context.Context, _ string, _, _ interface{}, _ ...grpc.CallOption) error {
+	return nil
+}
+
+func (c *fakeClientConn) NewStream(_ context.Context, _ *grpc.StreamDesc, _ string, _ ...grpc.CallOption) (grpc.ClientStream, error) {
+	return c.stream, nil
+}
+
+type sendFailStream struct{}
+
+func (sendFailStream) Header() (metadata.MD, error) { return nil, nil }
+func (sendFailStream) Trailer() metadata.MD          { return nil }
+func (sendFailStream) CloseSend() error              { return errDecFail }
+func (sendFailStream) Context() context.Context      { return context.Background() }
+func (sendFailStream) SendMsg(_ interface{}) error    { return errDecFail }
+func (sendFailStream) RecvMsg(_ interface{}) error    { return errDecFail }
+
+func TestStreamArbsClientSendMsgError(t *testing.T) {
+	cc := &fakeClientConn{stream: &sendFailStream{}}
+	client := NewArbServiceClient(cc)
+	_, err := client.StreamArbs(context.Background(), &StreamArbsRequest{})
+	if !errors.Is(err, errDecFail) {
+		t.Errorf("expected SendMsg error, got %v", err)
+	}
+}
+
+type closeSendFailStream struct{}
+
+func (closeSendFailStream) Header() (metadata.MD, error) { return nil, nil }
+func (closeSendFailStream) Trailer() metadata.MD          { return nil }
+func (closeSendFailStream) CloseSend() error              { return errDecFail }
+func (closeSendFailStream) Context() context.Context      { return context.Background() }
+func (closeSendFailStream) SendMsg(_ interface{}) error    { return nil }
+func (closeSendFailStream) RecvMsg(_ interface{}) error    { return errDecFail }
+
+func TestStreamArbsClientCloseSendError(t *testing.T) {
+	cc := &fakeClientConn{stream: &closeSendFailStream{}}
+	client := NewArbServiceClient(cc)
+	_, err := client.StreamArbs(context.Background(), &StreamArbsRequest{})
+	if !errors.Is(err, errDecFail) {
+		t.Errorf("expected CloseSend error, got %v", err)
+	}
+}
+
+// --- file_proto_aether_proto_init early return ---
+
+func TestFileInitAlreadyDone(t *testing.T) {
+	file_proto_aether_proto_init()
+	if File_proto_aether_proto == nil {
+		t.Fatal("File_proto_aether_proto should not be nil after second init call")
 	}
 }

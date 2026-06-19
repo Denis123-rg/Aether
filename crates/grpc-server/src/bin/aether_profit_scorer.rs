@@ -2191,7 +2191,7 @@ mod tests {
         let (token_index, [ta, tb, tc]) = make_token_index();
         let a = *token_index.get_address(ta).unwrap();
         let b = *token_index.get_address(tb).unwrap();
-        let c = *token_index.get_address(tc).unwrap();
+        let _c = *token_index.get_address(tc).unwrap();
         let pools = vec![loaded(0x11, a, b)];
 
         let mut graph = PriceGraph::new(token_index.len());
@@ -2209,9 +2209,9 @@ mod tests {
     #[test]
     fn cycle_to_json_unknown_pool_protocol() {
         let (token_index, [ta, tb, _tc]) = make_token_index();
-        let a = *token_index.get_address(ta).unwrap();
-        let b = *token_index.get_address(tb).unwrap();
-        let mut raw = [0x99u8; 20];
+        let _a = *token_index.get_address(ta).unwrap();
+        let _b = *token_index.get_address(tb).unwrap();
+        let raw = [0x99u8; 20];
         let pool_addr = Address::from(raw);
         let pools: Vec<LoadedPool> = vec![];
 
@@ -2745,5 +2745,641 @@ mod tests {
             }
             _ => panic!("expected V2"),
         }
+    }
+
+    // ── state_to_graph_reserves: V3 edge cases ────────────────────────
+
+    #[test]
+    fn state_to_graph_reserves_v3_zero_liquidity() {
+        let s = PoolState::V3 {
+            sqrt_price_x96: U256::from(174_070_643_065_208_788_086_831u128),
+            liquidity: 0,
+        };
+        let (r0, r1) = state_to_graph_reserves(&s);
+        assert_eq!(r0, 0.0);
+        assert_eq!(r1, 0.0);
+    }
+
+    #[test]
+    fn state_to_graph_reserves_v3_high_price() {
+        // sqrtPriceX96 = 2^97 (price = (2^97/2^96)^2 = 4.0)
+        // So virtual reserves: y_v/x_v = 4.0
+        let liquidity = 1_000_000_000u128;
+        let sqrt_price_x96 = U256::from(1u128) << 97;
+        let s = PoolState::V3 {
+            sqrt_price_x96,
+            liquidity,
+        };
+        let (r0, r1) = state_to_graph_reserves(&s);
+        assert!(r0 > 0.0);
+        assert!(r1 > 0.0);
+        // y_v/x_v should be > 1.0 (price = 4.0)
+        assert!(r1 / r0 > 1.0, "r1/r0 = {}", r1 / r0);
+    }
+
+    #[test]
+    fn state_to_graph_reserves_v2_large_reserves() {
+        let s = PoolState::V2 {
+            r0: U256::from(1_000_000_000_000_000_000_000_000_000u128), // 1e27
+            r1: U256::from(500_000_000_000_000_000_000_000_000u128),  // 5e26
+        };
+        let (r0, r1) = state_to_graph_reserves(&s);
+        assert!((r0 - 1e27).abs() < 1e10);
+        assert!((r1 - 5e26).abs() < 1e10);
+    }
+
+    #[test]
+    fn state_to_graph_reserves_v3_sqrt_price_one() {
+        // sqrtPriceX96 = 2^96 means price = 1.0
+        let liquidity = 500_000u128;
+        let s = PoolState::V3 {
+            sqrt_price_x96: U256::from(1u128) << 96,
+            liquidity,
+        };
+        let (r0, r1) = state_to_graph_reserves(&s);
+        // virtual_reserves for price=1.0: x_v == y_v == L
+        assert!((r0 - liquidity as f64).abs() < 1.0);
+        assert!((r1 - liquidity as f64).abs() < 1.0);
+    }
+
+    // ── collect_running_states: V3 affected state ─────────────────────
+
+    #[test]
+    fn collect_running_states_v3_affected_state() {
+        let (token_index, [ta, tb, _tc]) = make_token_index();
+        let a = *token_index.get_address(ta).unwrap();
+        let b = *token_index.get_address(tb).unwrap();
+        let pools = vec![loaded(0x11, a, b)];
+
+        let mut latest_states = HashMap::new();
+        latest_states.insert(0, PoolState::V2 { r0: U256::from(100u64), r1: U256::from(200u64) });
+
+        let affected_state = PoolState::V3 { sqrt_price_x96: U256::from(1u64), liquidity: 1 };
+        let merged = collect_running_states(&pools, &latest_states, 0, affected_state);
+        assert_eq!(merged.len(), 1);
+        assert!(matches!(merged.get(&0).unwrap(), PoolState::V3 { .. }));
+    }
+
+    #[test]
+    fn collect_running_states_override_all_indices() {
+        let (token_index, [ta, tb, tc]) = make_token_index();
+        let a = *token_index.get_address(ta).unwrap();
+        let b = *token_index.get_address(tb).unwrap();
+        let c = *token_index.get_address(tc).unwrap();
+        let pools = vec![loaded(0x11, a, b), loaded(0x22, b, c)];
+
+        let mut latest_states = HashMap::new();
+        latest_states.insert(0, PoolState::V2 { r0: U256::from(100u64), r1: U256::from(200u64) });
+        latest_states.insert(1, PoolState::V2 { r0: U256::from(300u64), r1: U256::from(400u64) });
+
+        // Override each index one by one
+        for idx in 0..2 {
+            let affected = PoolState::V2 { r0: U256::from(idx as u64 * 1000), r1: U256::from(idx as u64 * 2000) };
+            let merged = collect_running_states(&pools, &latest_states, idx, affected);
+            let overridden = merged.get(&idx).unwrap();
+            match overridden {
+                PoolState::V2 { r0, r1 } => {
+                    assert_eq!(*r0, U256::from(idx as u64 * 1000));
+                    assert_eq!(*r1, U256::from(idx as u64 * 2000));
+                }
+                _ => panic!("expected V2"),
+            }
+        }
+    }
+
+    // ── optimise_cycle: various scenarios ──────────────────────────────
+
+    #[test]
+    fn optimise_cycle_short_path_returns_none() {
+        let (token_index, [ta, _tb, _tc]) = make_token_index();
+        let a = *token_index.get_address(ta).unwrap();
+        let b = *token_index.get_address(_tb).unwrap();
+        let pools = vec![loaded(0x11, a, b)];
+        let graph = PriceGraph::new(token_index.len());
+        let states = HashMap::new();
+        let cycle = DetectedCycle { path: vec![ta], total_weight: 0.0 };
+        assert!(optimise_cycle(&cycle, &graph, &token_index, &pools, &states, 30_000_000_000).is_none());
+    }
+
+    #[test]
+    fn optimise_cycle_v2_pool_with_reserves() {
+        let (token_index, [ta, tb, _tc]) = make_token_index();
+        let a = *token_index.get_address(ta).unwrap();
+        let b = *token_index.get_address(tb).unwrap();
+        let pools = vec![loaded(0x11, a, b)];
+
+        let mut graph = PriceGraph::new(token_index.len());
+        graph.resize(token_index.len());
+        let pid = PoolId { address: pools[0].address, protocol: pools[0].protocol };
+        graph.add_edge(ta, tb, 0.0, pid, pools[0].address, pools[0].protocol, U256::ZERO);
+        graph.add_edge(tb, ta, 0.0, pid, pools[0].address, pools[0].protocol, U256::ZERO);
+
+        let mut states = HashMap::new();
+        let r = U256::from(1_000_000_000_000_000_000_000u128);
+        states.insert(0, PoolState::V2 { r0: r, r1: r });
+
+        let cycle = DetectedCycle { path: vec![ta, tb, ta], total_weight: -0.05 };
+        let result = optimise_cycle(&cycle, &graph, &token_index, &pools, &states, 30_000_000_000);
+        assert!(result.is_some());
+        let opt = result.unwrap();
+        assert!(opt.optimal_input_wei > U256::ZERO);
+    }
+
+    #[test]
+    fn optimise_cycle_v3_only_pool() {
+        let (token_index, [ta, tb, _tc]) = make_token_index();
+        let a = *token_index.get_address(ta).unwrap();
+        let b = *token_index.get_address(tb).unwrap();
+        let pools = vec![loaded_v3(0x44, a, b)];
+
+        let mut graph = PriceGraph::new(token_index.len());
+        graph.resize(token_index.len());
+        let pid = PoolId { address: pools[0].address, protocol: pools[0].protocol };
+        graph.add_edge(ta, tb, 0.0, pid, pools[0].address, pools[0].protocol, U256::ZERO);
+        graph.add_edge(tb, ta, 0.0, pid, pools[0].address, pools[0].protocol, U256::ZERO);
+
+        let mut states = HashMap::new();
+        states.insert(0, PoolState::V3 { sqrt_price_x96: U256::from(174_070_643_065_208_788_086_831u128), liquidity: 1_000_000 });
+
+        let cycle = DetectedCycle { path: vec![ta, tb, ta], total_weight: -0.05 };
+        let result = optimise_cycle(&cycle, &graph, &token_index, &pools, &states, 30_000_000_000);
+        assert!(result.is_some());
+    }
+
+    #[test]
+    fn optimise_cycle_mixed_v2_v3_hops() {
+        let (token_index, [ta, tb, tc]) = make_token_index();
+        let a = *token_index.get_address(ta).unwrap();
+        let b = *token_index.get_address(tb).unwrap();
+        let c = *token_index.get_address(tc).unwrap();
+        let p1 = loaded(0x11, a, b);
+        let p2 = loaded_v3(0x22, b, c);
+        let pools = vec![p1, p2];
+
+        let mut graph = PriceGraph::new(token_index.len());
+        graph.resize(token_index.len());
+        for (i, &(from, to)) in [(ta, tb), (tb, tc), (tc, ta)].iter().enumerate() {
+            if i < 2 {
+                let pid = PoolId { address: pools[i].address, protocol: pools[i].protocol };
+                graph.add_edge(from, to, 0.0, pid, pools[i].address, pools[i].protocol, U256::ZERO);
+            }
+        }
+        // Add edge tc->ta from first pool
+        let pid0 = PoolId { address: pools[0].address, protocol: pools[0].protocol };
+        graph.add_edge(tc, ta, 0.0, pid0, pools[0].address, pools[0].protocol, U256::ZERO);
+
+        let mut states = HashMap::new();
+        states.insert(0, PoolState::V2 { r0: U256::from(1_000_000_000_000_000_000_000u128), r1: U256::from(1_000_000_000_000_000_000_000u128) });
+        states.insert(1, PoolState::V3 { sqrt_price_x96: U256::from(174_070_643_065_208_788_086_831u128), liquidity: 1_000_000 });
+
+        let cycle = DetectedCycle { path: vec![ta, tb, tc, ta], total_weight: -0.1 };
+        let result = optimise_cycle(&cycle, &graph, &token_index, &pools, &states, 30_000_000_000);
+        assert!(result.is_some());
+        let opt = result.unwrap();
+        assert!(opt.gas_cost_wei > 0);
+    }
+
+    // ── verify_cycle_u256: more scenarios ──────────────────────────────
+
+    #[test]
+    fn verify_cycle_u256_short_path() {
+        let (token_index, [ta, _tb, _tc]) = make_token_index();
+        let graph = PriceGraph::new(token_index.len());
+        let pools: Vec<LoadedPool> = vec![];
+        let states = HashMap::new();
+        let cycle = DetectedCycle { path: vec![ta], total_weight: 0.0 };
+        assert!(verify_cycle_u256(&cycle, &graph, &token_index, &pools, &states, U256::from(1000u64)).is_none());
+    }
+
+    #[test]
+    fn verify_cycle_u256_zero_input() {
+        let (token_index, [ta, tb, _tc]) = make_token_index();
+        let a = *token_index.get_address(ta).unwrap();
+        let b = *token_index.get_address(tb).unwrap();
+        let pools = vec![loaded(0x11, a, b)];
+        let mut graph = PriceGraph::new(token_index.len());
+        graph.resize(token_index.len());
+        let pid = PoolId { address: pools[0].address, protocol: pools[0].protocol };
+        graph.add_edge(ta, tb, 0.0, pid, pools[0].address, pools[0].protocol, U256::ZERO);
+
+        let mut states = HashMap::new();
+        states.insert(0, PoolState::V2 { r0: U256::from(1_000_000u64), r1: U256::from(1_000_000u64) });
+
+        let cycle = DetectedCycle { path: vec![ta, tb], total_weight: -0.05 };
+        assert!(verify_cycle_u256(&cycle, &graph, &token_index, &pools, &states, U256::ZERO).is_none());
+    }
+
+    #[test]
+    fn verify_cycle_u256_asymmetric_reserves() {
+        let (token_index, [ta, tb, _tc]) = make_token_index();
+        let a = *token_index.get_address(ta).unwrap();
+        let b = *token_index.get_address(tb).unwrap();
+        let pools = vec![loaded(0x11, a, b)];
+        let mut graph = PriceGraph::new(token_index.len());
+        graph.resize(token_index.len());
+        let pid = PoolId { address: pools[0].address, protocol: pools[0].protocol };
+        graph.add_edge(ta, tb, 0.0, pid, pools[0].address, pools[0].protocol, U256::ZERO);
+        graph.add_edge(tb, ta, 0.0, pid, pools[0].address, pools[0].protocol, U256::ZERO);
+
+        let mut states = HashMap::new();
+        // Very asymmetric reserves: 1 WETH / 4000 USDC
+        states.insert(0, PoolState::V2 {
+            r0: U256::from(1_000_000_000_000_000_000u128),
+            r1: U256::from(4_000_000_000u64),
+        });
+
+        let cycle = DetectedCycle { path: vec![ta, tb, ta], total_weight: -0.05 };
+        let input = U256::from(1_000_000_000_000_000_000u128);
+        let out = verify_cycle_u256(&cycle, &graph, &token_index, &pools, &states, input);
+        assert!(out.is_some());
+        let gross = out.unwrap();
+        // Self-loop with asymmetric reserves should still lose to fees
+        assert!(gross < input);
+    }
+
+    #[test]
+    fn verify_cycle_u256_missing_pool_in_registry() {
+        let (token_index, [ta, tb, _tc]) = make_token_index();
+        let _a = *token_index.get_address(ta).unwrap();
+        let _b = *token_index.get_address(tb).unwrap();
+        // Pool not in the pools list
+        let pools: Vec<LoadedPool> = vec![];
+        let mut graph = PriceGraph::new(token_index.len());
+        graph.resize(token_index.len());
+        let pid = PoolId { address: address!("BBbbBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBbbbb"), protocol: ProtocolType::UniswapV2 };
+        graph.add_edge(ta, tb, 0.0, pid, pid.address, ProtocolType::UniswapV2, U256::ZERO);
+
+        let states = HashMap::new();
+        let cycle = DetectedCycle { path: vec![ta, tb], total_weight: -0.05 };
+        assert!(verify_cycle_u256(&cycle, &graph, &token_index, &pools, &states, U256::from(1000u64)).is_none());
+    }
+
+    // ── build_steps_from_cycle_sync: more scenarios ────────────────────
+
+    #[test]
+    fn build_steps_from_cycle_sync_two_hop_cycle() {
+        let (token_index, [ta, tb, _tc]) = make_token_index();
+        let a = *token_index.get_address(ta).unwrap();
+        let b = *token_index.get_address(tb).unwrap();
+        let pools = vec![loaded(0x11, a, b)];
+
+        let mut graph = PriceGraph::new(token_index.len());
+        graph.resize(token_index.len());
+        let pid = PoolId { address: pools[0].address, protocol: pools[0].protocol };
+        graph.add_edge(ta, tb, 0.0, pid, pools[0].address, pools[0].protocol, U256::ZERO);
+        graph.add_edge(tb, ta, 0.0, pid, pools[0].address, pools[0].protocol, U256::ZERO);
+
+        let r = U256::from(1_000_000_000_000_000_000_000u128);
+        let mut states = HashMap::new();
+        states.insert(0, PoolState::V2 { r0: r, r1: r });
+
+        let executor_addr = address!("1111111111111111111111111111111111111111");
+        let cycle = DetectedCycle { path: vec![ta, tb, ta], total_weight: -0.05 };
+        let steps = build_steps_from_cycle_sync(
+            &cycle, &graph, &token_index, &pools, &states, executor_addr, U256::from(1_000_000_000_000_000_000u128),
+        );
+        assert!(steps.is_some());
+        let steps = steps.unwrap();
+        assert_eq!(steps.len(), 2);
+    }
+
+    #[test]
+    fn build_steps_from_cycle_sync_no_edge_returns_none() {
+        let (token_index, [ta, tb, _tc]) = make_token_index();
+        let a = *token_index.get_address(ta).unwrap();
+        let b = *token_index.get_address(tb).unwrap();
+        let pools = vec![loaded(0x11, a, b)];
+        let mut graph = PriceGraph::new(token_index.len());
+        graph.resize(token_index.len());
+        // No edges added at all
+
+        let states = HashMap::new();
+        let executor_addr = address!("1111111111111111111111111111111111111111");
+        let cycle = DetectedCycle { path: vec![ta, tb], total_weight: -0.05 };
+        assert!(build_steps_from_cycle_sync(
+            &cycle, &graph, &token_index, &pools, &states, executor_addr, U256::from(1_000_000u64),
+        ).is_none());
+    }
+
+    #[test]
+    fn build_steps_from_cycle_sync_zero_output_returns_none() {
+        let (token_index, [ta, tb, _tc]) = make_token_index();
+        let a = *token_index.get_address(ta).unwrap();
+        let b = *token_index.get_address(tb).unwrap();
+        let pools = vec![loaded(0x11, a, b)];
+
+        let mut graph = PriceGraph::new(token_index.len());
+        graph.resize(token_index.len());
+        let pid = PoolId { address: pools[0].address, protocol: pools[0].protocol };
+        graph.add_edge(ta, tb, 0.0, pid, pools[0].address, pools[0].protocol, U256::ZERO);
+
+        let mut states = HashMap::new();
+        // Zero reserves → getAmountOut returns None
+        states.insert(0, PoolState::V2 { r0: U256::ZERO, r1: U256::ZERO });
+
+        let executor_addr = address!("1111111111111111111111111111111111111111");
+        let cycle = DetectedCycle { path: vec![ta, tb], total_weight: -0.05 };
+        assert!(build_steps_from_cycle_sync(
+            &cycle, &graph, &token_index, &pools, &states, executor_addr, U256::from(1_000_000u64),
+        ).is_none());
+    }
+
+    // ── cycle_to_json: more scenarios ──────────────────────────────────
+
+    #[test]
+    fn cycle_to_json_three_hop_cycle() {
+        let (token_index, [ta, tb, tc]) = make_token_index();
+        let a = *token_index.get_address(ta).unwrap();
+        let b = *token_index.get_address(tb).unwrap();
+        let c = *token_index.get_address(tc).unwrap();
+        let pools = vec![
+            loaded(0x11, a, b),
+            loaded(0x22, b, c),
+            loaded(0x33, a, c),
+        ];
+
+        let mut graph = PriceGraph::new(token_index.len());
+        graph.resize(token_index.len());
+        for (i, &(from, to)) in [(ta, tb), (tb, tc), (tc, ta)].iter().enumerate() {
+            let pid = PoolId { address: pools[i].address, protocol: pools[i].protocol };
+            graph.add_edge(from, to, 0.0, pid, pools[i].address, pools[i].protocol, U256::ZERO);
+        }
+
+        let cycle = DetectedCycle { path: vec![ta, tb, tc, ta], total_weight: -0.1 };
+        let json = cycle_to_json(&cycle, &graph, &token_index, &pools);
+        let arr = json.as_array().unwrap();
+        assert_eq!(arr.len(), 3);
+        for hop in arr {
+            assert!(hop.get("pool").is_some());
+            assert!(hop.get("token_in").is_some());
+            assert!(hop.get("token_out").is_some());
+            assert!(hop.get("protocol").is_some());
+        }
+    }
+
+    #[test]
+    fn cycle_to_json_protocol_labels_correct() {
+        let (token_index, [ta, tb, _tc]) = make_token_index();
+        let a = *token_index.get_address(ta).unwrap();
+        let b = *token_index.get_address(tb).unwrap();
+        let pools = vec![loaded(0x11, a, b)];
+
+        let mut graph = PriceGraph::new(token_index.len());
+        graph.resize(token_index.len());
+        let pid = PoolId { address: pools[0].address, protocol: pools[0].protocol };
+        graph.add_edge(ta, tb, 0.0, pid, pools[0].address, pools[0].protocol, U256::ZERO);
+
+        let cycle = DetectedCycle { path: vec![ta, tb], total_weight: -0.05 };
+        let json = cycle_to_json(&cycle, &graph, &token_index, &pools);
+        let arr = json.as_array().unwrap();
+        assert_eq!(arr[0]["protocol"], "uni_v2");
+    }
+
+    #[test]
+    fn cycle_to_json_with_v3_pool() {
+        let (token_index, [ta, tb, _tc]) = make_token_index();
+        let a = *token_index.get_address(ta).unwrap();
+        let b = *token_index.get_address(tb).unwrap();
+        let pools = vec![loaded_v3(0x44, a, b)];
+
+        let mut graph = PriceGraph::new(token_index.len());
+        graph.resize(token_index.len());
+        let pid = PoolId { address: pools[0].address, protocol: pools[0].protocol };
+        graph.add_edge(ta, tb, 0.0, pid, pools[0].address, pools[0].protocol, U256::ZERO);
+
+        let cycle = DetectedCycle { path: vec![ta, tb], total_weight: -0.05 };
+        let json = cycle_to_json(&cycle, &graph, &token_index, &pools);
+        let arr = json.as_array().unwrap();
+        assert_eq!(arr[0]["protocol"], "uni_v3");
+    }
+
+    // ── is_v3_touching_cycle: more scenarios ───────────────────────────
+
+    #[test]
+    fn is_v3_touching_cycle_four_hop_mixed() {
+        let (token_index, [ta, tb, tc]) = make_token_index();
+        let a = *token_index.get_address(ta).unwrap();
+        let b = *token_index.get_address(tb).unwrap();
+        let c = *token_index.get_address(tc).unwrap();
+        // Pool 0: V2, Pool 1: V3
+        let pools = vec![loaded(0x11, a, b), loaded_v3(0x22, b, c)];
+
+        let mut graph = PriceGraph::new(token_index.len());
+        graph.resize(token_index.len());
+        let pid0 = PoolId { address: pools[0].address, protocol: pools[0].protocol };
+        let pid1 = PoolId { address: pools[1].address, protocol: pools[1].protocol };
+        graph.add_edge(ta, tb, 0.0, pid0, pools[0].address, pools[0].protocol, U256::ZERO);
+        graph.add_edge(tb, tc, 0.0, pid1, pools[1].address, pools[1].protocol, U256::ZERO);
+        // Return edge via pool 0
+        graph.add_edge(tc, ta, 0.0, pid0, pools[0].address, pools[0].protocol, U256::ZERO);
+
+        let mut states = HashMap::new();
+        states.insert(0, PoolState::V2 { r0: U256::from(1000u64), r1: U256::from(1000u64) });
+        states.insert(1, PoolState::V3 { sqrt_price_x96: U256::from(1u64), liquidity: 1 });
+
+        let cycle = DetectedCycle { path: vec![ta, tb, tc, ta], total_weight: -0.1 };
+        assert!(is_v3_touching_cycle(&cycle, &graph, &token_index, &pools, &states));
+    }
+
+    #[test]
+    fn is_v3_touching_cycle_only_v2_state_for_v3_pool() {
+        let (token_index, [ta, tb, _tc]) = make_token_index();
+        let a = *token_index.get_address(ta).unwrap();
+        let b = *token_index.get_address(tb).unwrap();
+        // Pool is V3 in the registry but has V2 state in running_states
+        let pools = vec![loaded_v3(0x44, a, b)];
+
+        let mut graph = PriceGraph::new(token_index.len());
+        graph.resize(token_index.len());
+        let pid = PoolId { address: pools[0].address, protocol: pools[0].protocol };
+        graph.add_edge(ta, tb, 0.0, pid, pools[0].address, pools[0].protocol, U256::ZERO);
+        graph.add_edge(tb, ta, 0.0, pid, pools[0].address, pools[0].protocol, U256::ZERO);
+
+        let mut states = HashMap::new();
+        // State is V2 even though pool is V3
+        states.insert(0, PoolState::V2 { r0: U256::from(1000u64), r1: U256::from(1000u64) });
+
+        let cycle = DetectedCycle { path: vec![ta, tb, ta], total_weight: -0.05 };
+        // The function checks running_states state, not pool registry type
+        assert!(!is_v3_touching_cycle(&cycle, &graph, &token_index, &pools, &states));
+    }
+
+    // ── f64_fallback_verdict: boundary cases ───────────────────────────
+
+    #[test]
+    fn f64_fallback_verdict_zero_net_zero_gas() {
+        let (net, _realised, dec, _reason) = f64_fallback_verdict(0, 0);
+        assert_eq!(dec, DECISION_UNPROFITABLE);
+        assert_eq!(net, 0);
+    }
+
+    #[test]
+    fn f64_fallback_verdict_large_negative() {
+        let (_net, realised, dec, _reason) = f64_fallback_verdict(-i128::MAX, 50_000);
+        assert_eq!(dec, DECISION_UNPROFITABLE);
+        assert_eq!(realised, 0);
+    }
+
+    #[test]
+    fn f64_fallback_verdict_very_large_positive_below_floor() {
+        let net = MAX_PLAUSIBLE_F64_NET_WEI - 1;
+        let (_net, _realised, dec, reason) = f64_fallback_verdict(net, 50_000);
+        assert_eq!(dec, DECISION_PROFITABLE);
+        assert_eq!(reason, REASON_NA);
+    }
+
+    // ── revm_verdict_to_decision: edge cases ──────────────────────────
+
+    #[test]
+    fn revm_verdict_large_profit() {
+        let rv = RevmVerdict {
+            gross_profit_wei: U256::from(1_000_000_000_000_000_000u128), // 1 ETH
+            gas_used: 200_000,
+            reverted: false,
+        };
+        let (net, realised, dec, reason) = revm_verdict_to_decision(rv, 50_000);
+        assert_eq!(dec, DECISION_PROFITABLE);
+        assert_eq!(reason, REASON_REVM_VERDICT);
+        assert!(net > 0);
+        assert!(realised > 0);
+    }
+
+    #[test]
+    fn revm_verdict_exact_break_even() {
+        let rv = RevmVerdict {
+            gross_profit_wei: U256::from(100_000u64),
+            gas_used: 0,
+            reverted: false,
+        };
+        let (net, _realised, dec, _reason) = revm_verdict_to_decision(rv, 100_000);
+        assert_eq!(dec, DECISION_UNPROFITABLE);
+        assert_eq!(net, 0);
+    }
+
+    #[test]
+    fn revm_verdict_zero_gas_not_reverted() {
+        let rv = RevmVerdict {
+            gross_profit_wei: U256::from(1000u64),
+            gas_used: 0,
+            reverted: false,
+        };
+        let (net, _realised, dec, _reason) = revm_verdict_to_decision(rv, 0);
+        assert_eq!(dec, DECISION_PROFITABLE);
+        assert_eq!(net, 1000);
+    }
+
+    // ── u256_to_i128_saturating: limb boundary cases ───────────────────
+
+    #[test]
+    fn u256_to_i128_saturating_boundary_limb1() {
+        // Value with limbs[1] = i64::MAX (positive, fits in i128)
+        let v = U256::from_limbs([u64::MAX, i64::MAX as u64, 0, 0]);
+        let result = u256_to_i128_saturating(v);
+        assert!(result > 0);
+        // limbs[2] and limbs[3] are 0, limbs[1] >> 63 == 0 (positive), so no saturation
+    }
+
+    #[test]
+    fn u256_to_i128_saturating_boundary_limb2() {
+        // limbs[2] != 0 → saturate
+        let v = U256::from_limbs([0, 0, 1, 0]);
+        assert_eq!(u256_to_i128_saturating(v), i128::MAX);
+    }
+
+    #[test]
+    fn u256_to_i128_saturating_boundary_limb3() {
+        let v = U256::from_limbs([0, 0, 0, 1]);
+        assert_eq!(u256_to_i128_saturating(v), i128::MAX);
+    }
+
+    #[test]
+    fn u256_to_i128_saturating_negative_one() {
+        // -1 in i128 = all bits set = 2^128 - 1
+        let v = U256::from(i128::MAX as u128); // max positive
+        assert_eq!(u256_to_i128_saturating(v), i128::MAX);
+    }
+
+    // ── gas_estimate_for_protocols: edge cases ─────────────────────────
+
+    #[test]
+    fn gas_estimate_for_protocols_single_v2() {
+        let protocols = vec![ProtocolType::UniswapV2];
+        let cost_low = gas_estimate_for_protocols(&protocols, 10_000_000_000);
+        let cost_high = gas_estimate_for_protocols(&protocols, 100_000_000_000);
+        assert!(cost_high > cost_low);
+    }
+
+    #[test]
+    fn gas_estimate_for_protocols_v2_vs_v3() {
+        let protocols_v2 = vec![ProtocolType::UniswapV2];
+        let protocols_v3 = vec![ProtocolType::UniswapV3];
+        let base_fee = 30_000_000_000u128;
+        let cost_v2 = gas_estimate_for_protocols(&protocols_v2, base_fee);
+        let cost_v3 = gas_estimate_for_protocols(&protocols_v3, base_fee);
+        // V3 typically costs more gas than V2
+        assert!(cost_v3 >= cost_v2);
+    }
+
+    #[test]
+    fn gas_estimate_for_protocols_sushi_same_as_v2() {
+        let protocols_sushi = vec![ProtocolType::SushiSwap];
+        let protocols_v2 = vec![ProtocolType::UniswapV2];
+        let base_fee = 30_000_000_000u128;
+        let cost_sushi = gas_estimate_for_protocols(&protocols_sushi, base_fee);
+        let cost_v2 = gas_estimate_for_protocols(&protocols_v2, base_fee);
+        // SushiSwap uses same gas model as V2
+        assert_eq!(cost_sushi, cost_v2);
+    }
+
+    // ── DetectedCycle: method tests ────────────────────────────────────
+
+    #[test]
+    fn detected_cycle_profitable_with_negative_weight() {
+        let cycle = DetectedCycle { path: vec![0, 1, 2, 0], total_weight: -0.1 };
+        assert!(cycle.is_profitable());
+        assert!(cycle.profit_factor() > 0.0);
+        assert_eq!(cycle.num_hops(), 3);
+    }
+
+    #[test]
+    fn detected_cycle_unprofitable_with_positive_weight() {
+        let cycle = DetectedCycle { path: vec![0, 1, 0], total_weight: 0.05 };
+        assert!(!cycle.is_profitable());
+        assert!(cycle.profit_factor() < 0.0); // e^(-positive) - 1 < 0
+        assert_eq!(cycle.num_hops(), 2);
+    }
+
+    #[test]
+    fn detected_cycle_zero_weight() {
+        let cycle = DetectedCycle { path: vec![0, 1, 0], total_weight: 0.0 };
+        assert!(!cycle.is_profitable()); // 0.0 is NOT < 0.0
+        assert!((cycle.profit_factor()).abs() < 1e-10); // e^0 - 1 ≈ 0
+    }
+
+    #[test]
+    fn detected_cycle_single_vertex() {
+        let cycle = DetectedCycle { path: vec![0], total_weight: 0.0 };
+        assert_eq!(cycle.num_hops(), 0);
+    }
+
+    #[test]
+    fn detected_cycle_very_negative_weight() {
+        let cycle = DetectedCycle { path: vec![0, 1, 0], total_weight: -10.0 };
+        assert!(cycle.is_profitable());
+        // profit_factor = e^10 - 1 ≈ 22025
+        assert!(cycle.profit_factor() > 22000.0);
+    }
+
+    // ── protocol_label: edge cases ─────────────────────────────────────
+
+    #[test]
+    fn protocol_label_all_variants() {
+        assert_eq!(protocol_label(ProtocolType::UniswapV2), "uni_v2");
+        assert_eq!(protocol_label(ProtocolType::UniswapV3), "uni_v3");
+        assert_eq!(protocol_label(ProtocolType::SushiSwap), "sushi");
+        assert_eq!(protocol_label(ProtocolType::Curve), "curve");
+        assert_eq!(protocol_label(ProtocolType::BalancerV2), "balancer");
+        assert_eq!(protocol_label(ProtocolType::BalancerV3), "balancer");
+        assert_eq!(protocol_label(ProtocolType::BancorV3), "bancor");
     }
 }

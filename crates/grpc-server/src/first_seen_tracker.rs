@@ -259,7 +259,8 @@ pub fn spawn_first_seen_tracker(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alloy::primitives::b256;
+    use alloy::primitives::{b256, Address, U256};
+    use std::time::Duration;
 
     fn hashn(n: u8) -> B256 {
         let mut h = [0u8; 32];
@@ -446,6 +447,174 @@ mod tests {
     #[test]
     fn default_trait_implementation() {
         let tracker = MempoolFirstSeenTracker::default();
+        assert_eq!(tracker.len(), 0);
+    }
+
+    #[tokio::test]
+    async fn spawn_tracker_records_pending_and_observe_block() {
+        let channels = Arc::new(EventChannels::new());
+        let metrics = Arc::new(fresh_metrics());
+        let (shutdown_tx, shutdown_rx) = watch::channel(false);
+
+        let handle = spawn_first_seen_tracker(Arc::clone(&channels), Arc::clone(&metrics), shutdown_rx);
+
+        let first_seen = 1_700_000_000_000_000_000u64;
+        let tx_hash = hashn(42);
+
+        channels.dispatch_pending_tx(aether_ingestion::subscription::PendingTxEvent {
+            tx_hash,
+            from: Address::ZERO,
+            to: Some(Address::ZERO),
+            value: U256::ZERO,
+            input: Vec::new(),
+            gas_price: 0u128,
+            first_seen_unix_nanos: first_seen,
+            raw_tx: vec![],
+        });
+
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        channels.dispatch_new_block(aether_ingestion::subscription::NewBlockEvent {
+            block_number: 1,
+            timestamp: 1_700_000_001,
+            base_fee: 0,
+            gas_limit: 0,
+            tx_hashes: Arc::new(vec![tx_hash]),
+        });
+
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        let _ = shutdown_tx.send(true);
+        handle.await.expect("tracker task should not panic");
+    }
+
+    #[tokio::test]
+    async fn spawn_tracker_handles_pending_closed() {
+        let metrics = Arc::new(fresh_metrics());
+        let channels = Arc::new(EventChannels::new());
+        let (_shutdown_tx, shutdown_rx) = watch::channel(false);
+
+        let handle = spawn_first_seen_tracker(Arc::clone(&channels), Arc::clone(&metrics), shutdown_rx);
+
+        drop(channels);
+        handle.await.expect("tracker task should not panic");
+    }
+
+    #[tokio::test]
+    async fn spawn_tracker_handles_block_closed() {
+        let metrics = Arc::new(fresh_metrics());
+        let channels = Arc::new(EventChannels::new());
+        let (_shutdown_tx, shutdown_rx) = watch::channel(false);
+
+        let handle = spawn_first_seen_tracker(Arc::clone(&channels), Arc::clone(&metrics), shutdown_rx);
+
+        drop(channels);
+        handle.await.expect("tracker task should not panic");
+    }
+
+    #[tokio::test]
+    async fn spawn_tracker_shutdown_true_breaks_loop() {
+        let channels = Arc::new(EventChannels::new());
+        let metrics = Arc::new(fresh_metrics());
+        let (shutdown_tx, shutdown_rx) = watch::channel(false);
+
+        let handle = spawn_first_seen_tracker(Arc::clone(&channels), Arc::clone(&metrics), shutdown_rx);
+
+        tokio::time::sleep(Duration::from_millis(20)).await;
+
+        let _ = shutdown_tx.send(true);
+        handle.await.expect("tracker task should not panic");
+    }
+
+    #[tokio::test]
+    async fn spawn_tracker_shutdown_false_does_not_exit() {
+        let channels = Arc::new(EventChannels::new());
+        let metrics = Arc::new(fresh_metrics());
+        let (shutdown_tx, shutdown_rx) = watch::channel(false);
+
+        let handle = spawn_first_seen_tracker(Arc::clone(&channels), Arc::clone(&metrics), shutdown_rx);
+
+        let _ = shutdown_tx.send(false);
+        tokio::time::sleep(Duration::from_millis(20)).await;
+
+        let _ = shutdown_tx.send(true);
+        let _ = tokio::time::timeout(Duration::from_secs(2), handle).await;
+    }
+
+    #[tokio::test]
+    async fn spawn_tracker_unmatched_block_hashes() {
+        let channels = Arc::new(EventChannels::new());
+        let metrics = Arc::new(fresh_metrics());
+        let (shutdown_tx, shutdown_rx) = watch::channel(false);
+
+        let handle = spawn_first_seen_tracker(Arc::clone(&channels), Arc::clone(&metrics), shutdown_rx);
+
+        tokio::time::sleep(Duration::from_millis(20)).await;
+
+        channels.dispatch_new_block(aether_ingestion::subscription::NewBlockEvent {
+            block_number: 1,
+            timestamp: 1_700_000_001,
+            base_fee: 0,
+            gas_limit: 0,
+            tx_hashes: Arc::new(vec![hashn(99), hashn(100)]),
+        });
+
+        tokio::time::sleep(Duration::from_millis(20)).await;
+
+        let _ = shutdown_tx.send(true);
+        handle.await.expect("tracker task should not panic");
+    }
+
+    #[tokio::test]
+    async fn spawn_tracker_empty_pending_tx() {
+        let channels = Arc::new(EventChannels::new());
+        let metrics = Arc::new(fresh_metrics());
+        let (shutdown_tx, shutdown_rx) = watch::channel(false);
+
+        let handle = spawn_first_seen_tracker(Arc::clone(&channels), Arc::clone(&metrics), shutdown_rx);
+
+        tokio::time::sleep(Duration::from_millis(20)).await;
+
+        let _ = shutdown_tx.send(true);
+        handle.await.expect("tracker task should not panic");
+    }
+
+    #[test]
+    fn capacity_one_evicts_immediately() {
+        let metrics = fresh_metrics();
+        let tracker = MempoolFirstSeenTracker::with_capacity(1);
+        let now = 1_700_000_000_000_000_000u64;
+        tracker.record(hashn(1), now, &metrics);
+        assert_eq!(tracker.len(), 1);
+        tracker.record(hashn(2), now + 1, &metrics);
+        assert_eq!(tracker.len(), 1, "capacity-1 tracker should still hold 1 entry");
+        // hash(1) was evicted; observing it should be unmatched
+        tracker.observe_block(&[hashn(1)], now + 100, &metrics);
+        assert_eq!(tracker.len(), 1, "hash(2) should still be present");
+        // Now observe hash(2) to drain
+        tracker.observe_block(&[hashn(2)], now + 200, &metrics);
+        assert_eq!(tracker.len(), 0);
+    }
+
+    #[test]
+    fn multiple_evictions_fill_capacity() {
+        let metrics = fresh_metrics();
+        let tracker = MempoolFirstSeenTracker::with_capacity(2);
+        let now = 1_700_000_000_000_000_000u64;
+        tracker.record(hashn(1), now, &metrics);
+        tracker.record(hashn(2), now + 1, &metrics);
+        tracker.record(hashn(3), now + 2, &metrics);
+        tracker.record(hashn(4), now + 3, &metrics);
+        assert_eq!(tracker.len(), 2);
+        tracker.observe_block(&[hashn(3), hashn(4)], now + 100, &metrics);
+        assert_eq!(tracker.len(), 0);
+    }
+
+    #[test]
+    fn observe_block_with_no_tracked_entries() {
+        let metrics = fresh_metrics();
+        let tracker = MempoolFirstSeenTracker::with_capacity(10);
+        tracker.observe_block(&[hashn(1), hashn(2), hashn(3)], 1_700_000_000_000_000_000, &metrics);
         assert_eq!(tracker.len(), 0);
     }
 

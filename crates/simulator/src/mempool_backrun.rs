@@ -1635,6 +1635,149 @@ mod tests {
     }
 
     #[test]
+    fn revert_selector_empty() {
+        assert_eq!(revert_selector(&[]), [0, 0, 0, 0]);
+    }
+
+    #[test]
+    fn revert_selector_one_byte() {
+        assert_eq!(revert_selector(&[0xaa]), [0xaa, 0, 0, 0]);
+    }
+
+    #[test]
+    fn revert_selector_two_bytes() {
+        assert_eq!(revert_selector(&[0xaa, 0xbb]), [0xaa, 0xbb, 0, 0]);
+    }
+
+    #[test]
+    fn revert_selector_three_bytes() {
+        assert_eq!(revert_selector(&[0xaa, 0xbb, 0xcc]), [0xaa, 0xbb, 0xcc, 0]);
+    }
+
+    #[test]
+    fn revert_selector_exact_four_bytes() {
+        assert_eq!(
+            revert_selector(&[0xaa, 0xbb, 0xcc, 0xdd]),
+            [0xaa, 0xbb, 0xcc, 0xdd]
+        );
+    }
+
+    #[test]
+    fn revert_selector_five_bytes_takes_first_four() {
+        assert_eq!(
+            revert_selector(&[0xaa, 0xbb, 0xcc, 0xdd, 0xee]),
+            [0xaa, 0xbb, 0xcc, 0xdd]
+        );
+    }
+
+    #[test]
+    fn read_post_balance_fallback_when_token_absent() {
+        use revm::state::EvmState;
+        let state = EvmState::default();
+        let key = U256::from(42u64);
+        let fallback = U256::from(999u64);
+        let result = read_post_balance(&state, WETH, key, fallback);
+        assert_eq!(result, fallback);
+    }
+
+    #[test]
+    fn classify_transaction_header_error() {
+        let err: EVMError<String> = EVMError::Header(revm::context::result::InvalidHeader::PrevrandaoNotSet);
+        assert_eq!(classify_transact_err(&err), RejectReason::SimError);
+    }
+
+    #[test]
+    fn victim_with_data_and_value() {
+        let mut state = ForkedState::new_empty(18_000_000, 1_700_000_000, 0);
+        state.insert_account(VICTIM_FROM, U256::from(10u128.pow(18)), Bytes::default());
+        let victim = VictimTx {
+            from: VICTIM_FROM,
+            to: VICTIM_TO,
+            value: U256::from(1000u64),
+            data: vec![0x01, 0x02, 0x03],
+            gas_price: 1_000_000_000,
+            gas_limit: 50_000,
+        };
+        let result = validate_backrun_cache(state, &victim, &default_arb(), &default_params());
+        assert!(!result.accepted);
+    }
+
+    #[test]
+    fn arb_with_non_empty_data() {
+        let state = ForkedState::new_empty(18_000_000, 1_700_000_000, 0);
+        let arb = ArbTx {
+            caller: ARB_CALLER,
+            to: ARB_TO,
+            data: vec![0xaa, 0xbb, 0xcc],
+            gas_limit: 200_000,
+        };
+        let result = validate_backrun_cache(state, &default_victim(), &arb, &default_params());
+        assert!(!result.accepted);
+    }
+
+    #[test]
+    fn backrun_result_fields_on_arb_reverted() {
+        let mut state = ForkedState::new_empty(18_000_000, 1_700_000_000, 0);
+        state.insert_account(ARB_TO, U256::ZERO, vec![0x60, 0x00, 0x60, 0x00, 0xfd].into());
+        let result = validate_backrun_cache(state, &default_victim(), &default_arb(), &default_params());
+        assert_eq!(result.gross_profit_wei, U256::ZERO);
+        assert!(result.arb_gas_used > 0);
+        assert!(result.victim_gas_used > 0);
+        assert!(result.revert_selector.is_some());
+    }
+
+    #[test]
+    fn backrun_skip_victim_with_overrides_and_profit() {
+        let profit_recipient = RECIPIENT;
+        let balance_slot = U256::from(3u64);
+        let profit_value = U256::from(10u128.pow(18));
+        let mut key_input = [0u8; 64];
+        key_input[12..32].copy_from_slice(profit_recipient.as_slice());
+        key_input[32..64].copy_from_slice(&balance_slot.to_be_bytes::<32>());
+        let storage_key = U256::from_be_slice(alloy::primitives::keccak256(key_input).as_slice());
+        let mock_weth_code = {
+            let mut code = Vec::new();
+            code.push(0x7f);
+            code.extend_from_slice(&profit_value.to_be_bytes::<32>());
+            code.push(0x7f);
+            code.extend_from_slice(&storage_key.to_be_bytes::<32>());
+            code.push(0x55);
+            code.push(0x60); code.push(0x00);
+            code.push(0x60); code.push(0x00);
+            code.push(0xf3);
+            code
+        };
+        let arb_code = {
+            let mut code = Vec::new();
+            code.push(0x60); code.push(0x00);
+            code.push(0x60); code.push(0x00);
+            code.push(0x60); code.push(0x00);
+            code.push(0x60); code.push(0x00);
+            code.push(0x60); code.push(0x00);
+            code.push(0x73);
+            code.extend_from_slice(WETH.as_slice());
+            code.push(0x61); code.push(0x60); code.push(0x00);
+            code.push(0xf1);
+            code.push(0x50);
+            code.push(0x00);
+            code
+        };
+        let mut state = ForkedState::new_empty(18_000_000, 1_700_000_000, 0);
+        state.insert_account(WETH, U256::ZERO, mock_weth_code.into());
+        state.insert_account(ARB_TO, U256::ZERO, arb_code.into());
+        let mut params = default_params();
+        params.base_fee = 1;
+        params.skip_victim_with_overrides = Some(vec![(
+            VICTIM_TO,
+            U256::from(8u64),
+            U256::from(1u64) << 112,
+        )]);
+        let result = validate_backrun_cache(state, &default_victim(), &default_arb(), &params);
+        assert!(result.accepted, "should be accepted with profit via overrides");
+        assert!(result.gross_profit_wei > U256::ZERO);
+    }
+
+    #[test]
     fn arb_profit_exactly_covers_gas_is_rejected() {
         let profit_recipient = RECIPIENT;
         let balance_slot = U256::from(3u64);

@@ -278,4 +278,238 @@ mod tests {
         assert_eq!(out[0].pool, pools[1]);
         assert_eq!(out[0].reserve0, U256::from(7u8));
     }
+
+    #[test]
+    fn v2_reserves_result_struct_fields() {
+        let pool = address!("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+        let r = V2ReservesResult {
+            pool,
+            reserve0: U256::from(1_000_000u64),
+            reserve1: U256::from(2_000_000u64),
+        };
+        assert_eq!(r.pool, pool);
+        assert_eq!(r.reserve0, U256::from(1_000_000u64));
+        assert_eq!(r.reserve1, U256::from(2_000_000u64));
+    }
+
+    #[test]
+    fn v2_reserves_result_clone() {
+        let pool = address!("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
+        let r = V2ReservesResult {
+            pool,
+            reserve0: U256::from(100u64),
+            reserve1: U256::from(200u64),
+        };
+        let r2 = r;
+        assert_eq!(r2.pool, pool);
+        assert_eq!(r2.reserve0, U256::from(100u64));
+    }
+
+    #[test]
+    fn multicall3_address_is_canonical() {
+        assert_eq!(
+            MULTICALL3_ADDRESS,
+            address!("cA11bde05977b3631167028862bE2a173976CA11")
+        );
+    }
+
+    #[test]
+    fn all_subcalls_failed_produces_empty_output() {
+        let pools = [
+            address!("0000000000000000000000000000000000000001"),
+            address!("0000000000000000000000000000000000000002"),
+            address!("0000000000000000000000000000000000000003"),
+        ];
+        let synth: Vec<IMulticall3::Result> = pools
+            .iter()
+            .map(|_| IMulticall3::Result {
+                success: false,
+                returnData: vec![].into(),
+            })
+            .collect();
+        let mut out = Vec::new();
+        for (pool, res) in pools.iter().zip(synth.into_iter()) {
+            if !res.success || res.returnData.len() < 96 {
+                continue;
+            }
+            out.push(V2ReservesResult {
+                pool: *pool,
+                reserve0: U256::ZERO,
+                reserve1: U256::ZERO,
+            });
+        }
+        assert!(out.is_empty());
+    }
+
+    #[test]
+    fn subcall_success_but_short_return_data_dropped() {
+        let pools = [address!("0000000000000000000000000000000000000001")];
+        let synth = vec![IMulticall3::Result {
+            success: true,
+            returnData: vec![0u8; 32].into(), // Only 32 bytes, need 96
+        }];
+        let mut out = Vec::new();
+        for (pool, res) in pools.iter().zip(synth.into_iter()) {
+            if !res.success || res.returnData.len() < 96 {
+                continue;
+            }
+            let r0 = U256::from_be_slice(&res.returnData[0..32]);
+            let r1 = U256::from_be_slice(&res.returnData[32..64]);
+            out.push(V2ReservesResult {
+                pool: *pool,
+                reserve0: r0,
+                reserve1: r1,
+            });
+        }
+        assert!(out.is_empty(), "short return data should be dropped");
+    }
+
+    #[test]
+    fn both_reserves_zero_pool_dropped() {
+        let pools = [address!("0000000000000000000000000000000000000001")];
+        let synth = vec![IMulticall3::Result {
+            success: true,
+            returnData: {
+                let mut b = Vec::with_capacity(96);
+                b.extend_from_slice(&U256::ZERO.to_be_bytes::<32>());
+                b.extend_from_slice(&U256::ZERO.to_be_bytes::<32>());
+                b.extend_from_slice(&U256::ZERO.to_be_bytes::<32>());
+                b
+            }
+            .into(),
+        }];
+        let mut out = Vec::new();
+        for (pool, res) in pools.iter().zip(synth.into_iter()) {
+            if !res.success || res.returnData.len() < 96 {
+                continue;
+            }
+            let r0 = U256::from_be_slice(&res.returnData[0..32]);
+            let r1 = U256::from_be_slice(&res.returnData[32..64]);
+            if r0 == U256::ZERO && r1 == U256::ZERO {
+                continue;
+            }
+            out.push(V2ReservesResult {
+                pool: *pool,
+                reserve0: r0,
+                reserve1: r1,
+            });
+        }
+        assert!(out.is_empty(), "zero-reserve pool should be dropped");
+    }
+
+    #[test]
+    fn mixed_success_and_failure_all_filters() {
+        let pools = [
+            address!("0000000000000000000000000000000000000001"),
+            address!("0000000000000000000000000000000000000002"),
+            address!("0000000000000000000000000000000000000003"),
+            address!("0000000000000000000000000000000000000004"),
+        ];
+        let one = U256::from(1_000_000_000_000_000_000u128);
+        let synth = vec![
+            IMulticall3::Result {
+                success: true,
+                returnData: {
+                    let mut b = Vec::with_capacity(96);
+                    b.extend_from_slice(&one.to_be_bytes::<32>());
+                    b.extend_from_slice(&(one * U256::from(2u8)).to_be_bytes::<32>());
+                    b.extend_from_slice(&U256::ZERO.to_be_bytes::<32>());
+                    b
+                }.into(),
+            },
+            IMulticall3::Result {
+                success: false,
+                returnData: vec![].into(),
+            },
+            IMulticall3::Result {
+                success: true,
+                returnData: vec![0u8; 10].into(), // too short
+            },
+            IMulticall3::Result {
+                success: true,
+                returnData: {
+                    let mut b = Vec::with_capacity(96);
+                    b.extend_from_slice(&U256::from(500u64).to_be_bytes::<32>());
+                    b.extend_from_slice(&U256::from(600u64).to_be_bytes::<32>());
+                    b.extend_from_slice(&U256::ZERO.to_be_bytes::<32>());
+                    b
+                }.into(),
+            },
+        ];
+        let mut out = Vec::new();
+        for (pool, res) in pools.iter().zip(synth.into_iter()) {
+            if !res.success || res.returnData.len() < 96 {
+                continue;
+            }
+            let r0 = U256::from_be_slice(&res.returnData[0..32]);
+            let r1 = U256::from_be_slice(&res.returnData[32..64]);
+            if r0 == U256::ZERO && r1 == U256::ZERO {
+                continue;
+            }
+            out.push(V2ReservesResult {
+                pool: *pool,
+                reserve0: r0,
+                reserve1: r1,
+            });
+        }
+        assert_eq!(out.len(), 2);
+        assert_eq!(out[0].pool, pools[0]);
+        assert_eq!(out[0].reserve0, one);
+        assert_eq!(out[1].pool, pools[3]);
+        assert_eq!(out[1].reserve0, U256::from(500u64));
+    }
+
+    #[test]
+    fn getreserves_return_data_decode_round_trip() {
+        let _pool = address!("0000000000000000000000000000000000000042");
+        let r0 = U256::from(999_999u64);
+        let r1 = U256::from(1_234_567u64);
+        let return_data = {
+            let mut b = Vec::with_capacity(96);
+            b.extend_from_slice(&r0.to_be_bytes::<32>());
+            b.extend_from_slice(&r1.to_be_bytes::<32>());
+            b.extend_from_slice(&U256::from(42u64).to_be_bytes::<32>());
+            b
+        };
+        assert_eq!(return_data.len(), 96);
+        let decoded_r0 = U256::from_be_slice(&return_data[0..32]);
+        let decoded_r1 = U256::from_be_slice(&return_data[32..64]);
+        assert_eq!(decoded_r0, r0);
+        assert_eq!(decoded_r1, r1);
+    }
+
+    #[test]
+    fn single_pool_batch_filter() {
+        let pools = [address!("0000000000000000000000000000000000000001")];
+        let one = U256::from(42u64);
+        let synth = vec![IMulticall3::Result {
+            success: true,
+            returnData: {
+                let mut b = Vec::with_capacity(96);
+                b.extend_from_slice(&one.to_be_bytes::<32>());
+                b.extend_from_slice(&(one * U256::from(3u8)).to_be_bytes::<32>());
+                b.extend_from_slice(&U256::ZERO.to_be_bytes::<32>());
+                b
+            }.into(),
+        }];
+        let mut out = Vec::new();
+        for (pool, res) in pools.iter().zip(synth.into_iter()) {
+            if !res.success || res.returnData.len() < 96 {
+                continue;
+            }
+            let r0 = U256::from_be_slice(&res.returnData[0..32]);
+            let r1 = U256::from_be_slice(&res.returnData[32..64]);
+            if r0 == U256::ZERO && r1 == U256::ZERO {
+                continue;
+            }
+            out.push(V2ReservesResult {
+                pool: *pool,
+                reserve0: r0,
+                reserve1: r1,
+            });
+        }
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].reserve0, one);
+        assert_eq!(out[0].reserve1, one * U256::from(3u8));
+    }
 }

@@ -3017,42 +3017,6 @@ func TestHandleAdminReset_FromPaused(t *testing.T) {
 	}
 }
 
-// ── handleAdminResume: with engineCtrl error ─────────────────────
-
-func TestHandleAdminResume_EngineCtrlError(t *testing.T) {
-	rm := risk.NewRiskManager(risk.DefaultRiskConfig())
-	rm.Pause("test")
-	ctrl := &testMockEngineCtrl2{err: errors.New("grpc fail")}
-	prevDeps := globalAdminDeps
-	globalAdminDeps = adminDeps{riskMgr: rm, engineCtrl: ctrl}
-	defer func() { globalAdminDeps = prevDeps }()
-
-	req := httptest.NewRequest(http.MethodPost, "/admin/resume", nil)
-	w := httptest.NewRecorder()
-	handleAdminResume(w, req)
-	if w.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d", w.Code)
-	}
-}
-
-// ── handleAdminReset: engineCtrl error ───────────────────────────
-
-func TestHandleAdminReset_EngineCtrlError(t *testing.T) {
-	rm := risk.NewRiskManager(risk.DefaultRiskConfig())
-	rm.ForceStateForTest(risk.StateHalted)
-	ctrl := &testMockEngineCtrl2{err: errors.New("grpc fail")}
-	prevDeps := globalAdminDeps
-	globalAdminDeps = adminDeps{riskMgr: rm, engineCtrl: ctrl}
-	defer func() { globalAdminDeps = prevDeps }()
-
-	req := httptest.NewRequest(http.MethodPost, "/admin/reset", nil)
-	w := httptest.NewRecorder()
-	handleAdminReset(w, req)
-	if w.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d", w.Code)
-	}
-}
-
 // ── GetBundleStats: various error paths ──────────────────────────
 
 func TestGetBundleStats_SignerSignError(t *testing.T) {

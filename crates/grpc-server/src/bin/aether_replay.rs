@@ -2222,7 +2222,7 @@ mod tests {
 
     #[test]
     fn gate_cycles_empty_input() {
-        let pools = default_pool_set();
+        let _pools = default_pool_set();
         const WETH: Address = address!("C02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2");
         const USDC: Address = address!("A0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48");
         let pool = LoadedPool {
@@ -2242,7 +2242,7 @@ mod tests {
 
     #[test]
     fn print_cycles_empty_input() {
-        let pools = default_pool_set();
+        let _pools = default_pool_set();
         let mut ti = TokenIndex::new();
         let _ = ti.get_or_insert(address!("C02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2"));
         let cycles: Vec<DetectedCycle> = vec![];
@@ -2524,7 +2524,7 @@ mod tests {
         let r0 = U256::from(20_000_000_000u64);
         let r1 = U256::from(10_000_000_000_000_000_000u128);
         let states = vec![(0usize, PoolState::V2 { r0, r1 })];
-        let (graph, token_index) = build_graph(&pools, &states);
+        let (graph, _token_index) = build_graph(&pools, &states);
 
         let t0 = ti.get_index(&WETH).unwrap();
         let t1 = ti.get_index(&USDC).unwrap();
@@ -2536,5 +2536,527 @@ mod tests {
         let est = estimate_opp(&cycle, &graph, base_fee_wei, 1.0);
         assert!(est.gas_cost_eth > 0.0);
         assert!(est.base_fee_gwei > 200.0);
+    }
+
+    // ── build_graph: V3 pool states ───────────────────────────────────
+
+    #[test]
+    fn build_graph_with_v3_pool_state() {
+        const WETH: Address = address!("C02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2");
+        const USDC: Address = address!("A0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48");
+
+        let pool = LoadedPool {
+            address: address!("88e6A0c2dDD26FEEb64F039a2c41296FcB3f5640"),
+            token0: USDC,
+            token1: WETH,
+            protocol: ProtocolType::UniswapV3,
+            fee_bps: 5,
+        };
+        // sqrtPriceX96 ≈ 174070643065208788086831 (USDC/WETH ~2000)
+        let sqrt_price_x96 = U256::from(174_070_643_065_208_788_086_831u128);
+        let liquidity = 1_000_000_000_000u128; // 1T liquidity
+        let states = vec![(0usize, PoolState::V3 { sqrt_price_x96, liquidity })];
+        let (graph, token_index) = build_graph(&[pool], &states);
+        assert!(graph.num_edges() > 0);
+        assert!(token_index.len() >= 2);
+    }
+
+    #[test]
+    fn build_graph_with_v3_zero_liquidity_skipped() {
+        const WETH: Address = address!("C02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2");
+        const USDC: Address = address!("A0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48");
+
+        let pool = LoadedPool {
+            address: address!("88e6A0c2dDD26FEEb64F039a2c41296FcB3f5640"),
+            token0: USDC,
+            token1: WETH,
+            protocol: ProtocolType::UniswapV3,
+            fee_bps: 5,
+        };
+        let sqrt_price_x96 = U256::from(174_070_643_065_208_788_086_831u128);
+        let liquidity = 0u128;
+        let states = vec![(0usize, PoolState::V3 { sqrt_price_x96, liquidity })];
+        let (graph, _token_index) = build_graph(&[pool], &states);
+        // Zero liquidity → virtual_reserves returns None → edge skipped
+        assert_eq!(graph.num_edges(), 0);
+    }
+
+    #[test]
+    fn build_graph_mixed_v2_and_v3() {
+        const WETH: Address = address!("C02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2");
+        const USDC: Address = address!("A0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48");
+
+        let pools = vec![
+            LoadedPool {
+                address: address!("B4e16d0168e52d35CaCD2c6185b44281Ec28C9Dc"),
+                token0: USDC,
+                token1: WETH,
+                protocol: ProtocolType::UniswapV2,
+                fee_bps: 30,
+            },
+            LoadedPool {
+                address: address!("88e6A0c2dDD26FEEb64F039a2c41296FcB3f5640"),
+                token0: USDC,
+                token1: WETH,
+                protocol: ProtocolType::UniswapV3,
+                fee_bps: 5,
+            },
+        ];
+        let states = vec![
+            (0usize, PoolState::V2 {
+                r0: U256::from(20_000_000_000u64),
+                r1: U256::from(10_000_000_000_000_000_000u128),
+            }),
+            (1usize, PoolState::V3 {
+                sqrt_price_x96: U256::from(174_070_643_065_208_788_086_831u128),
+                liquidity: 1_000_000_000_000u128,
+            }),
+        ];
+        let (graph, token_index) = build_graph(&pools, &states);
+        assert!(graph.num_edges() > 0);
+        assert_eq!(token_index.len(), 2);
+    }
+
+    #[test]
+    fn build_graph_both_reserves_zero_skipped() {
+        const WETH: Address = address!("C02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2");
+        const USDC: Address = address!("A0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48");
+
+        let pool = LoadedPool {
+            address: address!("B4e16d0168e52d35CaCD2c6185b44281Ec28C9Dc"),
+            token0: USDC,
+            token1: WETH,
+            protocol: ProtocolType::UniswapV2,
+            fee_bps: 30,
+        };
+        let states = vec![(0usize, PoolState::V2 { r0: U256::ZERO, r1: U256::ZERO })];
+        let (graph, _token_index) = build_graph(&[pool], &states);
+        assert_eq!(graph.num_edges(), 0);
+    }
+
+    #[test]
+    fn build_graph_with_three_token_triangle() {
+        const WETH: Address = address!("C02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2");
+        const USDC: Address = address!("A0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48");
+        const USDT: Address = address!("dAC17F958D2ee523a2206206994597C13D831ec7");
+
+        let pools = vec![
+            LoadedPool {
+                address: address!("B4e16d0168e52d35CaCD2c6185b44281Ec28C9Dc"),
+                token0: USDC,
+                token1: WETH,
+                protocol: ProtocolType::UniswapV2,
+                fee_bps: 30,
+            },
+            LoadedPool {
+                address: address!("0d4a11d5EEaaC28EC3F61d100daF4d40471f1852"),
+                token0: WETH,
+                token1: USDT,
+                protocol: ProtocolType::UniswapV2,
+                fee_bps: 30,
+            },
+            LoadedPool {
+                address: address!("3041CbD36888bECc7bbCBc0045E3B1f144466f5f"),
+                token0: USDC,
+                token1: USDT,
+                protocol: ProtocolType::UniswapV2,
+                fee_bps: 30,
+            },
+        ];
+        let states = vec![
+            (0usize, PoolState::V2 { r0: U256::from(20_000_000_000u64), r1: U256::from(10_000_000_000_000_000_000u128) }),
+            (1usize, PoolState::V2 { r0: U256::from(10_000_000_000_000_000_000u128), r1: U256::from(10_000_000_000u64) }),
+            (2usize, PoolState::V2 { r0: U256::from(20_000_000_000u64), r1: U256::from(10_000_000_000u64) }),
+        ];
+        let (graph, token_index) = build_graph(&pools, &states);
+        assert_eq!(token_index.len(), 3);
+        // Each V2 pool adds 2 directed edges → 6 total
+        assert_eq!(graph.num_edges(), 6);
+    }
+
+    // ── build_graph: WETH vertex and min-liquidity ─────────────────────
+
+    #[test]
+    fn build_graph_sets_weth_vertex_for_weth_token0() {
+        const WETH: Address = address!("C02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2");
+        const USDC: Address = address!("A0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48");
+
+        let pool = LoadedPool {
+            address: address!("0d4a11d5EEaaC28EC3F61d100daF4d40471f1852"),
+            token0: WETH,
+            token1: USDC,
+            protocol: ProtocolType::UniswapV2,
+            fee_bps: 30,
+        };
+        let states = vec![(0usize, PoolState::V2 {
+            r0: U256::from(10_000_000_000_000_000_000u128),
+            r1: U256::from(20_000_000_000u64),
+        })];
+        let (graph, _ti) = build_graph(&[pool], &states);
+        // WETH vertex is set — edges should have been created
+        assert!(graph.num_edges() > 0);
+    }
+
+    // ── build_graph: partial state (some pools missing) ────────────────
+
+    #[test]
+    fn build_graph_partial_states_only_indexed_pools() {
+        const WETH: Address = address!("C02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2");
+        const USDC: Address = address!("A0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48");
+        const USDT: Address = address!("dAC17F958D2ee523a2206206994597C13D831ec7");
+
+        let pools = vec![
+            LoadedPool { address: address!("B4e16d0168e52d35CaCD2c6185b44281Ec28C9Dc"), token0: USDC, token1: WETH, protocol: ProtocolType::UniswapV2, fee_bps: 30 },
+            LoadedPool { address: address!("0d4a11d5EEaaC28EC3F61d100daF4d40471f1852"), token0: WETH, token1: USDT, protocol: ProtocolType::UniswapV2, fee_bps: 30 },
+            LoadedPool { address: address!("3041CbD36888bECc7bbCBc0045E3B1f144466f5f"), token0: USDC, token1: USDT, protocol: ProtocolType::UniswapV2, fee_bps: 30 },
+        ];
+        // Only pool 0 has state
+        let states = vec![(0usize, PoolState::V2 { r0: U256::from(20_000_000_000u64), r1: U256::from(10_000_000_000_000_000_000u128) })];
+        let (graph, token_index) = build_graph(&pools, &states);
+        // Only 2 tokens from pool 0 (USDC + WETH), 2 edges
+        assert_eq!(token_index.len(), 2);
+        assert_eq!(graph.num_edges(), 2);
+    }
+
+    // ── gate_cycles: with real cycles from detector ────────────────────
+
+    #[test]
+    fn gate_cycles_passes_profitable_cycles() {
+        const WETH: Address = address!("C02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2");
+        const USDC: Address = address!("A0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48");
+
+        let pool = LoadedPool {
+            address: address!("B4e16d0168e52d35CaCD2c6185b44281Ec28C9Dc"),
+            token0: USDC,
+            token1: WETH,
+            protocol: ProtocolType::UniswapV2,
+            fee_bps: 30,
+        };
+        let states = vec![(0usize, PoolState::V2 {
+            r0: U256::from(20_000_000_000u64),
+            r1: U256::from(10_000_000_000_000_000_000u128),
+        })];
+        let (graph, _token_index) = build_graph(&[pool], &states);
+
+        let detector = BellmanFord::new(4, 5_000_000);
+        let raw_cycles = detector.detect_negative_cycles(&graph);
+        let gated = gate_cycles(raw_cycles, &graph);
+        // gate_cycles should not panic; result may be empty or non-empty
+        // depending on graph structure
+        let _ = gated;
+    }
+
+    #[test]
+    fn gate_cycles_returns_empty_for_balanced_graph() {
+        const WETH: Address = address!("C02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2");
+        const USDC: Address = address!("A0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48");
+
+        let pool = LoadedPool {
+            address: address!("B4e16d0168e52d35CaCD2c6185b44281Ec28C9Dc"),
+            token0: USDC,
+            token1: WETH,
+            protocol: ProtocolType::UniswapV2,
+            fee_bps: 30,
+        };
+        let states = vec![(0usize, PoolState::V2 {
+            r0: U256::from(1_000_000_000_000_000_000_000u128),
+            r1: U256::from(1_000_000_000_000_000_000_000u128),
+        })];
+        let (graph, _token_index) = build_graph(&[pool], &states);
+        // A self-loop on balanced reserves won't be profitable
+        let detector = BellmanFord::new(2, 5_000_000);
+        let raw_cycles = detector.detect_negative_cycles(&graph);
+        let gated = gate_cycles(raw_cycles, &graph);
+        // No profitable cycles expected on balanced pool
+        let profitable: Vec<_> = gated.into_iter().filter(|c| c.is_profitable()).collect();
+        assert!(profitable.is_empty());
+    }
+
+    // ── detect_cycles via BellmanFord on constructed graphs ────────────
+
+    #[test]
+    fn detect_cycles_on_empty_graph() {
+        let graph = PriceGraph::new(0);
+        let detector = BellmanFord::new(4, 5_000_000);
+        let cycles = detector.detect_negative_cycles(&graph);
+        assert!(cycles.is_empty());
+    }
+
+    #[test]
+    fn detect_cycles_on_single_edge_graph() {
+        const WETH: Address = address!("C02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2");
+        const USDC: Address = address!("A0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48");
+
+        let pool = LoadedPool {
+            address: address!("B4e16d0168e52d35CaCD2c6185b44281Ec28C9Dc"),
+            token0: USDC,
+            token1: WETH,
+            protocol: ProtocolType::UniswapV2,
+            fee_bps: 30,
+        };
+        let states = vec![(0usize, PoolState::V2 {
+            r0: U256::from(20_000_000_000u64),
+            r1: U256::from(10_000_000_000_000_000_000u128),
+        })];
+        let (graph, _ti) = build_graph(&[pool], &states);
+        let detector = BellmanFord::new(4, 5_000_000);
+        let cycles = detector.detect_negative_cycles(&graph);
+        // With only one pool's bidirectional edges, we may or may not get
+        // a self-loop cycle. The important thing is no panic.
+        let _ = cycles;
+    }
+
+    #[test]
+    fn detect_cycles_max_hops_1() {
+        const WETH: Address = address!("C02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2");
+        const USDC: Address = address!("A0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48");
+
+        let pool = LoadedPool {
+            address: address!("B4e16d0168e52d35CaCD2c6185b44281Ec28C9Dc"),
+            token0: USDC,
+            token1: WETH,
+            protocol: ProtocolType::UniswapV2,
+            fee_bps: 30,
+        };
+        let states = vec![(0usize, PoolState::V2 {
+            r0: U256::from(20_000_000_000u64),
+            r1: U256::from(10_000_000_000_000_000_000u128),
+        })];
+        let (graph, _ti) = build_graph(&[pool], &states);
+        let detector = BellmanFord::new(1, 5_000_000);
+        let cycles = detector.detect_negative_cycles(&graph);
+        // With max_hops=1, no cycle of length > 1 can be found
+        assert!(cycles.is_empty());
+    }
+
+    // ── print_cycles: more edge cases ──────────────────────────────────
+
+    #[test]
+    fn print_cycles_top_larger_than_cycle_count() {
+        let mut ti = TokenIndex::new();
+        let t0 = ti.get_or_insert(address!("C02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2"));
+        let t1 = ti.get_or_insert(address!("A0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"));
+        let cycles = vec![
+            DetectedCycle { path: vec![t0, t1, t0], total_weight: -0.05 },
+        ];
+        print_cycles(&cycles, &ti, 100);
+    }
+
+    #[test]
+    fn print_cycles_only_unprofitable() {
+        let mut ti = TokenIndex::new();
+        let t0 = ti.get_or_insert(address!("C02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2"));
+        let t1 = ti.get_or_insert(address!("A0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"));
+        let cycles = vec![
+            DetectedCycle { path: vec![t0, t1, t0], total_weight: 0.1 },
+            DetectedCycle { path: vec![t0, t1, t0], total_weight: 0.2 },
+        ];
+        print_cycles(&cycles, &ti, 5);
+    }
+
+    #[test]
+    fn print_cycles_sorted_by_total_weight() {
+        let mut ti = TokenIndex::new();
+        let t0 = ti.get_or_insert(address!("C02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2"));
+        let t1 = ti.get_or_insert(address!("A0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"));
+        let t2 = ti.get_or_insert(address!("dAC17F958D2ee523a2206206994597C13D831ec7"));
+        let cycles = vec![
+            DetectedCycle { path: vec![t0, t1, t0], total_weight: -0.01 },
+            DetectedCycle { path: vec![t0, t2, t0], total_weight: -0.10 },
+            DetectedCycle { path: vec![t0, t1, t2, t0], total_weight: -0.05 },
+        ];
+        print_cycles(&cycles, &ti, 2);
+    }
+
+    // ── estimate_opp: more scenarios ───────────────────────────────────
+
+    #[test]
+    fn estimate_opp_with_large_input() {
+        const WETH: Address = address!("C02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2");
+        const USDC: Address = address!("A0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48");
+
+        let mut ti = TokenIndex::new();
+        let _ = ti.get_or_insert(WETH);
+        let _ = ti.get_or_insert(USDC);
+
+        let pools = default_pool_set();
+        let r0 = U256::from(20_000_000_000u64);
+        let r1 = U256::from(10_000_000_000_000_000_000u128);
+        let states = vec![(0usize, PoolState::V2 { r0, r1 })];
+        let (graph, _token_index) = build_graph(&pools, &states);
+
+        let t0 = ti.get_index(&WETH).unwrap();
+        let t1 = ti.get_index(&USDC).unwrap();
+        let cycle = DetectedCycle { path: vec![t0, t1, t0], total_weight: -0.05 };
+        let base_fee_wei = 30_000_000_000u128;
+        let est = estimate_opp(&cycle, &graph, base_fee_wei, 50.0);
+        assert!(est.gross_profit_eth > 0.0);
+        assert!(est.gas_cost_eth > 0.0);
+        // With very large input, slippage reduces profit factor
+    }
+
+    #[test]
+    fn estimate_opp_zero_base_fee() {
+        const WETH: Address = address!("C02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2");
+        const USDC: Address = address!("A0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48");
+
+        let mut ti = TokenIndex::new();
+        let _ = ti.get_or_insert(WETH);
+        let _ = ti.get_or_insert(USDC);
+
+        let pools = default_pool_set();
+        let r0 = U256::from(20_000_000_000u64);
+        let r1 = U256::from(10_000_000_000_000_000_000u128);
+        let states = vec![(0usize, PoolState::V2 { r0, r1 })];
+        let (graph, _token_index) = build_graph(&pools, &states);
+
+        let t0 = ti.get_index(&WETH).unwrap();
+        let t1 = ti.get_index(&USDC).unwrap();
+        let cycle = DetectedCycle { path: vec![t0, t1, t0], total_weight: -0.05 };
+        let est = estimate_opp(&cycle, &graph, 0, 1.0);
+        assert_eq!(est.base_fee_gwei, 0.0);
+        // Gas cost with zero base fee is still positive (priority fee)
+        assert!(est.gas_units > 0);
+    }
+
+    // ── protocols_along_cycle: more edge cases ─────────────────────────
+
+    #[test]
+    fn protocols_along_cycle_two_hops() {
+        const WETH: Address = address!("C02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2");
+        const USDC: Address = address!("A0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48");
+        const USDT: Address = address!("dAC17F958D2ee523a2206206994597C13D831ec7");
+
+        let mut ti = TokenIndex::new();
+        let t0 = ti.get_or_insert(WETH);
+        let t1 = ti.get_or_insert(USDC);
+        let t2 = ti.get_or_insert(USDT);
+
+        let mut graph = PriceGraph::new(ti.len());
+        graph.resize(ti.len());
+        let pid1 = PoolId { address: address!("B4e16d0168e52d35CaCD2c6185b44281Ec28C9Dc"), protocol: ProtocolType::UniswapV2 };
+        let pid2 = PoolId { address: address!("0d4a11d5EEaaC28EC3F61d100daF4d40471f1852"), protocol: ProtocolType::SushiSwap };
+        graph.add_edge(t0, t1, 0.5, pid1, pid1.address, ProtocolType::UniswapV2, U256::ZERO);
+        graph.add_edge(t1, t2, 0.3, pid2, pid2.address, ProtocolType::SushiSwap, U256::ZERO);
+
+        let cycle = DetectedCycle { path: vec![t0, t1, t2], total_weight: -0.5 };
+        let protocols = protocols_along_cycle(&cycle, &graph);
+        assert_eq!(protocols.len(), 2);
+        assert!(matches!(protocols[0], ProtocolType::UniswapV2));
+        assert!(matches!(protocols[1], ProtocolType::SushiSwap));
+    }
+
+    #[test]
+    fn protocols_along_cycle_empty_path() {
+        let _ti = TokenIndex::new();
+        let mut graph = PriceGraph::new(0);
+        graph.resize(0);
+        let cycle = DetectedCycle { path: vec![], total_weight: 0.0 };
+        let protocols = protocols_along_cycle(&cycle, &graph);
+        assert!(protocols.is_empty());
+    }
+
+    // ── truncate_err: unicode and mixed ────────────────────────────────
+
+    #[test]
+    fn truncate_err_unicode_chars() {
+        let s = "hello 🌍 world"; // 14 chars
+        let out = truncate_err(s);
+        assert_eq!(out, s);
+    }
+
+    #[test]
+    fn truncate_err_long_unicode() {
+        let s = "🌍".repeat(100); // each emoji is multi-byte
+        let out = truncate_err(&s);
+        assert!(out.chars().count() <= 241);
+    }
+
+    // ── u256_to_f64: edge cases ───────────────────────────────────────
+
+    #[test]
+    fn u256_to_f64_very_large_value() {
+        // Values above 2^53 lose precision but shouldn't panic
+        let v = U256::from(1u128) << 100;
+        let f = u256_to_f64(v);
+        assert!(f > 0.0);
+        assert!(f.is_finite());
+    }
+
+    #[test]
+    fn u256_to_f64_max_value() {
+        let v = U256::MAX;
+        let f = u256_to_f64(v);
+        assert!(f.is_infinite() || f > 0.0);
+    }
+
+    #[test]
+    fn u256_to_f64_one_wei() {
+        assert_eq!(u256_to_f64(U256::from(1u64)), 1.0);
+    }
+
+    // ── build_graph: pool count consistency ────────────────────────────
+
+    #[test]
+    fn build_graph_no_pools_no_edges() {
+        let pools: Vec<LoadedPool> = vec![];
+        let states: Vec<(usize, PoolState)> = vec![];
+        let (graph, token_index) = build_graph(&pools, &states);
+        assert_eq!(graph.num_edges(), 0);
+        assert_eq!(token_index.len(), 0);
+    }
+
+    #[test]
+    fn build_graph_single_pool_four_edges() {
+        const WETH: Address = address!("C02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2");
+        const USDC: Address = address!("A0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48");
+
+        let pool = LoadedPool {
+            address: address!("B4e16d0168e52d35CaCD2c6185b44281Ec28C9Dc"),
+            token0: USDC,
+            token1: WETH,
+            protocol: ProtocolType::UniswapV2,
+            fee_bps: 30,
+        };
+        let r0 = U256::from(20_000_000_000u64);
+        let r1 = U256::from(10_000_000_000_000_000_000u128);
+        let states = vec![(0usize, PoolState::V2 { r0, r1 })];
+        let (graph, token_index) = build_graph(&[pool], &states);
+        assert_eq!(token_index.len(), 2);
+        // V2 pool adds 2 edges (both directions), but add_edge + update for
+        // each direction = total of edges as reported by graph
+        assert!(graph.num_edges() >= 2);
+    }
+
+    // ── Default Args ───────────────────────────────────────────────────
+
+    #[test]
+    fn default_args_values() {
+        let args = Args {
+            block: 0,
+            blocks_file: None,
+            no_seed_state: false,
+            pools: None,
+            rpc_url: None,
+            max_hops: 4,
+            max_time_us: 5_000_000,
+            top: 5,
+            full_block: false,
+            anvil_port: 8546,
+            anvil_attach: false,
+            csv: None,
+            sim_input_weth: 1.0,
+            sim_on_chain: false,
+            executor_artifact: PathBuf::from("contracts/out/AetherExecutor.sol/AetherExecutor.json"),
+            tip_bps: 9000,
+            no_optimizer: false,
+        };
+        assert_eq!(args.block, 0);
+        assert_eq!(args.max_hops, 4);
+        assert_eq!(args.top, 5);
+        assert_eq!(args.tip_bps, 9000);
+        assert!(!args.full_block);
+        assert!(!args.no_optimizer);
+        assert!(!args.sim_on_chain);
     }
 }

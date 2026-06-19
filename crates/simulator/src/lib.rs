@@ -1135,4 +1135,246 @@ mod tests {
         assert_eq!(state.base_fee, 25_000_000_000);
         assert_eq!(state.chain_id, 1);
     }
+
+    #[test]
+    fn test_simulate_with_profit_revert() {
+        let caller = address!("a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1");
+        let contract = address!("b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2");
+        let mut state = ForkedState::new_empty(18_000_000, 1_700_000_000, 0);
+        state.insert_account_balance(caller, U256::from(10_000_000_000_000_000_000u128));
+        state.insert_account(
+            contract,
+            U256::ZERO,
+            alloy::primitives::Bytes::from(vec![0x60, 0x00, 0x60, 0x00, 0xfd]),
+        );
+        let config = SimConfig {
+            gas_limit: 100_000,
+            chain_id: 1,
+            caller,
+            value: U256::ZERO,
+        };
+        let sim = EvmSimulator::new(config);
+        let result = sim.simulate_with_profit(&state, contract, vec![], Address::ZERO, caller);
+        assert!(!result.success);
+        assert!(result.revert_reason.is_some());
+        assert_eq!(result.profit_wei, U256::ZERO);
+    }
+
+    #[test]
+    fn test_simulate_with_profit_halt() {
+        let caller = address!("c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3");
+        let contract = address!("d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4");
+        let mut state = ForkedState::new_empty(18_000_000, 1_700_000_000, 0);
+        state.insert_account_balance(caller, U256::from(10_000_000_000_000_000_000u128));
+        state.insert_account(
+            contract,
+            U256::ZERO,
+            alloy::primitives::Bytes::from(vec![0xfe]),
+        );
+        let config = SimConfig {
+            gas_limit: 100_000,
+            chain_id: 1,
+            caller,
+            value: U256::ZERO,
+        };
+        let sim = EvmSimulator::new(config);
+        let result = sim.simulate_with_profit(&state, contract, vec![], Address::ZERO, caller);
+        assert!(!result.success);
+        assert!(result.revert_reason.is_some());
+        assert_eq!(result.profit_wei, U256::ZERO);
+    }
+
+    #[test]
+    fn test_simulate_halt_populates_reason() {
+        let caller = address!("e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5");
+        let contract = address!("f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6");
+        let mut state = ForkedState::new_empty(18_000_000, 1_700_000_000, 0);
+        state.insert_account_balance(caller, U256::from(10_000_000_000_000_000_000u128));
+        state.insert_account(
+            contract,
+            U256::ZERO,
+            alloy::primitives::Bytes::from(vec![0xfe]),
+        );
+        let config = SimConfig {
+            gas_limit: 100_000,
+            chain_id: 1,
+            caller,
+            value: U256::ZERO,
+        };
+        let sim = EvmSimulator::new(config);
+        let result = sim.simulate(&state, contract, vec![]);
+        assert!(!result.success);
+        assert!(result.revert_reason.is_some());
+        let reason = result.revert_reason.unwrap();
+        assert!(reason.contains("Halt") || reason.contains("Invalid"), "halt reason should mention Invalid or Halt: {reason}");
+    }
+
+    #[test]
+    fn test_simulate_custom_chain_id() {
+        let caller = address!("1111111111111111111111111111111111111111");
+        let state = ForkedState::new_empty(18_000_000, 1_700_000_000, 0);
+        let config = SimConfig {
+            gas_limit: 100_000,
+            chain_id: 42,
+            caller,
+            value: U256::ZERO,
+        };
+        let sim = EvmSimulator::new(config);
+        let result = sim.simulate(&state, address!("2222222222222222222222222222222222222222"), vec![]);
+        assert!(result.success);
+    }
+
+    #[test]
+    fn test_forked_state_insert_account_with_nonce_and_balance() {
+        let mut state = ForkedState::new_empty(18_000_000, 1_700_000_000, 0);
+        let addr = address!("3333333333333333333333333333333333333333");
+        let balance = U256::from(50u128 * 10u128.pow(18));
+        state.insert_account_with_nonce(addr, balance, 10);
+        let info = state.get_account(&addr).expect("account should exist");
+        assert_eq!(info.balance, balance);
+        assert_eq!(info.nonce, 10);
+    }
+
+    #[test]
+    fn test_forked_state_insert_storage_and_read() {
+        let mut state = ForkedState::new_empty(18_000_000, 1_700_000_000, 0);
+        let addr = address!("4444444444444444444444444444444444444444");
+        state.insert_account_balance(addr, U256::ZERO);
+        let slot = U256::from(42u64);
+        let value = U256::from(999u64);
+        state.insert_storage(addr, slot, value);
+        let db_account = state.db.cache.accounts.get(&addr).unwrap();
+        assert_eq!(*db_account.storage.get(&slot).unwrap(), value);
+    }
+
+    #[test]
+    fn test_simulate_empty_calldata_to_eoa() {
+        let caller = address!("5555555555555555555555555555555555555555");
+        let target = address!("6666666666666666666666666666666666666666");
+        let mut state = ForkedState::new_empty(18_000_000, 1_700_000_000, 0);
+        state.insert_account_balance(caller, U256::from(10_000_000_000_000_000_000u128));
+        let sim = EvmSimulator::with_defaults();
+        let result = sim.simulate(&state, target, vec![]);
+        assert!(result.success);
+        assert!(result.gas_used > 0);
+        assert_eq!(result.profit_wei, U256::ZERO);
+    }
+
+    #[test]
+    fn test_simulate_multiple_different_contracts() {
+        let caller = address!("7777777777777777777777777777777777777777");
+        let mut state = ForkedState::new_empty(18_000_000, 1_700_000_000, 0);
+        state.insert_account_balance(caller, U256::from(10_000_000_000_000_000_000u128));
+
+        let contract_return = address!("8888888888888888888888888888888888888888");
+        state.insert_account(
+            contract_return,
+            U256::ZERO,
+            alloy::primitives::Bytes::from(vec![0x60, 0x00, 0x60, 0x00, 0xf3]),
+        );
+        let contract_revert = address!("9999999999999999999999999999999999999999");
+        state.insert_account(
+            contract_revert,
+            U256::ZERO,
+            alloy::primitives::Bytes::from(vec![0x60, 0x00, 0x60, 0x00, 0xfd]),
+        );
+
+        let config = SimConfig {
+            gas_limit: 100_000,
+            chain_id: 1,
+            caller,
+            value: U256::ZERO,
+        };
+        let sim = EvmSimulator::new(config);
+
+        let r1 = sim.simulate(&state, contract_return, vec![]);
+        assert!(r1.success);
+        let r2 = sim.simulate(&state, contract_revert, vec![]);
+        assert!(!r2.success);
+    }
+
+    #[test]
+    fn test_simulate_zero_gas_limit() {
+        let caller = address!("a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0");
+        let mut state = ForkedState::new_empty(18_000_000, 1_700_000_000, 0);
+        state.insert_account_balance(caller, U256::from(10_000_000_000_000_000_000u128));
+        let config = SimConfig {
+            gas_limit: 0,
+            chain_id: 1,
+            caller,
+            value: U256::ZERO,
+        };
+        let sim = EvmSimulator::new(config);
+        let result = sim.simulate(&state, address!("b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0"), vec![]);
+        assert!(!result.success, "zero gas limit should fail");
+    }
+
+    #[test]
+    fn test_simulate_with_profit_zero_profit() {
+        let caller = address!("c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1");
+        let contract = address!("d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2");
+        let mut state = ForkedState::new_empty(18_000_000, 1_700_000_000, 0);
+        state.insert_account_balance(caller, U256::from(10_000_000_000_000_000_000u128));
+        state.insert_account(
+            contract,
+            U256::ZERO,
+            alloy::primitives::Bytes::from(vec![0x60, 0x00, 0x60, 0x00, 0xf3]),
+        );
+        let config = SimConfig {
+            gas_limit: 100_000,
+            chain_id: 1,
+            caller,
+            value: U256::ZERO,
+        };
+        let sim = EvmSimulator::new(config);
+        let result = sim.simulate_with_profit(&state, contract, vec![], Address::ZERO, caller);
+        assert!(result.success);
+        assert_eq!(result.profit_wei, U256::ZERO);
+    }
+
+    #[test]
+    fn test_simulation_result_revert_has_hex_output() {
+        let caller = address!("e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1");
+        let contract = address!("f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2");
+        let mut state = ForkedState::new_empty(18_000_000, 1_700_000_000, 0);
+        state.insert_account_balance(caller, U256::from(10_000_000_000_000_000_000u128));
+        state.insert_account(
+            contract,
+            U256::ZERO,
+            alloy::primitives::Bytes::from(vec![0x60, 0x00, 0x60, 0x00, 0xfd]),
+        );
+        let sim = EvmSimulator::with_defaults();
+        let result = sim.simulate(&state, contract, vec![]);
+        let reason = result.revert_reason.unwrap();
+        assert!(reason.starts_with("0x"), "revert reason should start with 0x: {reason}");
+    }
+
+    #[test]
+    fn test_sim_config_clone_eq() {
+        let config = SimConfig {
+            gas_limit: 3_000_000,
+            chain_id: 137,
+            caller: address!("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
+            value: U256::from(42u64),
+        };
+        let config2 = config.clone();
+        assert_eq!(config.gas_limit, config2.gas_limit);
+        assert_eq!(config.chain_id, config2.chain_id);
+        assert_eq!(config.caller, config2.caller);
+        assert_eq!(config.value, config2.value);
+    }
+
+    #[test]
+    fn test_evm_simulator_simulate_result_fields_on_success() {
+        let caller = address!("1212121212121212121212121212121212121212");
+        let mut state = ForkedState::new_empty(18_000_000, 1_700_000_000, 0);
+        state.insert_account_balance(caller, U256::from(10_000_000_000_000_000_000u128));
+        let sim = EvmSimulator::with_defaults();
+        let result = sim.simulate(&state, address!("3434343434343434343434343434343434343434"), vec![]);
+        assert!(result.success);
+        assert!(result.gas_used > 0);
+        assert!(result.gas_used < 100_000);
+        assert!(result.revert_reason.is_none());
+        assert_eq!(result.profit_wei, U256::ZERO);
+    }
 }

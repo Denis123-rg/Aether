@@ -26,7 +26,7 @@ func TestScoreEdgeCases(t *testing.T) {
 	}
 
 	// Test score with positive attempts
-	st = &builderState{attempts: 5, profitWei: big.NewInt(10 * 1e18)} // 10 ETH
+	st = &builderState{attempts: 5, profitWei: new(big.Int).Mul(big.NewInt(10), big.NewInt(1_000_000_000_000_000_000))}
 	score = s.score(st)
 	if score <= 0 {
 		t.Fatalf("expected positive score, got %f", score)
@@ -50,7 +50,6 @@ func TestPickEdgeCases(t *testing.T) {
 	}
 
 	// With nil RNG (falls back to Best, which is first builder)
- Fractional points given here ...
 	pick = s.Pick(nil)
 	if pick != "flashbots" {
 		t.Fatalf("expected flashbots with nil RNG, got %q", pick)

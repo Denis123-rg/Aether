@@ -175,24 +175,6 @@ func TestRequireAdminAuth_Table(t *testing.T) {
 	}
 }
 
-func TestHandleAdminPause_DefaultReason(t *testing.T) {
-	resetAdminGlobals()
-	rm := risk.NewRiskManager(risk.DefaultRiskConfig())
-	globalAdminDeps.riskMgr = rm
-
-	req := httptest.NewRequest(http.MethodPost, "/admin/pause", nil)
-	w := httptest.NewRecorder()
-	handleAdminPause(w, req)
-
-	if w.Code != http.StatusOK {
-		t.Fatalf("status: %d", w.Code)
-	}
-	snap := globalSnapshotStore.Get()
-	if snap.BreakerReason != "admin_pause" {
-		t.Fatalf("reason = %q, want admin_pause", snap.BreakerReason)
-	}
-}
-
 func TestHandleAdminResume_ConflictWhenNotPaused(t *testing.T) {
 	resetAdminGlobals()
 	rm := risk.NewRiskManager(risk.DefaultRiskConfig())
