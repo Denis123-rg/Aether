@@ -4,11 +4,20 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"syscall"
 	"testing"
+	"time"
+
+	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 )
 
 func TestMain(m *testing.M) {
 	if os.Getenv("TELEBOT_MAIN_HELPER") == "1" {
+		if os.Getenv("TELEBOT_MOCK_API") == "1" {
+			newBotAPIFn = func(token string) (BotAPI, error) {
+				return &tgbotapi.BotAPI{Self: tgbotapi.User{UserName: "test-bot"}}, nil
+			}
+		}
 		main()
 		os.Exit(0)
 	}
@@ -56,5 +65,53 @@ port = 8090
 	err := cmd.Run()
 	if err == nil {
 		t.Fatal("expected non-zero exit when admin IDs invalid")
+	}
+}
+
+func TestMain_SuccessPath(t *testing.T) {
+	dir := t.TempDir()
+	cfgDir := filepath.Join(dir, "config")
+	if err := os.MkdirAll(cfgDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cfg := `[telegram]
+bot_token = "test-token"
+admin_chat_ids = [100]
+dashboard_update_interval_secs = 3
+executor_metrics_url = "http://localhost:8080/metrics/json"
+[redis]
+url = ""
+[executor]
+port = 8080
+discovery_top_pools_url = "http://localhost:9093/top-pools"
+signer_connection_pool = true
+admin_rate_limit_rps = 10.0
+[monitor]
+port = 8090
+`
+	if err := os.WriteFile(filepath.Join(cfgDir, "production.toml"), []byte(cfg), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := exec.Command(os.Args[0], "-test.run=^"+t.Name()+"$")
+	cmd.Env = append(os.Environ(),
+		"TELEBOT_MAIN_HELPER=1",
+		"TELEBOT_MOCK_API=1",
+		"TELEGRAM_BOT_TOKEN=",
+		"TELEGRAM_ADMIN_CHAT_IDS=",
+	)
+	cmd.Dir = dir
+
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+
+	time.Sleep(100 * time.Millisecond)
+	if err := cmd.Process.Signal(syscall.SIGTERM); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := cmd.Wait(); err != nil {
+		t.Fatalf("expected clean exit, got: %v", err)
 	}
 }

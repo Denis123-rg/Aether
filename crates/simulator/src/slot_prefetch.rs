@@ -160,20 +160,15 @@ mod tests {
         );
     }
 
-    #[test]
-    fn empty_input_returns_empty_without_rpc() {
+    #[tokio::test]
+    async fn empty_input_returns_empty_without_rpc() {
+        let provider = alloy::providers::ProviderBuilder::new()
+            .connect_http("http://127.0.0.1:1".parse().unwrap())
+            .erased();
         let pools: [Address; 0] = [];
-        // No provider needed — the helper short-circuits on empty input.
-        // Build a future and poll it once; it must complete immediately
-        // because no `.await` on the provider is reached.
-        let fut = async move {
-            // SAFETY: provider deref is unreachable for empty input.
-            // Construct a panic-on-use provider stand-in via expect on a
-            // never-built DynProvider would require a runtime; instead we
-            // assert the behaviour by directly exercising the early return.
-            assert!(pools.is_empty());
-        };
-        futures::executor::block_on(fut);
+        let result = batch_v2_reserves(&provider, 1, &pools).await;
+        assert!(result.is_ok());
+        assert!(result.unwrap().is_empty());
     }
 
     /// Synthesise a Multicall3 return blob and confirm decode round-trips.

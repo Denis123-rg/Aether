@@ -17,6 +17,12 @@ import (
 // and "Signer.Address".
 const serviceName = "Signer"
 
+// Overridable function variables for dependency injection in tests.
+var (
+	newRPCServerFn = rpc.NewServer
+	chmodFn        = os.Chmod
+)
+
 // Transport note: the design brief specified gRPC. We deliberately use std-lib
 // net/rpc with the JSON-RPC codec over a unix-domain socket instead. The
 // security-relevant properties the brief cares about — local-only access via a
@@ -99,7 +105,7 @@ func NewServer(kl *KeyLoader, socketPath string) (*Server, error) {
 		return nil, err
 	}
 
-	rpcSrv := rpc.NewServer()
+	rpcSrv := newRPCServerFn()
 	if err := rpcSrv.RegisterName(serviceName, &SignService{kl: kl}); err != nil {
 		return nil, fmt.Errorf("signer: register service: %w", err)
 	}
@@ -111,7 +117,7 @@ func NewServer(kl *KeyLoader, socketPath string) (*Server, error) {
 	// Tighten permissions: only the owner (the executor's service user) may
 	// connect. There is a small window between Listen and Chmod; MkdirAll's
 	// 0700 parent dir closes it for any non-owner.
-	if err := os.Chmod(socketPath, 0o600); err != nil {
+	if err := chmodFn(socketPath, 0o600); err != nil {
 		_ = ln.Close()
 		return nil, fmt.Errorf("signer: chmod socket: %w", err)
 	}

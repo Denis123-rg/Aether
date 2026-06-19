@@ -297,8 +297,7 @@ impl DiscoveryConfig {
     pub fn load(path: impl AsRef<Path>) -> anyhow::Result<Self> {
         let path = path.as_ref();
         if !path.exists() {
-            tracing::warn!(path = %path.display(), "discovery config not found, using defaults");
-            return Ok(Self::default());
+            anyhow::bail!("discovery config not found: {}", path.display());
         }
         let contents = std::fs::read_to_string(path)?;
         let cfg: Self = toml::from_str(&contents)?;
@@ -388,10 +387,9 @@ mod tests {
     }
 
     #[test]
-    fn load_missing_file_returns_defaults() {
-        let cfg = DiscoveryConfig::load("/tmp/nonexistent_discovery_config.toml").unwrap();
-        assert!(cfg.discovery.enabled);
-        assert!(cfg.factories.is_empty());
+    fn load_missing_file_returns_error() {
+        let result = DiscoveryConfig::load("/tmp/nonexistent_discovery_config.toml");
+        assert!(result.is_err(), "expected Err for missing config file");
     }
 
     #[test]

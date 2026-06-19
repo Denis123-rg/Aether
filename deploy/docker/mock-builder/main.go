@@ -7,7 +7,9 @@ import (
 	"net/http"
 )
 
-func main() {
+var listenAndServe = http.ListenAndServe
+
+func newHandler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -19,7 +21,13 @@ func main() {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]string{"bundleHash": "0xe2e"})
 	})
+	return mux
+}
+
+func main() {
 	addr := ":18545"
 	log.Printf("mock builder listening on %s", addr)
-	log.Fatal(http.ListenAndServe(addr, mux))
+	if err := listenAndServe(addr, newHandler()); err != nil {
+		log.Printf("server error: %v", err)
+	}
 }

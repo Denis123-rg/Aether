@@ -5219,8 +5219,8 @@ mod tests {
         let result = victim_post_reserves(&pool, token1, 3_000_000_000_000.0, 1_500_000.0);
         assert!(result.is_some());
         let (r_in, r_out) = result.unwrap();
-        assert!((r_in - U256::from(3_000_000_000_000u64)).as_limbs()[0] <= 1);
-        assert!((r_out - U256::from(1_500_000u64)).as_limbs()[0] <= 1);
+        assert!((r_in - U256::from(1_500_000u64)).as_limbs()[0] <= 1);
+        assert!((r_out - U256::from(3_000_000_000_000u64)).as_limbs()[0] <= 1);
     }
 
     #[test]

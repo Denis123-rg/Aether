@@ -51,8 +51,8 @@ type Alerter struct {
 // NewAlerter creates a new alerter
 func NewAlerter(channels []AlertChannel) *Alerter {
 	pdKey, tgToken, tgChat, discordURL, webhookURL := loadAlertingFromEnv()
-	wh := NewWebhookDispatcherFromEnv()
-	if webhookURL != "" && wh == nil {
+	var wh *WebhookDispatcher
+	if webhookURL != "" {
 		wh = &WebhookDispatcher{url: webhookURL, httpClient: &http.Client{Timeout: 5 * time.Second}}
 	}
 	return &Alerter{

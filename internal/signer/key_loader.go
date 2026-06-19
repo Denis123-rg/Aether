@@ -57,6 +57,14 @@ const (
 	DefaultPBKDF2Iters = 600_000
 )
 
+// Overridable function variables for dependency injection in tests.
+var (
+	pbkdf2KeyFn = func(passphrase string, salt []byte, iters int) ([]byte, error) {
+		return pbkdf2.Key(sha256.New, passphrase, salt, iters, keyLen)
+	}
+	aesCipherFn = aes.NewCipher
+)
+
 // ErrEmptyPassphrase is returned when an empty passphrase is supplied. An empty
 // passphrase defeats the entire at-rest protection, so it is rejected outright
 // rather than silently producing a weak key.
@@ -133,7 +141,7 @@ func LoadKey(blob []byte, passphrase string) (*KeyLoader, error) {
 		return nil, err
 	}
 
-	dk, err := pbkdf2.Key(sha256.New, passphrase, salt, iters, keyLen)
+	dk, err := pbkdf2KeyFn(passphrase, salt, iters)
 	if err != nil {
 		return nil, fmt.Errorf("signer: derive key: %w", err)
 	}
@@ -206,7 +214,7 @@ func Encrypt(privKey []byte, passphrase string, iters int) ([]byte, error) {
 	if _, err := io.ReadFull(rand.Reader, salt); err != nil {
 		return nil, fmt.Errorf("signer: read salt: %w", err)
 	}
-	dk, err := pbkdf2.Key(sha256.New, passphrase, salt, iters, keyLen)
+	dk, err := pbkdf2KeyFn(passphrase, salt, iters)
 	if err != nil {
 		return nil, fmt.Errorf("signer: derive key: %w", err)
 	}
@@ -245,7 +253,7 @@ func ParseHexKey(s string) ([]byte, error) {
 }
 
 func newGCM(key []byte) (cipher.AEAD, error) {
-	block, err := aes.NewCipher(key)
+	block, err := aesCipherFn(key)
 	if err != nil {
 		return nil, fmt.Errorf("signer: aes init: %w", err)
 	}

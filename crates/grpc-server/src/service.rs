@@ -1080,4 +1080,63 @@ tier = "warm"
 
         assert_eq!(received.id, "tiny-profit");
     }
+
+    #[tokio::test]
+    async fn test_stream_arbs_recovers_from_lagged() {
+        let state = shared_state();
+        let svc = ArbServiceImpl::new(Arc::clone(&state));
+
+        let resp = svc
+            .stream_arbs(Request::new(StreamArbsRequest {
+                min_profit_eth: 0.0,
+            }))
+            .await
+            .unwrap();
+
+        let mut stream = resp.into_inner();
+
+        // Flood the broadcast channel from a std::thread (not tokio::spawn) so
+        // the sends happen on a separate OS thread. The spawned consumer task
+        // will initially consume ~100 messages (mpsc capacity) then block on
+        // tx.send(). Meanwhile the broadcast buffer fills up (cap 1000) and
+        // overflows. When we read from the mpsc stream, the consumer unblocks
+        // and gets Lagged(n) — precisely the code path we need to cover.
+        let arb_tx = svc.arb_tx.clone();
+        let handle = std::thread::spawn(move || {
+            for i in 0..2000 {
+                let arb = ValidatedArb {
+                    id: format!("lagged-{}", i),
+                    ..Default::default()
+                };
+                let _ = arb_tx.send(arb);
+            }
+            let final_arb = ValidatedArb {
+                id: "after-lagged".into(),
+                ..Default::default()
+            };
+            let _ = arb_tx.send(final_arb);
+        });
+
+        handle.join().expect("sender thread panicked");
+
+        // Read from stream. After the broadcast buffer overflowed and the
+        // spawned consumer recovered from Lagged, the stream should forward
+        // the surviving broadcast messages. Scan until we see the sentinel
+        // that proves forward progress continued through the Lagged branch.
+        let mut found_final = false;
+        while let Some(msg) = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            stream.next(),
+        )
+        .await
+        .expect("should receive within timeout")
+        {
+            let arb = msg.expect("item should be Ok");
+            if arb.id == "after-lagged" {
+                found_final = true;
+                break;
+            }
+        }
+        assert!(found_final, "expected to receive 'after-lagged'");
+    }
 }

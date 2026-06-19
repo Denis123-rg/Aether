@@ -1,46 +1,35 @@
-Prompt 2: Go – Complete Test Coverage Improvement
+Prompt: Go – Complete Coverage Improvement for Listed Functions
 Objective
-You are a Senior Go Testing Engineer. Your task is to write high‑quality, realistic tests for a specific list of Go functions to raise their test coverage to at least 95% (preferably 100%). You must also ensure that the entire test suite builds and passes (all tests green). At the end, you must provide a detailed final report summarising the work done, coverage improvements, and any challenges encountered.
+You are a Senior Go Testing Engineer. Your task is to write high‑quality, realistic tests for the specific functions listed below to raise their test coverage to at least 95% (preferably 100%). You must also ensure that the entire test suite builds and passes (all tests green). At the end, you must provide a detailed final report summarising the work done, coverage improvements, and any challenges encountered.
 
 You may use sub‑agents to parallelise work across packages, but you are responsible for overall coordination and delivering the final result.
 
 Scope – Functions to Cover
-The following functions currently have coverage below 95%. Your goal is to increase each to ≥95% by writing new unit tests (and, if necessary, integration tests) that exercise all uncovered branches, error paths, and edge cases.
+The following functions currently have coverage below 95%. Your goal is to increase each to ≥95% by writing new tests (or extending existing ones) that exercise all uncovered branches, error paths, and edge cases.
 
-File	Line	Function	Current Coverage
-deploy/docker/mock-builder/main.go	10	main	0.0%
-internal/db/ledger.go	87	InsertBundle	0.0%
-internal/db/ledger.go	88	InsertInclusion	0.0%
-internal/db/ledger.go	89	UpsertPnLDaily	0.0%
-internal/db/timescale.go	86	Record	0.0%
-internal/db/timescale.go	87	Close	0.0%
-internal/pb/aether.pb.go	217, 309, 424, 575, 633, 676, 717, 790, 842, 893, 939	ProtoMessage (11 occurrences)	0.0%
-internal/pb/aether_grpc.pb.go	93, 212, 330	mustEmbedUnimplemented*ServiceServer	0.0%
-internal/pb/aether_grpc.pb.go	94, 213, 331	testEmbeddedByValue	0.0%
-cmd/monitor/setup.go	25	runMonitorSetup	69.7%
-cmd/telebot/main.go	43	start	77.1%
-cmd/monitor/alerter.go	52	NewAlerter	80.0%
-internal/events/subscriber.go	89	run	80.0%
-internal/signer/key_loader.go	191	Encrypt	82.6%
-internal/signer/signer_server.go	86	NewServer	83.3%
-internal/signer/key_loader.go	247	newGCM	85.7%
-internal/strategy/abtest.go	150	score	85.7%
-internal/db/ledger_pg.go	236	insertBundleInner	88.9%
-internal/grpc/client.go	77	DialWithOptions	88.9%
-internal/db/migrate.go	25	RunMigrations	90.9%
-internal/testutil/mock_arb_server.go	59	Start	90.9%
-internal/db/migrate.go	96	applyMigrationFile	92.0%
-internal/risk/manager.go	352	ResetFromHalted	92.3%
-internal/testutil/mock_arb_server.go	142	StreamArbs	92.3%
-cmd/monitor/process.go	15	runMonitorService	92.9%
-cmd/telebot/main.go	17	main	92.9%
-internal/strategy/abtest.go	226	Pick	92.9%
-internal/db/ledger_pg.go	182	dispatch	93.3%
-internal/signer/key_loader.go	127	LoadKey	93.9%
-cmd/signer/main.go	130	runEncrypt	94.4%
-internal/db/ledger_pg.go	73	NewPgLedger	94.7%
-internal/db/mempool_reconciliation_pg.go	122	NewPgMempoolReconciliation	94.7%
-internal/db/timescale.go	109	NewPgMetricsStore	94.7%
+File	Function (line)	Current Coverage
+cmd/monitor/alerter.go	NewAlerter (52)	80.0%
+cmd/monitor/process.go	runMonitorService (15)	92.9%
+cmd/monitor/setup.go	runMonitorSetup (25)	87.9%
+cmd/telebot/main.go	main (17)	92.9%
+cmd/telebot/main.go	start (43)	77.1%
+deploy/docker/mock-builder/main.go	main (10)	0.0%
+internal/grpc/client.go	DialWithOptions (77)	88.9%
+internal/pb/aether.pb.go (generated)	ProtoMessage (lines 217, 309, 424, 575, 633, 676, 717, 790, 842, 893, 939)	0.0% each
+internal/pb/aether_grpc.pb.go (generated)	mustEmbedUnimplementedArbServiceServer (93)	0.0%
+testEmbeddedByValue (94)	0.0%
+mustEmbedUnimplementedHealthServiceServer (212)	0.0%
+testEmbeddedByValue (213)	0.0%
+mustEmbedUnimplementedControlServiceServer (330)	0.0%
+testEmbeddedByValue (331)	0.0%
+internal/risk/manager.go	ResetFromHalted (352)	92.3%
+internal/signer/key_loader.go	LoadKey (127)	93.9%
+Encrypt (191)	82.6%
+newGCM (247)	85.7%
+internal/signer/signer_server.go	NewServer (86)	83.3%
+internal/strategy/abtest.go	Pick (226)	92.9%
+internal/testutil/mock_arb_server.go	Start (59)	90.9%
+StreamArbs (142)	92.3%
 Phase 1: Verify Build and Test Suite
 Before writing new tests, ensure the entire project builds and all existing tests pass. Run:
 
@@ -69,78 +58,67 @@ For main() functions (0% coverage): refactor the logic into a separate function 
 
 For generated ProtoMessage methods: test by creating a message and calling ProtoReflect().Descriptor() or by using the generated code in an integration test that marshals/unmarshals a message.
 
-For no‑op methods (e.g., Record, Close on NoopMetricsStore): test that they return without error and do nothing.
+For no‑op or trivial methods (e.g., mustEmbedUnimplemented*, testEmbeddedByValue): these are used for forward compatibility; you can test them by creating a server struct that embeds them and ensuring it compiles, or simply call them in a test (they are no‑ops) to raise coverage.
 
 Ensure all tests pass – run go test ./... repeatedly and fix any failures.
 
-Specific Advice per Package
-deploy/docker/mock-builder
-main() is trivial. Refactor into a run() function that can be called with a mock context. Test that it exits correctly and handles missing arguments.
+Specific Advice per Package/File
+cmd/monitor/alerter.go
+NewAlerter – test with various configurations (valid/invalid webhook URLs, missing environment variables). Verify that the returned Alerter works correctly.
 
-internal/db/ledger.go (no‑op methods)
-These are methods on NoopLedger. Write tests that create a NoopLedger and call these methods, asserting they return zero values and don't panic.
-
-internal/db/timescale.go (no‑op methods)
-Similar to above – test NoopMetricsStore methods.
-
-internal/pb (generated code)
-For ProtoMessage – create an instance of each message type, call ProtoReflect(), and check it returns a non‑nil descriptor. This exercises the method.
-
-For mustEmbedUnimplemented* and testEmbeddedByValue – they are used for forward compatibility; you can simply create a server struct that embeds them and ensure it compiles. But to cover, you can call these methods (they are no‑ops) in a test.
+cmd/monitor/process.go
+runMonitorService – test the monitoring loop with mocked alerters and notifiers. Simulate different event conditions and ensure the service runs and shuts down gracefully.
 
 cmd/monitor/setup.go
-runMonitorSetup – test with various environment configurations, missing flags, and error conditions. Use os.Setenv and mock the dependencies.
+runMonitorSetup – test with different environment configurations, missing flags, and error conditions. Use os.Setenv and mock dependencies.
 
 cmd/telebot/main.go
 main and start – refactor start to accept a context and configuration. Test that it starts the bot, handles signals, and shuts down gracefully.
 
-cmd/monitor/alerter.go
-NewAlerter – test with both successful and failing webhook creation.
-
-internal/events/subscriber.go
-run – the main loop. Test with mock Redis and simulate various events, cancellations, and errors.
-
-internal/signer/key_loader.go
-Encrypt, newGCM, LoadKey – test with different passphrases, corrupted files, invalid keys, and edge cases.
-
-internal/signer/signer_server.go
-NewServer – test with valid and invalid socket paths, permissions.
-
-internal/strategy/abtest.go
-score and Pick – test with various win/loss histories, empty records, and boundary conditions.
-
-internal/db/ledger_pg.go
-insertBundleInner, dispatch, NewPgLedger – test with a test database or use sqlmock to simulate PostgreSQL interactions. Cover connection errors, query failures, and timeouts.
+deploy/docker/mock-builder/main.go
+main – trivial. Refactor into a run() function that can be called with a mock context. Test that it exits correctly and handles missing arguments.
 
 internal/grpc/client.go
-DialWithOptions – test with valid/invalid addresses, TLS configurations, and timeout scenarios.
+DialWithOptions – test with valid/invalid addresses, TLS configurations, and timeout scenarios. Simulate connection errors.
 
-internal/db/migrate.go
-RunMigrations, applyMigrationFile – test with missing migration files, invalid SQL, and successful migrations. Use a test database or sqlmock.
+internal/pb (generated code)
+For ProtoMessage – create an instance of each message type, call ProtoReflect(), and check it returns a non‑nil descriptor.
 
-internal/testutil/mock_arb_server.go
-Start, StreamArbs – test that the mock server starts, responds correctly, and stops.
+For mustEmbedUnimplemented* and testEmbeddedByValue – they are no‑ops; call them in a test to increase coverage (they are public methods).
 
 internal/risk/manager.go
-ResetFromHalted – test state transitions, error conditions, and concurrency.
+ResetFromHalted – test state transitions, error conditions, and concurrency. Ensure the manager correctly resets from halted state.
 
-cmd/monitor/process.go
-runMonitorService – test the monitoring service with mocked alerters and notifiers.
+internal/signer/key_loader.go
+LoadKey, Encrypt, newGCM – test with different passphrases, corrupted files, invalid keys, and edge cases (empty passphrase, missing file). Use temporary files.
 
-cmd/signer/main.go
-runEncrypt – test encryption with different passwords and key formats.
+internal/signer/signer_server.go
+NewServer – test with valid and invalid socket paths, permissions, and listen errors.
+
+internal/strategy/abtest.go
+Pick – test with various win/loss histories, empty records, and boundary conditions. Ensure the picking logic is correct.
+
+internal/testutil/mock_arb_server.go
+Start – test that the mock server starts correctly, handles connections, and stops.
+
+StreamArbs – test the streaming behaviour with mocked clients.
+
+Phase 3: Verify Coverage and All Tests Pass
+After writing the tests, run:
+
+bash
+go test -coverprofile=cover.out ./...
+go tool cover -func=cover.out
+Verify that every function in the list now shows coverage ≥95%.
+
+Also ensure that no existing tests are broken – all tests must pass (green).
 
 Deliverables
 New test code – added to existing *_test.go files or new test files.
 
 Successful test run – go test ./... must pass with zero failures.
 
-Updated coverage report – run:
-
-bash
-go test -coverprofile=cover.out ./...
-go tool cover -func=cover.out
-Verify that every function in the list now shows coverage ≥95%.
+Updated coverage report – confirm that all listed functions have coverage ≥95%.
 
 Final Report (Markdown) containing:
 
@@ -148,7 +126,7 @@ Summary of changes – which functions were improved and by how much.
 
 List of new test cases per function (e.g., “added test for empty config”, “tested database connection timeout”).
 
-Total new tests and lines of test code added.
+Total number of new tests and lines of test code added.
 
 Challenges encountered and how they were resolved.
 
@@ -162,3 +140,6 @@ Each function in the list has coverage ≥95% (verified by go tool cover).
 No production logic was changed unnecessarily (only tests and test‑only helpers).
 
 The final report is clear, comprehensive, and includes all required sections.
+
+Proceed with confidence. Your work will significantly improve the reliability and maintainability of the Go codebase
+

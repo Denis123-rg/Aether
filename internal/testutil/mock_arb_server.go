@@ -156,13 +156,25 @@ func (m *MockArbServer) StreamArbs(req *pb.StreamArbsRequest, stream grpc.Server
 			}
 		}
 
-		if err := stream.Send(arb); err != nil {
-			return err
+		var sendErr error
+		if streamSendHook != nil {
+			sendErr = streamSendHook(arb, stream)
+		} else {
+			sendErr = stream.Send(arb)
+		}
+		if sendErr != nil {
+			return sendErr
 		}
 	}
 
 	return nil
 }
+
+// streamSendHook is a test seam that can replace stream.Send in StreamArbs
+// to inject errors. When non-nil, it is called instead of stream.Send(arb).
+// The hook receives the arb and the real stream, and should return the error
+// (or nil) that StreamArbs should return.
+var streamSendHook func(arb *pb.ValidatedArb, stream grpc.ServerStreamingServer[pb.ValidatedArb]) error
 
 // profitWeiToFloat converts raw wei bytes to ETH float for filtering.
 func profitWeiToFloat(weiBytes []byte) float64 {

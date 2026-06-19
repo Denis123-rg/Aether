@@ -1,0 +1,146 @@
+# Aether Rust Project — Full Test Stabilization & Fix Task
+
+## Objective
+
+Your task is to fully fix all failing Rust tests, restore correct behavior across the affected modules, and ensure the project compiles and passes **all tests successfully with zero failures**.
+
+After fixes, you MUST run full verification:
+
+- `cargo check` → must pass with zero errors
+- `cargo build` → must compile successfully
+- `cargo test --workspace` → must pass with ALL tests green
+- optional: `cargo llvm-cov` → must generate coverage without failures
+
+Finally, produce a **stability report summary**.
+
+---
+
+# Context: Current Test Failures
+
+The project currently has **multiple failing tests grouped into 5 core system areas**. These are NOT random failures — they indicate behavioral drift after refactoring.
+
+---
+
+# 1. discovery_integration failures (2 tests)
+
+### Failing tests:
+- `maybe_start_discovery_config_load_error`
+- `maybe_start_discovery_disabled_config`
+
+### Observed issue:
+Tests expect:
+```rust
+assert!(result.is_none())
+
+But actual behavior returns Some(...).
+
+Required fix:
+Determine whether discovery should:
+NOT start when config is disabled OR invalid → return None
+OR always initialize discovery → update tests accordingly
+Expected outcome:
+Consistent behavior between config state and discovery initialization logic
+No mismatch between runtime behavior and test expectations
+2. mempool_pipeline failure (critical logic)
+Failing test:
+victim_post_reserves_token_in_is_token1
+Issue:
+
+Arithmetic mismatch in reserve calculation:
+
+Expected:
+
+r_in ≈ 3_000_000_000_000
+
+But deviation is detected:
+
+(r_in - expected).as_limbs()[0] <= 1  // FAIL
+Required fix:
+Investigate swap math correctness
+Validate:
+token ordering (token0 vs token1)
+reserve direction (in/out)
+invariant calculations
+Ensure deterministic precision in arithmetic operations
+Priority:
+
+🔥 HIGH — this may indicate a real production bug in AMM/mempool logic
+
+3. backrun validator config failures
+Failing tests:
+build_backrun_validator_config_with_provider
+build_backrun_validator_config_default_values
+Issues:
+config.is_some() is returning None
+Option::unwrap() panics on missing provider
+Required fix:
+Ensure environment-based config is properly loaded
+Add safe defaults or proper error handling
+Prevent unwrap on missing configuration
+Expected behavior:
+Config is always safely constructed OR explicitly errors with context
+No silent None values in production paths
+4. executor runtime bytecode parsing failure
+Failing test:
+load_executor_runtime_bytecode_empty_object_field
+Issue:
+
+Function returns Ok(...) when test expects:
+
+Err(...)
+Required fix:
+Validate strict parsing rules for executor runtime bytecode
+Empty or malformed object fields MUST return error
+Restore strict validation behavior
+5. tracing_init logging configuration failures
+Failing tests:
+env_filter_try_from_default_env_with_value
+env_filter_with_all_log_levels
+Issues:
+Expected log level: trace, got info
+Missing "error" in filter output
+Required fix:
+Ensure EnvFilter initialization respects correct default log level
+Restore expected filtering behavior:
+trace/debug/info/error levels must be correctly parsed
+Fix regression in logging configuration logic
+Execution Requirements
+
+After applying fixes:
+
+Step 1 — Compilation check
+cargo check --workspace
+Step 2 — Build verification
+cargo build --workspace
+Step 3 — Full test suite
+cargo test --workspace
+Step 4 — (optional but recommended)
+cargo llvm-cov --workspace --summary-only
+Success Criteria
+
+The task is ONLY complete if:
+
+✅ All tests pass (0 failures)
+✅ No panics occur
+✅ No unwrap() crashes
+✅ Coverage can be generated successfully
+✅ All 5 subsystems behave consistently
+✅ No regression in mempool or config logic
+Final Output Required
+
+Provide a final report including:
+
+Summary of fixed issues per module
+Root cause of each failure group
+Confirmation that all tests pass
+Any behavioral changes introduced
+Notes about potential production risks (if any)
+Important
+
+Do NOT:
+
+Silence tests without fixing root cause
+Mask failures with unwrap/expect suppression
+Modify tests unless behavior change is intentional and justified
+
+Focus on correctness, deterministic behavior, and production safety.

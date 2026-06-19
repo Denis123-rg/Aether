@@ -663,7 +663,7 @@ mod tests {
     fn env_filter_with_all_log_levels() {
         let filter = EnvFilter::new("error,warn,info,debug,trace");
         let s = filter.to_string();
-        assert!(s.contains("error"));
+        assert!(s.contains("trace"), "expected 'trace' in EnvFilter output, got: {s:?}");
     }
 
     #[test]
@@ -690,5 +690,19 @@ mod tests {
             let filter = EnvFilter::new(*level);
             assert_eq!(filter.to_string(), *level);
         }
+    }
+
+    #[tokio::test]
+    async fn otlp_exporter_builder_accepts_any_endpoint() {
+        // The OTLP exporter builder only validates the endpoint at export
+        // time, not at build time. Build always succeeds regardless of
+        // endpoint reachability. This test exercises the builder code path
+        // with a synthetic endpoint and verifies no panic.
+        let endpoint = "http://127.0.0.1:1";
+        let result = opentelemetry_otlp::SpanExporter::builder()
+            .with_tonic()
+            .with_endpoint(endpoint)
+            .build();
+        assert!(result.is_ok(), "builder should succeed for any string endpoint");
     }
 }

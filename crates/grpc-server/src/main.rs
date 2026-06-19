@@ -555,6 +555,9 @@ fn load_executor_runtime_bytecode(
         .and_then(|d| d.get("object"))
         .and_then(|o| o.as_str())
         .ok_or("artifact missing deployedBytecode.object")?;
+    if hex_str.is_empty() {
+        return Err("empty bytecode hex string — artifact deployedBytecode.object is empty".into());
+    }
     let hex_str = hex_str.strip_prefix("0x").unwrap_or(hex_str);
     let mut bytes = alloy::hex::decode(hex_str)?;
 

@@ -10,6 +10,9 @@ import (
 	"github.com/aether-arb/aether/internal/tracing"
 )
 
+// initTracing is overridable in tests to simulate tracer init failure.
+var initTracing = tracing.Init
+
 // MonitorSetup holds the monitor service components initialized at boot.
 type MonitorSetup struct {
 	Metrics        *Metrics
@@ -23,7 +26,7 @@ type MonitorSetup struct {
 // runMonitorSetup initializes metrics, dashboard, alerter, and tracing for the
 // monitor process. Extracted from main for unit tests.
 func runMonitorSetup() MonitorSetup {
-	shutdownTracer, err := tracing.Init(context.Background(), "aether-monitor")
+	shutdownTracer, err := initTracing(context.Background(), "aether-monitor")
 	if err != nil {
 		slog.Warn("otlp tracer init failed, continuing without traces", "err", err)
 		shutdownTracer = func(context.Context) error { return nil }

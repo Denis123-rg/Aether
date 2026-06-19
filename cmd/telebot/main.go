@@ -46,31 +46,8 @@ func start(ctx context.Context, apiFactory func(string) (BotAPI, error)) error {
 		return fmt.Errorf("failed to load production config: %w", err)
 	}
 
-	token := cfg.Telegram.BotToken
-	if token == "" {
-		token = os.Getenv("TELEGRAM_BOT_TOKEN")
-	}
-	if token == "" {
-		return fmt.Errorf("TELEGRAM_BOT_TOKEN not set")
-	}
-
 	adminIDs := cfg.Telegram.AdminChatIDs
-	if len(adminIDs) == 0 {
-		if raw := os.Getenv("TELEGRAM_ADMIN_CHAT_IDS"); raw != "" {
-			adminIDs, err = config.ParseAdminChatIDs(raw)
-			if err != nil {
-				return fmt.Errorf("invalid TELEGRAM_ADMIN_CHAT_IDS: %w", err)
-			}
-		}
-	}
-	if len(adminIDs) == 0 {
-		return fmt.Errorf("no admin chat IDs configured")
-	}
-
 	metricsURL := cfg.Telegram.ExecutorMetricsURL
-	if metricsURL == "" {
-		metricsURL = "http://localhost:8080/metrics/json"
-	}
 
 	redisURL := cfg.Redis.URL
 	if redisURL == "" {
@@ -80,7 +57,7 @@ func start(ctx context.Context, apiFactory func(string) (BotAPI, error)) error {
 		config.RequireRedisInProduction()
 	}
 
-	botAPI, err := apiFactory(token)
+	botAPI, err := apiFactory(cfg.Telegram.BotToken)
 	if err != nil {
 		return fmt.Errorf("telegram bot init failed: %w", err)
 	}
