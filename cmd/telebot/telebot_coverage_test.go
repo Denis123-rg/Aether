@@ -685,7 +685,7 @@ func TestSendDashboardRedisActive(t *testing.T) {
 	mock := &mockBot{}
 	bot := NewTeleBot(mock, srv.URL+"/metrics/json", []int64{1}, time.Second, "")
 	bot.redisActive = true
-	bot.redisState = &events.DashboardState{PnLTotal: 42.0, WinRate: 99.0}
+	bot.redisState = &events.DashboardState{DashboardData: events.DashboardData{PnLTotal: 42.0, WinRate: 99.0}}
 	bot.sendDashboard(context.Background(), 1)
 	text := mock.lastSentText()
 	if !containsStr(text, "Dashboard") {
@@ -701,7 +701,7 @@ func TestUpdateDashboardRedisActive(t *testing.T) {
 	mock := &mockBot{}
 	bot := NewTeleBot(mock, srv.URL+"/metrics/json", []int64{1}, time.Second, "")
 	bot.redisActive = true
-	bot.redisState = &events.DashboardState{PnLTotal: 42.0}
+	bot.redisState = &events.DashboardState{DashboardData: events.DashboardData{PnLTotal: 42.0}}
 	bot.updateDashboard(context.Background(), 1, 10)
 }
 
@@ -830,7 +830,7 @@ func TestFormatDashboardWithMultiplePools(t *testing.T) {
 		SignerHealthy: true,
 		RPCHealthy:    true,
 	}
-	text := FormatDashboard(snap, events.DashboardState{}, false)
+	text := FormatDashboard(snap, events.DashboardData{}, false)
 	if !strings.Contains(text, "Dashboard") {
 		t.Fatal("expected dashboard")
 	}
@@ -844,7 +844,7 @@ func TestFormatDashboardShortPoolAddress(t *testing.T) {
 		SystemState:  "Running",
 		SignerHealthy: true,
 	}
-	text := FormatDashboard(snap, events.DashboardState{}, false)
+	text := FormatDashboard(snap, events.DashboardData{}, false)
 	if !strings.Contains(text, "0xabc") {
 		t.Fatal("expected short address")
 	}
@@ -856,7 +856,7 @@ func TestFormatDashboardNoPools(t *testing.T) {
 		SystemState:  "Running",
 		SignerHealthy: true,
 	}
-	text := FormatDashboard(snap, events.DashboardState{}, false)
+	text := FormatDashboard(snap, events.DashboardData{}, false)
 	if !strings.Contains(text, "No pool data") {
 		t.Fatal("expected No pool data")
 	}
@@ -864,7 +864,7 @@ func TestFormatDashboardNoPools(t *testing.T) {
 
 func TestFormatDashboardRedisOverlayWithBreaker(t *testing.T) {
 	snap := metrics.Snapshot{BreakerOpen: false}
-	redis := events.DashboardState{BreakerOpen: true, BreakerReason: "gas_high"}
+	redis := events.DashboardData{BreakerOpen: true, BreakerReason: "gas_high"}
 	text := FormatDashboard(snap, redis, true)
 	if !strings.Contains(text, "🔴") {
 		t.Fatal("expected breaker open from redis")
@@ -873,7 +873,7 @@ func TestFormatDashboardRedisOverlayWithBreaker(t *testing.T) {
 
 func TestFormatDashboardRedisOverlaySignerHealthy(t *testing.T) {
 	snap := metrics.Snapshot{SignerHealthy: false}
-	redis := events.DashboardState{SignerHealthy: true, PnLTotal: 5.0, LastBuilder: "titan"}
+	redis := events.DashboardData{SignerHealthy: true, PnLTotal: 5.0, LastBuilder: "titan"}
 	text := FormatDashboard(snap, redis, true)
 	if !strings.Contains(text, "5.000000") {
 		t.Fatal("expected redis PnLTotal")
@@ -887,7 +887,7 @@ func TestFormatDashboardRedisNotActive(t *testing.T) {
 		RPCHealthy:    true,
 		RedisHealthy:  true,
 	}
-	text := FormatDashboard(snap, events.DashboardState{}, false)
+	text := FormatDashboard(snap, events.DashboardData{}, false)
 	if !strings.Contains(text, "polling fallback") {
 		t.Fatal("expected polling fallback message")
 	}
@@ -1024,7 +1024,7 @@ func TestPost409ConflictHalted(t *testing.T) {
 
 func TestFormatDashboardRedisOverlayWinRateZero(t *testing.T) {
 	snap := metrics.Snapshot{WinRate: 75.0}
-	redis := events.DashboardState{WinRate: 0}
+	redis := events.DashboardData{WinRate: 0}
 	text := FormatDashboard(snap, redis, true)
 	if !strings.Contains(text, "75.0") {
 		t.Fatal("expected snap win rate when redis is 0")
@@ -1033,7 +1033,7 @@ func TestFormatDashboardRedisOverlayWinRateZero(t *testing.T) {
 
 func TestFormatDashboardRedisOverlayLastBuilderEmpty(t *testing.T) {
 	snap := metrics.Snapshot{LastBuilder: "flashbots", LastBundleProfit: 0.01, LastBundleGas: 0.001}
-	redis := events.DashboardState{LastBuilder: ""}
+	redis := events.DashboardData{LastBuilder: ""}
 	text := FormatDashboard(snap, redis, true)
 	if !strings.Contains(text, "flashbots") {
 		t.Fatal("expected snap builder when redis is empty")
@@ -1045,7 +1045,7 @@ func TestFormatDashboardRedisOverlayAllFields(t *testing.T) {
 		PnLToday: 1.0, PnLTotal: 2.0, WinRate: 50.0,
 		LastBundleProfit: 0.1, LastBundleGas: 0.01, LastBuilder: "builder_a",
 	}
-	redis := events.DashboardState{
+	redis := events.DashboardData{
 		PnLTotal: 99.0, WinRate: 90.0,
 		LastBundleProfit: 0.99, LastBundleGas: 0.09, LastBuilder: "builder_b",
 		SignerHealthy: true,

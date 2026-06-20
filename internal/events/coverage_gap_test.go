@@ -115,7 +115,7 @@ func TestSubscriber_Enabled_NoClient_Coverage(t *testing.T) {
 }
 
 func TestDashboardState_Get_Coverage(t *testing.T) {
-	d := &DashboardState{PnLTotal: 1.5, WinRate: 60.0}
+	d := &DashboardState{DashboardData: DashboardData{PnLTotal: 1.5, WinRate: 60.0}}
 	state := d.Get()
 	if state.PnLTotal != 1.5 || state.WinRate != 60.0 {
 		t.Errorf("unexpected state: %+v", state)

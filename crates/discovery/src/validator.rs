@@ -5844,4 +5844,35 @@ mod tests {
         let expected = U256::from_be_slice(&[0xabu8; 32]);
         assert_eq!(output.unwrap(), expected);
     }
+
+    #[test]
+    fn revm_transact_output_precompile_identity_short_output() {
+        use revm::database_interface::EmptyDB;
+
+        let ctx: MainnetContext<EmptyDB> = MainnetContext::new(EmptyDB::default(), SpecId::CANCUN)
+            .modify_cfg_chained(|c| {
+                c.disable_nonce_check = true;
+                c.disable_balance_check = true;
+                c.disable_base_fee = true;
+            });
+        let mut evm = ctx.build_mainnet();
+
+        let identity = address!("0000000000000000000000000000000000000004");
+        // Identity precompile with only 1 byte of input — output shorter than 32 bytes.
+        let input_data = vec![0x42u8; 1];
+        let tx = TxEnv::builder()
+            .caller(Address::ZERO)
+            .kind(TxKind::Call(identity))
+            .data(Bytes::copy_from_slice(&input_data))
+            .value(U256::ZERO)
+            .gas_limit(500_000)
+            .gas_price(0)
+            .nonce(0)
+            .chain_id(Some(1))
+            .build_fill();
+
+        let output = revm_transact_output(&mut evm, tx);
+        // 1 byte output is < 32 bytes → returns None.
+        assert_eq!(output, None);
+    }
 }

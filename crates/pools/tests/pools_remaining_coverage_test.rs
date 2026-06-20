@@ -829,7 +829,6 @@ fn fallback_v3_zero_liquidity_returns_none() {
 #[test]
 fn replay_curve_2coin_predict_analytical() {
     use aether_pools::{predict_post_state_with_replay, UnifiedPostState};
-    use aether_pools::curve::CurvePostState;
     let mut curve = CurvePool::new(Address::ZERO, vec![tok_a(), tok_b()], 100, 4);
     curve.balances = vec![
         U256::from(10_000_000_000_000u64),

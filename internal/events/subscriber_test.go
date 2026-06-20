@@ -23,7 +23,7 @@ func TestNewSubscriberNilState(t *testing.T) {
 }
 
 func TestDashboardStateGet(t *testing.T) {
-	d := &DashboardState{PnLTotal: 5.0, WinRate: 80.0}
+	d := &DashboardState{DashboardData: DashboardData{PnLTotal: 5.0, WinRate: 80.0}}
 	got := d.Get()
 	if got.PnLTotal != 5.0 || got.WinRate != 80.0 {
 		t.Fatalf("state: %+v", got)
@@ -89,7 +89,7 @@ func TestSubscriberRouteSigner(t *testing.T) {
 }
 
 func TestSubscriberRouteInvalidJSON(t *testing.T) {
-	d := &DashboardState{PnLTotal: 1.0}
+	d := &DashboardState{DashboardData: DashboardData{PnLTotal: 1.0}}
 	s := &Subscriber{state: d}
 	s.route(ChannelPnLUpdate, "not-json")
 	if d.Get().PnLTotal != 1.0 {

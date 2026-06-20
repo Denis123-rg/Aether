@@ -10,7 +10,7 @@ import (
 )
 
 // FormatDashboard renders the live dashboard message with emoji and alignment.
-func FormatDashboard(snap metrics.Snapshot, redisState events.DashboardState, redisActive bool) string {
+func FormatDashboard(snap metrics.Snapshot, redisState events.DashboardData, redisActive bool) string {
 	var b strings.Builder
 
 	if !snap.ExecutorReachable {

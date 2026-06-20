@@ -5,9 +5,10 @@ use aether_discovery::metrics::DiscoveryMetrics;
 use aether_discovery::types::{PoolInfo, ValidationResult};
 use aether_discovery::validator::{
     validate_balancer_v3_balances, validate_balancer_v3_pool_full,
-    validate_balancer_v3_pool_rpc, validate_curve_balances, validate_curve_pool_full,
-    validate_curve_pool_rpc, validate_pool_revm, validate_v2_pool_full,
-    validate_v3_pool_full,
+    validate_balancer_v3_pool_revm, validate_balancer_v3_pool_rpc, validate_curve_balances,
+    validate_curve_pool_full, validate_curve_pool_revm, validate_curve_pool_rpc,
+    validate_pool_revm, validate_v2_pool_full, validate_v2_pool_revm, validate_v2_pool_rpc,
+    validate_v3_pool_full, validate_v3_pool_revm,
 };
 use alloy::primitives::{address, Address, U256};
 use alloy::providers::{Provider, ProviderBuilder};
@@ -686,4 +687,242 @@ fn validate_balancer_v3_balances_forward_swap_fails() {
         result,
         ValidationResult::Valid | ValidationResult::Invalid(_)
     ));
+}
+
+// ── Short RPC response edge cases ──────────────────────────────────
+
+#[tokio::test]
+async fn validate_curve_pool_rpc_short_a_output() {
+    use alloy::sol_types::SolCall;
+    alloy::sol! {
+        function A() external view returns (uint256);
+    }
+    let mut server: ServerGuard = Server::new_async().await;
+    let a_sel = &alloy::hex::encode(ACall {}.abi_encode())[..8];
+    server
+        .mock("POST", "/")
+        .match_body(Matcher::Regex(format!("(?i){a_sel}")))
+        .with_body(rpc_ok("0x01"))
+        .create();
+    let url: url::Url = server.url().parse().expect("url");
+    let provider = ProviderBuilder::new().connect_http(url).erased();
+    let pool = address!("bEbc44782C7dB0a1A60Cb6fe97d0b483032FF1C7");
+    let result = validate_curve_pool_rpc(&provider, pool, USDC, WETH, 4, 0.001).await;
+    assert!(matches!(result, ValidationResult::Invalid(_)));
+}
+
+#[tokio::test]
+async fn validate_curve_pool_rpc_short_balances_output() {
+    use alloy::sol_types::SolCall;
+    alloy::sol! {
+        function A() external view returns (uint256);
+        function balances(uint256 i) external view returns (uint256);
+    }
+    let mut server: ServerGuard = Server::new_async().await;
+    let a_sel = &alloy::hex::encode(ACall {}.abi_encode())[..8];
+    let bal_sel = &alloy::hex::encode(balancesCall { i: U256::ZERO }.abi_encode())[..8];
+    server
+        .mock("POST", "/")
+        .match_body(Matcher::Regex(format!("(?i){a_sel}")))
+        .with_body(rpc_ok(&pad_u256(U256::from(200u64))))
+        .create();
+    server
+        .mock("POST", "/")
+        .match_body(Matcher::Regex(format!("(?i){bal_sel}")))
+        .with_body(rpc_ok("0x01"))
+        .create();
+    let url: url::Url = server.url().parse().expect("url");
+    let provider = ProviderBuilder::new().connect_http(url).erased();
+    let pool = address!("bEbc44782C7dB0a1A60Cb6fe97d0b483032FF1C7");
+    let result = validate_curve_pool_rpc(&provider, pool, USDC, WETH, 4, 0.001).await;
+    assert!(matches!(result, ValidationResult::Invalid(_)));
+}
+
+#[tokio::test]
+async fn validate_v2_pool_rpc_short_token0_output() {
+    use alloy::sol_types::SolCall;
+    alloy::sol! {
+        function token0() external view returns (address);
+    }
+    let sel = &alloy::hex::encode(token0Call {}.abi_encode())[..8].to_owned();
+    let mut server: ServerGuard = Server::new_async().await;
+    server
+        .mock("POST", "/")
+        .match_body(Matcher::Regex(format!("(?i){sel}")))
+        .with_body(rpc_ok("0x01"))
+        .create();
+    let url: url::Url = server.url().parse().expect("url");
+    let provider = ProviderBuilder::new().connect_http(url).erased();
+    let pool = address!("B4e16d0168e52d35CaCD2c6185b44281Ec28C9Dc");
+    let result = validate_v2_pool_rpc(
+        &provider, pool, USDC, WETH, ProtocolType::UniswapV2, 30, 0.001,
+    )
+    .await;
+    assert!(matches!(result, ValidationResult::Invalid(_)));
+}
+
+#[tokio::test]
+async fn validate_v2_pool_rpc_short_getreserves_output() {
+    use alloy::sol_types::SolCall;
+    let pad = |a: Address| -> String {
+        format!(
+            "0x{}",
+            alloy::hex::encode({
+                let mut w = [0u8; 32];
+                w[12..32].copy_from_slice(a.as_slice());
+                w
+            })
+        )
+    };
+    alloy::sol! {
+        function token0() external view returns (address);
+        function token1() external view returns (address);
+        function getReserves() external view returns (uint112,uint112,uint32);
+    }
+    let t0_sel = &alloy::hex::encode(token0Call {}.abi_encode())[..8].to_owned();
+    let t1_sel = &alloy::hex::encode(token1Call {}.abi_encode())[..8].to_owned();
+    let gr_sel = &alloy::hex::encode(getReservesCall {}.abi_encode())[..8].to_owned();
+    let mut server: ServerGuard = Server::new_async().await;
+    server
+        .mock("POST", "/")
+        .match_body(Matcher::Regex(format!("(?i){t0_sel}")))
+        .with_body(rpc_ok(&pad(USDC)))
+        .create();
+    server
+        .mock("POST", "/")
+        .match_body(Matcher::Regex(format!("(?i){t1_sel}")))
+        .with_body(rpc_ok(&pad(WETH)))
+        .create();
+    server
+        .mock("POST", "/")
+        .match_body(Matcher::Regex(format!("(?i){gr_sel}")))
+        .with_body(rpc_ok("0x01"))
+        .create();
+    let url: url::Url = server.url().parse().expect("url");
+    let provider = ProviderBuilder::new().connect_http(url).erased();
+    let pool = address!("B4e16d0168e52d35CaCD2c6185b44281Ec28C9Dc");
+    let result = validate_v2_pool_rpc(
+        &provider, pool, USDC, WETH, ProtocolType::UniswapV2, 30, 0.001,
+    )
+    .await;
+    assert!(matches!(result, ValidationResult::Invalid(_)));
+}
+
+#[tokio::test]
+async fn validate_balancer_v3_pool_rpc_short_erc20_balance() {
+    let mut server: ServerGuard = Server::new_async().await;
+    server
+        .mock("POST", "/")
+        .match_body(Matcher::Regex("eth_getCode".into()))
+        .with_body(rpc_ok("0x6000600055"))
+        .create();
+    server
+        .mock("POST", "/")
+        .match_body(Matcher::Regex("(?i)70a08231".into()))
+        .with_body(rpc_ok("0x01"))
+        .create();
+    let url: url::Url = server.url().parse().expect("url");
+    let provider = ProviderBuilder::new().connect_http(url).erased();
+    let pool = address!("0x5c6Ee304399DBdB9C8Ef030aB642B10820DB8F56");
+    let result =
+        validate_balancer_v3_pool_rpc(&provider, pool, USDC, WETH, 10, 0.001).await;
+    assert_eq!(result, ValidationResult::Valid);
+}
+
+#[test]
+fn validate_curve_balances_large_amplification() {
+    let bal = U256::from(1_000_000_000_000_000_000_000u128);
+    let result = validate_curve_balances(WETH, USDC, 4, U256::MAX, bal, bal, 0.001);
+    assert!(matches!(
+        result,
+        ValidationResult::Valid | ValidationResult::Invalid(_)
+    ));
+}
+
+// ── Non-WETH pair early returns (no revm round-trip needed) ─────────
+
+#[tokio::test]
+async fn validate_v2_pool_revm_non_weth_pair() {
+    let dead_url = "http://127.0.0.1:59997";
+    let parsed: url::Url = dead_url.parse().unwrap();
+    let provider = ProviderBuilder::new().connect_http(parsed).erased();
+    let result = validate_v2_pool_revm(
+        &provider, Address::ZERO, DAI, USDC, ProtocolType::UniswapV2, 0.001, None,
+    )
+    .await;
+    assert_eq!(result, ValidationResult::Valid);
+}
+
+#[tokio::test]
+async fn validate_v3_pool_revm_non_weth_pair() {
+    let dead_url = "http://127.0.0.1:59996";
+    let parsed: url::Url = dead_url.parse().unwrap();
+    let provider = ProviderBuilder::new().connect_http(parsed).erased();
+    let result = validate_v3_pool_revm(
+        &provider, Address::ZERO, DAI, USDC, 30, 0.001, None,
+    )
+    .await;
+    assert_eq!(result, ValidationResult::Valid);
+}
+
+#[tokio::test]
+async fn validate_curve_pool_revm_non_weth_pair() {
+    use alloy::sol_types::SolCall;
+    alloy::sol! {
+        function A() external view returns (uint256);
+        function balances(uint256 i) external view returns (uint256);
+    }
+    let mut server = Server::new_async().await;
+    let a_sel = &alloy::hex::encode(ACall {}.abi_encode())[..8];
+    let bal_sel = &alloy::hex::encode(balancesCall { i: U256::ZERO }.abi_encode())[..8];
+    let bal = pad_u256(U256::from(1_000_000_000_000_000_000_000u128));
+    server
+        .mock("POST", "/")
+        .match_body(Matcher::Regex(format!("(?i){a_sel}")))
+        .with_body(rpc_ok(&pad_u256(U256::from(200u64))))
+        .create();
+    server
+        .mock("POST", "/")
+        .match_body(Matcher::Regex(format!("(?i){bal_sel}")))
+        .with_body(rpc_ok(&bal))
+        .create();
+    server
+        .mock("POST", "/")
+        .match_body(Matcher::Regex(format!("(?i){bal_sel}")))
+        .with_body(rpc_ok(&bal))
+        .create();
+    let url: url::Url = server.url().parse().expect("url");
+    let provider = ProviderBuilder::new().connect_http(url).erased();
+    let pool = address!("bEbc44782C7dB0a1A60Cb6fe97d0b483032FF1C7");
+    let result = validate_curve_pool_revm(&provider, pool, DAI, USDC, 4, 0.001).await;
+    assert_eq!(result, ValidationResult::Valid);
+}
+
+#[tokio::test]
+async fn validate_balancer_v3_pool_revm_non_weth_pair() {
+    let mut server = Server::new_async().await;
+    server
+        .mock("POST", "/")
+        .match_body(Matcher::Regex("eth_getCode".into()))
+        .with_body(rpc_ok("0x6000600055"))
+        .create();
+    server
+        .mock("POST", "/")
+        .match_body(Matcher::Regex("(?i)70a08231".into()))
+        .with_body(rpc_ok(&pad_u256(U256::from(
+            1_000_000_000_000_000_000_000u128,
+        ))))
+        .create();
+    server
+        .mock("POST", "/")
+        .match_body(Matcher::Regex("(?i)70a08231".into()))
+        .with_body(rpc_ok(&pad_u256(U256::from(
+            1_000_000_000_000_000_000_000u128,
+        ))))
+        .create();
+    let url: url::Url = server.url().parse().expect("url");
+    let provider = ProviderBuilder::new().connect_http(url).erased();
+    let pool = address!("0x5c6Ee304399DBdB9C8Ef030aB642B10820DB8F56");
+    let result = validate_balancer_v3_pool_revm(&provider, pool, DAI, USDC, 10, 0.001).await;
+    assert_eq!(result, ValidationResult::Valid);
 }

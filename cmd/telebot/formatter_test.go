@@ -26,7 +26,7 @@ func TestFormatDashboardContainsFields(t *testing.T) {
 		},
 		ExecutorReachable: true,
 	}
-	text := FormatDashboard(snap, events.DashboardState{}, false)
+	text := FormatDashboard(snap, events.DashboardData{}, false)
 	for _, want := range []string{"📊", "PnL", "0.123456", "65.5", "flashbots", "🟢", "✅", "Running", "0.001"} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("missing %q in:\n%s", want, text)
@@ -36,7 +36,7 @@ func TestFormatDashboardContainsFields(t *testing.T) {
 
 func TestFormatDashboardExecutorUnreachable(t *testing.T) {
 	snap := metrics.Snapshot{ExecutorReachable: false}
-	text := FormatDashboard(snap, events.DashboardState{}, false)
+	text := FormatDashboard(snap, events.DashboardData{}, false)
 	if !strings.Contains(text, "unreachable") {
 		t.Fatalf("text: %s", text)
 	}
@@ -44,7 +44,7 @@ func TestFormatDashboardExecutorUnreachable(t *testing.T) {
 
 func TestFormatDashboardBreakerOpen(t *testing.T) {
 	snap := metrics.Snapshot{BreakerOpen: true, BreakerReason: "signer_unavailable"}
-	text := FormatDashboard(snap, events.DashboardState{}, false)
+	text := FormatDashboard(snap, events.DashboardData{}, false)
 	if !strings.Contains(text, "🔴") || !strings.Contains(text, "signer_unavailable") {
 		t.Fatalf("text: %s", text)
 	}
@@ -52,7 +52,7 @@ func TestFormatDashboardBreakerOpen(t *testing.T) {
 
 func TestFormatDashboardRedisOverlay(t *testing.T) {
 	snap := metrics.Snapshot{PnLTotal: 1.0, WinRate: 50.0}
-	redis := events.DashboardState{PnLTotal: 99.0, WinRate: 80.0, LastBuilder: "titan", SignerHealthy: false}
+	redis := events.DashboardData{PnLTotal: 99.0, WinRate: 80.0, LastBuilder: "titan", SignerHealthy: false}
 	text := FormatDashboard(snap, redis, true)
 	if !strings.Contains(text, "99.000000") || !strings.Contains(text, "80.0") {
 		t.Fatalf("text: %s", text)

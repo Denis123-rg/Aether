@@ -13,9 +13,9 @@ import (
 // StateHandler is called when an event updates dashboard state.
 type StateHandler func()
 
-// DashboardState is the in-memory state telebot uses for the dashboard.
-type DashboardState struct {
-	mu              sync.RWMutex
+// DashboardData holds the observable fields without synchronization.
+// Safe to pass by value — no mutex.
+type DashboardData struct {
 	PnLTotal        float64
 	WinRate         float64
 	LastBundleProfit float64
@@ -28,11 +28,17 @@ type DashboardState struct {
 	RedisConnected  bool
 }
 
-// Get returns a copy of the current state.
-func (d *DashboardState) Get() DashboardState {
+// DashboardState is the in-memory state telebot uses for the dashboard.
+type DashboardState struct {
+	mu sync.RWMutex
+	DashboardData
+}
+
+// Get returns a copy of the current data (no mutex copy).
+func (d *DashboardState) Get() DashboardData {
 	d.mu.RLock()
 	defer d.mu.RUnlock()
-	return *d
+	return d.DashboardData
 }
 
 func (d *DashboardState) update(fn func(*DashboardState)) {

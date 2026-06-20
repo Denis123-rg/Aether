@@ -55,7 +55,7 @@ func NewTeleBot(
 		pollInterval = 3 * time.Second
 	}
 
-	state := &events.DashboardState{SignerHealthy: true}
+	state := &events.DashboardState{DashboardData: events.DashboardData{SignerHealthy: true}}
 	bot := &TeleBot{
 		api:           api,
 		metricsClient: NewMetricsClient(metricsURL),
