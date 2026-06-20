@@ -138,6 +138,7 @@ pub async fn batch_v2_reserves(
 mod tests {
     use super::*;
     use alloy::sol_types::SolValue;
+    use mockito::Server;
 
     /// Multicall3 selector must match the canonical on-chain ABI so the
     /// rendered calldata stays compatible with the deployed contract.
@@ -455,6 +456,30 @@ mod tests {
     }
 
     #[test]
+    fn getreserves_calldata_is_selector_only() {
+        let calldata = IUniswapV2Pair::getReservesCall {}.abi_encode();
+        assert_eq!(calldata, vec![0x09, 0x02, 0xf1, 0xac]);
+    }
+
+    #[test]
+    fn aggregate3_calldata_encodes_with_correct_selector() {
+        let calldata = IMulticall3::aggregate3Call {
+            calls: vec![IMulticall3::Call3 {
+                target: Address::ZERO,
+                allowFailure: true,
+                callData: vec![].into(),
+            }],
+        }.abi_encode();
+        assert_eq!(calldata[0..4], [0x82, 0xad, 0x56, 0xcb]);
+    }
+
+    #[test]
+    fn aggregate3_decode_returns_rejects_truncated_data() {
+        let result = IMulticall3::aggregate3Call::abi_decode_returns(&[0x00u8; 4]);
+        assert!(result.is_err(), "truncated return data must produce a decode error");
+    }
+
+    #[test]
     fn getreserves_return_data_decode_round_trip() {
         let _pool = address!("0000000000000000000000000000000000000042");
         let r0 = U256::from(999_999u64);
@@ -624,5 +649,384 @@ mod tests {
         assert_eq!(b.len(), 96);
         assert_eq!(U256::from_be_slice(&b[0..32]), r0);
         assert_eq!(U256::from_be_slice(&b[32..64]), r1);
+    }
+
+    #[test]
+    fn single_pool_with_zero_reserves_skipped() {
+        let pools = [address!("0000000000000000000000000000000000000001")];
+        let synth = vec![IMulticall3::Result {
+            success: true,
+            returnData: {
+                let mut b = Vec::with_capacity(96);
+                b.extend_from_slice(&U256::ZERO.to_be_bytes::<32>());
+                b.extend_from_slice(&U256::ZERO.to_be_bytes::<32>());
+                b.extend_from_slice(&U256::ZERO.to_be_bytes::<32>());
+                b
+            }.into(),
+        }];
+        let mut out = Vec::new();
+        for (pool, res) in pools.iter().zip(synth.into_iter()) {
+            if !res.success || res.returnData.len() < 96 { continue; }
+            let r0 = U256::from_be_slice(&res.returnData[0..32]);
+            let r1 = U256::from_be_slice(&res.returnData[32..64]);
+            if r0 == U256::ZERO && r1 == U256::ZERO { continue; }
+            out.push(V2ReservesResult { pool: *pool, reserve0: r0, reserve1: r1 });
+        }
+        assert!(out.is_empty());
+    }
+
+    #[test]
+    fn all_filters_drop_every_pool() {
+        let pools = [
+            address!("0000000000000000000000000000000000000001"),
+            address!("0000000000000000000000000000000000000002"),
+            address!("0000000000000000000000000000000000000003"),
+            address!("0000000000000000000000000000000000000004"),
+        ];
+        let synth = vec![
+            IMulticall3::Result { success: false, returnData: vec![].into() },
+            IMulticall3::Result { success: true, returnData: vec![0u8; 32].into() },
+            IMulticall3::Result {
+                success: true, returnData: {
+                    let mut b = Vec::with_capacity(96);
+                    b.extend_from_slice(&U256::ZERO.to_be_bytes::<32>());
+                    b.extend_from_slice(&U256::ZERO.to_be_bytes::<32>());
+                    b.extend_from_slice(&U256::ZERO.to_be_bytes::<32>());
+                    b
+                }.into(),
+            },
+            IMulticall3::Result { success: false, returnData: vec![0u8; 10].into() },
+        ];
+        let mut out = Vec::new();
+        for (pool, res) in pools.iter().zip(synth.into_iter()) {
+            if !res.success || res.returnData.len() < 96 { continue; }
+            let r0 = U256::from_be_slice(&res.returnData[0..32]);
+            let r1 = U256::from_be_slice(&res.returnData[32..64]);
+            if r0 == U256::ZERO && r1 == U256::ZERO { continue; }
+            out.push(V2ReservesResult { pool: *pool, reserve0: r0, reserve1: r1 });
+        }
+        assert!(out.is_empty(), "all pools should be filtered out");
+    }
+
+    // ── Integration-style tests using mockito to call batch_v2_reserves ──
+
+    /// Helper: ABI-encode a Vec<IMulticall3::Result>, wrap as JSON-RPC response hex.
+    fn rpc_body(synth: Vec<IMulticall3::Result>) -> String {
+        let encoded = synth.abi_encode();
+        let hex_data = format!("0x{}", alloy::hex::encode(&encoded));
+        format!(r#"{{"jsonrpc":"2.0","id":1,"result":"{hex_data}"}}"#)
+    }
+
+    /// Helper: create a mockito-backed provider.
+    async fn mock_provider(
+        server: &mut Server,
+    ) -> alloy::providers::DynProvider<alloy::network::Ethereum> {
+        let url: url::Url = server.url().parse().unwrap();
+        alloy::providers::ProviderBuilder::new()
+            .connect_http(url)
+            .erased()
+    }
+
+    /// batch_v2_reserves: mismatched result count → error.
+    #[tokio::test]
+    async fn multicall_decode_mismatched_lengths() {
+        let mut server = Server::new_async().await;
+        let one = U256::from(1_000_000u64);
+        let synth = vec![IMulticall3::Result {
+            success: true,
+            returnData: {
+                let mut b = Vec::with_capacity(96);
+                b.extend_from_slice(&one.to_be_bytes::<32>());
+                b.extend_from_slice(&(one * U256::from(2u8)).to_be_bytes::<32>());
+                b.extend_from_slice(&U256::ZERO.to_be_bytes::<32>());
+                b
+            }
+            .into(),
+        }];
+        let body = rpc_body(synth);
+        let _m = server
+            .mock("POST", "/")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(&body)
+            .create();
+        let provider = mock_provider(&mut server).await;
+        let pools = [
+            address!("0000000000000000000000000000000000000001"),
+            address!("0000000000000000000000000000000000000002"),
+        ];
+        let result = batch_v2_reserves(&provider, 42, &pools).await;
+        assert!(result.is_err());
+        assert!(
+            result.unwrap_err().contains("returned 1 results for 2 sub-calls")
+        );
+    }
+
+    /// Failed sub-calls are dropped; surviving pools are returned.
+    #[tokio::test]
+    async fn multicall_decode_failed_subcalls_skipped() {
+        let mut server = Server::new_async().await;
+        let one = U256::from(1_000_000u64);
+        let synth = vec![
+            IMulticall3::Result {
+                success: false,
+                returnData: vec![].into(),
+            },
+            IMulticall3::Result {
+                success: true,
+                returnData: {
+                    let mut b = Vec::with_capacity(96);
+                    b.extend_from_slice(&one.to_be_bytes::<32>());
+                    b.extend_from_slice(&(one * U256::from(2u8)).to_be_bytes::<32>());
+                    b.extend_from_slice(&U256::ZERO.to_be_bytes::<32>());
+                    b
+                }
+                .into(),
+            },
+        ];
+        let body = rpc_body(synth);
+        let _m = server
+            .mock("POST", "/")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(&body)
+            .create();
+        let provider = mock_provider(&mut server).await;
+        let pools = [
+            address!("0000000000000000000000000000000000000001"),
+            address!("0000000000000000000000000000000000000002"),
+        ];
+        let result = batch_v2_reserves(&provider, 42, &pools).await;
+        assert!(result.is_ok());
+        let out = result.unwrap();
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].pool, pools[1]);
+        assert_eq!(out[0].reserve0, one);
+        assert_eq!(out[0].reserve1, one * U256::from(2u8));
+    }
+
+    /// Short return data (<96 bytes) is silently dropped.
+    #[tokio::test]
+    async fn multicall_decode_short_return_data_skipped() {
+        let mut server = Server::new_async().await;
+        let synth = vec![IMulticall3::Result {
+            success: true,
+            returnData: vec![0u8; 32].into(), // Only 32 bytes — need 96.
+        }];
+        let body = rpc_body(synth);
+        let _m = server
+            .mock("POST", "/")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(&body)
+            .create();
+        let provider = mock_provider(&mut server).await;
+        let pools = [address!("0000000000000000000000000000000000000001")];
+        let result = batch_v2_reserves(&provider, 42, &pools).await;
+        assert!(result.is_ok());
+        assert!(result.unwrap().is_empty());
+    }
+
+    /// Both reserves zero → pool skipped.
+    #[tokio::test]
+    async fn multicall_decode_zero_reserves_skipped() {
+        let mut server = Server::new_async().await;
+        let synth = vec![IMulticall3::Result {
+            success: true,
+            returnData: {
+                let mut b = Vec::with_capacity(96);
+                b.extend_from_slice(&U256::ZERO.to_be_bytes::<32>());
+                b.extend_from_slice(&U256::ZERO.to_be_bytes::<32>());
+                b.extend_from_slice(&U256::ZERO.to_be_bytes::<32>());
+                b
+            }
+            .into(),
+        }];
+        let body = rpc_body(synth);
+        let _m = server
+            .mock("POST", "/")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(&body)
+            .create();
+        let provider = mock_provider(&mut server).await;
+        let pools = [address!("0000000000000000000000000000000000000001")];
+        let result = batch_v2_reserves(&provider, 42, &pools).await;
+        assert!(result.is_ok());
+        assert!(result.unwrap().is_empty());
+    }
+
+    /// Mixed outcomes: success, failure, short data, valid → only two survive.
+    #[tokio::test]
+    async fn multicall_decode_mixed_filters() {
+        let mut server = Server::new_async().await;
+        let one = U256::from(1_000_000u64);
+        let synth = vec![
+            IMulticall3::Result {
+                success: true,
+                returnData: {
+                    let mut b = Vec::with_capacity(96);
+                    b.extend_from_slice(&one.to_be_bytes::<32>());
+                    b.extend_from_slice(&(one * U256::from(2u8)).to_be_bytes::<32>());
+                    b.extend_from_slice(&U256::ZERO.to_be_bytes::<32>());
+                    b
+                }
+                .into(),
+            },
+            IMulticall3::Result {
+                success: false,
+                returnData: vec![].into(),
+            },
+            IMulticall3::Result {
+                success: true,
+                returnData: vec![0u8; 10].into(), // too short
+            },
+            IMulticall3::Result {
+                success: true,
+                returnData: {
+                    let mut b = Vec::with_capacity(96);
+                    b.extend_from_slice(&U256::from(500u64).to_be_bytes::<32>());
+                    b.extend_from_slice(&U256::from(600u64).to_be_bytes::<32>());
+                    b.extend_from_slice(&U256::ZERO.to_be_bytes::<32>());
+                    b
+                }
+                .into(),
+            },
+        ];
+        let body = rpc_body(synth);
+        let _m = server
+            .mock("POST", "/")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(&body)
+            .create();
+        let provider = mock_provider(&mut server).await;
+        let pools = [
+            address!("0000000000000000000000000000000000000001"),
+            address!("0000000000000000000000000000000000000002"),
+            address!("0000000000000000000000000000000000000003"),
+            address!("0000000000000000000000000000000000000004"),
+        ];
+        let result = batch_v2_reserves(&provider, 42, &pools).await;
+        assert!(result.is_ok());
+        let out = result.unwrap();
+        assert_eq!(out.len(), 2);
+        assert_eq!(out[0].pool, pools[0]);
+        assert_eq!(out[0].reserve0, one);
+        assert_eq!(out[1].pool, pools[3]);
+        assert_eq!(out[1].reserve0, U256::from(500u64));
+    }
+
+    /// Happy path — all pools return valid reserves.
+    #[tokio::test]
+    async fn multicall_decode_happy_path() {
+        let mut server = Server::new_async().await;
+        let one = U256::from(1_000_000u64);
+        let synth = vec![
+            IMulticall3::Result {
+                success: true,
+                returnData: {
+                    let mut b = Vec::with_capacity(96);
+                    b.extend_from_slice(&one.to_be_bytes::<32>());
+                    b.extend_from_slice(&(one * U256::from(2u8)).to_be_bytes::<32>());
+                    b.extend_from_slice(&U256::ZERO.to_be_bytes::<32>());
+                    b
+                }
+                .into(),
+            },
+            IMulticall3::Result {
+                success: true,
+                returnData: {
+                    let mut b = Vec::with_capacity(96);
+                    b.extend_from_slice(&(one * U256::from(3u8)).to_be_bytes::<32>());
+                    b.extend_from_slice(&(one * U256::from(4u8)).to_be_bytes::<32>());
+                    b.extend_from_slice(&U256::ZERO.to_be_bytes::<32>());
+                    b
+                }
+                .into(),
+            },
+        ];
+        let body = rpc_body(synth);
+        let _m = server
+            .mock("POST", "/")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(&body)
+            .create();
+        let provider = mock_provider(&mut server).await;
+        let pools = [
+            address!("0000000000000000000000000000000000000001"),
+            address!("0000000000000000000000000000000000000002"),
+        ];
+        let result = batch_v2_reserves(&provider, 42, &pools).await;
+        assert!(result.is_ok());
+        let out = result.unwrap();
+        assert_eq!(out.len(), 2);
+        assert_eq!(out[0].reserve0, one);
+        assert_eq!(out[0].reserve1, one * U256::from(2u8));
+        assert_eq!(out[1].reserve0, one * U256::from(3u8));
+        assert_eq!(out[1].reserve1, one * U256::from(4u8));
+    }
+
+    /// All sub-calls failed — empty output.
+    #[tokio::test]
+    async fn multicall_decode_all_subcalls_failed() {
+        let mut server = Server::new_async().await;
+        let synth = vec![
+            IMulticall3::Result {
+                success: false,
+                returnData: vec![].into(),
+            },
+            IMulticall3::Result {
+                success: false,
+                returnData: vec![0u8; 10].into(),
+            },
+        ];
+        let body = rpc_body(synth);
+        let _m = server
+            .mock("POST", "/")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(&body)
+            .create();
+        let provider = mock_provider(&mut server).await;
+        let pools = [
+            address!("0000000000000000000000000000000000000001"),
+            address!("0000000000000000000000000000000000000002"),
+        ];
+        let result = batch_v2_reserves(&provider, 42, &pools).await;
+        assert!(result.is_ok());
+        assert!(result.unwrap().is_empty());
+    }
+
+    /// abi_decode_returns round-trip — synthetic aggregate3 return data.
+    #[test]
+    fn abi_decode_returns_with_synthetic_data() {
+        let one = U256::from(1_000_000u64);
+        let synth = vec![
+            IMulticall3::Result {
+                success: true,
+                returnData: {
+                    let mut b = Vec::with_capacity(96);
+                    b.extend_from_slice(&one.to_be_bytes::<32>());
+                    b.extend_from_slice(&(one * U256::from(2u8)).to_be_bytes::<32>());
+                    b.extend_from_slice(&U256::ZERO.to_be_bytes::<32>());
+                    b
+                }
+                .into(),
+            },
+            IMulticall3::Result {
+                success: false,
+                returnData: vec![].into(),
+            },
+        ];
+        let encoded = <Vec<IMulticall3::Result> as SolValue>::abi_encode(&synth);
+        let decoded = IMulticall3::aggregate3Call::abi_decode_returns(&encoded).unwrap();
+        assert_eq!(decoded.len(), 2);
+        assert!(decoded[0].success);
+        assert!(!decoded[1].success);
+        // Verify decoded return data bytes (reserve0 at bytes 0..32 after returnData offset)
+        let r0_raw = &decoded[0].returnData[0..32];
+        assert_eq!(U256::from_be_slice(r0_raw), one);
     }
 }

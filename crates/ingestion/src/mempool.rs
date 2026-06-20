@@ -969,4 +969,82 @@ mod tests {
             }
         }
     }
+
+    #[test]
+    fn forward_with_metrics_genuine_tx() {
+        let registry = prometheus::Registry::new();
+        let metrics = MempoolIngestMetrics::register(&registry);
+        let channels = Arc::new(EventChannels::new());
+        let mut rx = channels.subscribe_pending_txs();
+
+        let mempool = AlchemyMempool::with_metrics(
+            AlchemyMempoolConfig {
+                ws_url: "wss://eth-mainnet.g.alchemy.com/v2/test".into(),
+                router_filter: vec![],
+            },
+            metrics.clone(),
+        );
+
+        mempool.forward(&channels, make_test_rpc_tx());
+
+        let received = rx.try_recv().expect("event should be dispatched");
+        assert!(received.first_seen_unix_nanos > 0);
+        assert_eq!(metrics.raw_reencode_mismatch_count(), 0);
+    }
+
+    #[test]
+    fn forward_with_metrics_drops_tampered_tx() {
+        let registry = prometheus::Registry::new();
+        let metrics = MempoolIngestMetrics::register(&registry);
+        let channels = Arc::new(EventChannels::new());
+
+        let mempool = AlchemyMempool::with_metrics(
+            AlchemyMempoolConfig {
+                ws_url: "wss://eth-mainnet.g.alchemy.com/v2/test".into(),
+                router_filter: vec![],
+            },
+            metrics.clone(),
+        );
+
+        let (mut raw, _hash) = signed_tx_vector();
+        let last = raw.len() - 1;
+        raw[last] ^= 0xff;
+
+        let envelope = alloy::eips::eip2718::Decodable2718::decode_2718(&mut raw.as_slice())
+            .expect("decode should succeed");
+        let tx = build_rpc_tx(envelope);
+
+        let original_count = metrics.raw_reencode_mismatch_count();
+        mempool.forward(&channels, tx);
+        assert_eq!(metrics.raw_reencode_mismatch_count(), original_count);
+    }
+
+    #[test]
+    fn subscribe_params_nested_single_element() {
+        let mut bytes = [0u8; 20];
+        bytes[19] = 0x01;
+        let addr = Address::new(bytes);
+        let cfg = AlchemyMempoolConfig {
+            ws_url: "wss://test".into(),
+            router_filter: vec![addr],
+        };
+        let v = cfg.subscribe_params();
+        let arr = v.as_array().unwrap();
+        assert_eq!(arr.len(), 2);
+        assert_eq!(arr[0], "alchemy_pendingTransactions");
+        let to_addrs = arr[1]["toAddress"].as_array().unwrap();
+        assert_eq!(to_addrs.len(), 1);
+        assert_eq!(to_addrs[0], "0x0000000000000000000000000000000000000001");
+    }
+
+    #[test]
+    fn is_enabled_from_str_additional_edge_cases() {
+        assert!(!is_enabled_from_str(" 1 "));
+        assert!(!is_enabled_from_str("true "));
+        assert!(!is_enabled_from_str("on "));
+        assert!(!is_enabled_from_str("yes "));
+        assert!(!is_enabled_from_str("random_string"));
+        assert!(!is_enabled_from_str("2"));
+        assert!(!is_enabled_from_str("Y"));
+    }
 }

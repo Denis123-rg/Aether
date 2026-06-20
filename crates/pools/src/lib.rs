@@ -1967,4 +1967,95 @@ mod cache_tests {
         assert!(result.is_some());
         assert!(!rp.get());
     }
+
+    #[test]
+    fn predict_with_fallback_v3_returns_correct_variant() {
+        let mut v3 = UniswapV3Pool::new(
+            address!("88e6A0c2dDD26FEEb64F039a2c41296FcB3f5640"),
+            address!("A0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"),
+            address!("C02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2"),
+            30, 60,
+        );
+        let two_pow_96_f64: f64 = 79_228_162_514_264_337_593_543_950_336.0;
+        let sqrt_norm = 1.0001f64.powi(15);
+        let sqrt_x96 = (sqrt_norm * two_pow_96_f64) as u128;
+        v3.update_sqrt_price(U256::from(sqrt_x96), 10_000_000_000_000_000u128, 30);
+        let state = PoolState::UniswapV3(v3.clone());
+        let result = predict_post_state_with_fallback(
+            &state, v3.token0, U256::from(100_000_000u64), |_| {},
+        );
+        assert!(matches!(result, Some(UnifiedPostState::UniswapV3(_))));
+    }
+
+    #[test]
+    fn predict_with_fallback_curve_returns_correct_variant() {
+        let usdc = address!("A0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48");
+        let usdt = address!("dAC17F958D2ee523a2206206994597C13D831ec7");
+        let mut curve = CurvePool::new(Address::ZERO, vec![usdc, usdt], 100, 4);
+        curve.balances = vec![
+            U256::from(10_000_000_000_000u64),
+            U256::from(10_000_000_000_000u64),
+        ];
+        let state = PoolState::Curve(curve);
+        let result = predict_post_state_with_fallback(
+            &state, usdc, U256::from(1_000_000_000u64), |_| {},
+        );
+        assert!(matches!(result, Some(UnifiedPostState::Curve(_))));
+    }
+
+    #[test]
+    fn unified_post_state_equality_all_variants() {
+        let v3_a = UnifiedPostState::UniswapV3(crate::uniswap_v3::V3PostState {
+            new_sqrt_price_x96: U256::from(42u64),
+            new_liquidity: 99,
+            amount_out: U256::from(7u64),
+            single_tick: true,
+        });
+        let v3_b = UnifiedPostState::UniswapV3(crate::uniswap_v3::V3PostState {
+            new_sqrt_price_x96: U256::from(42u64),
+            new_liquidity: 99,
+            amount_out: U256::from(7u64),
+            single_tick: true,
+        });
+        assert_eq!(v3_a, v3_b);
+
+        let curve = UnifiedPostState::Curve(crate::curve::CurvePostState {
+            i: 0, j: 1,
+            new_balance_in: U256::from(1000u64),
+            new_balance_out: U256::from(900u64),
+            amount_out: U256::from(95u64),
+            analytical: true,
+        });
+        let bal = UnifiedPostState::Balancer(crate::balancer::BalancerPostState {
+            new_balance0: U256::from(1000u64),
+            new_balance1: U256::from(900u64),
+            amount_out: U256::from(88u64),
+            analytical: true,
+        });
+        assert_ne!(v3_a, curve);
+        assert_ne!(curve, bal);
+    }
+
+    #[test]
+    fn predict_with_fallback_v3_unknown_token_does_not_call_fallback() {
+        let mut v3 = UniswapV3Pool::new(
+            address!("88e6A0c2dDD26FEEb64F039a2c41296FcB3f5640"),
+            address!("A0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"),
+            address!("C02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2"),
+            30, 60,
+        );
+        let two_pow_96_f64: f64 = 79_228_162_514_264_337_593_543_950_336.0;
+        let sqrt_norm = 1.0001f64.powi(15);
+        let sqrt_x96 = (sqrt_norm * two_pow_96_f64) as u128;
+        v3.update_sqrt_price(U256::from(sqrt_x96), 10_000_000_000_000_000u128, 30);
+        let state = PoolState::UniswapV3(v3);
+        let captured = std::cell::RefCell::new(Vec::<String>::new());
+        let bogus = address!("dddddddddddddddddddddddddddddddddddddddd");
+        let result = predict_post_state_with_fallback(
+            &state, bogus, U256::from(100u64),
+            |reason| captured.borrow_mut().push(reason.to_string()),
+        );
+        assert!(result.is_none());
+        assert!(captured.borrow().is_empty(), "predictor rejected before confidence check");
+    }
 }

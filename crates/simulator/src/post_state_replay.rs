@@ -1126,6 +1126,185 @@ mod tests {
         );
     }
 
+    /// Helper: produce bytecode that stores each word at offset `i*32` and
+    /// returns `words.len() * 32` bytes.  Used by the balancer mock vault.
+    fn multiword_returner(words: &[U256]) -> Vec<u8> {
+        let mut code = Vec::new();
+        for (i, w) in words.iter().enumerate() {
+            code.push(0x7f);
+            code.extend_from_slice(&w.to_be_bytes::<32>());
+            code.push(0x61);
+            code.extend_from_slice(&((i * 32) as u16).to_be_bytes());
+            code.push(0x52);
+        }
+        let total_len = (words.len() * 32) as u16;
+        code.push(0x61);
+        code.extend_from_slice(&total_len.to_be_bytes());
+        code.push(0x60);
+        code.push(0x00);
+        code.push(0xf3);
+        code
+    }
+
+    #[test]
+    fn v3_slot0_abi_decode_round_trip() {
+        use alloy::primitives::Signed;
+        use alloy::sol_types::SolCall;
+        let sqrt_price = alloy::primitives::uint!(1234567890123456789_U160);
+        let return_data = IUniswapV3PoolReader::slot0Call::abi_encode_returns(
+            &IUniswapV3PoolReader::slot0Return {
+                sqrtPriceX96: sqrt_price,
+                tick: Signed::<24, 1>::ZERO,
+                observationIndex: 0u16,
+                observationCardinality: 0u16,
+                observationCardinalityNext: 0u16,
+                feeProtocol: 0u8,
+                unlocked: false,
+            },
+        );
+        let decoded = IUniswapV3PoolReader::slot0Call::abi_decode_returns(&return_data)
+            .expect("slot0 return should round-trip");
+        assert_eq!(U256::from(decoded.sqrtPriceX96), U256::from(sqrt_price));
+        assert_eq!(decoded.tick, Signed::<24, 1>::ZERO);
+    }
+
+    #[test]
+    fn v3_liquidity_abi_decode_returns_u128() {
+        use alloy::sol_types::SolCall;
+        let return_data = IUniswapV3PoolReader::liquidityCall::abi_encode_returns(&42u128);
+        let decoded = IUniswapV3PoolReader::liquidityCall::abi_decode_returns(&return_data)
+            .expect("liquidity return should round-trip");
+        assert_eq!(decoded, 42u128);
+    }
+
+    #[test]
+    fn v3_slot0_decode_rejects_too_short_data() {
+        let result = IUniswapV3PoolReader::slot0Call::abi_decode_returns(&[0u8; 32]);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn v3_liquidity_decode_rejects_too_short_data() {
+        let result = IUniswapV3PoolReader::liquidityCall::abi_decode_returns(&[]);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn build_view_env_constructs_correct_tx() {
+        let pool = address!("88e6A0c2dDD26FEEb64F039a2c41296FcB3f5640");
+        let data = vec![0x12, 0x34];
+        let tx = build_view_env(pool, data.clone(), 42);
+        assert_eq!(tx.caller, Address::ZERO);
+        assert_eq!(tx.kind, revm::primitives::TxKind::Call(pool));
+        assert_eq!(tx.value, U256::ZERO);
+        assert_eq!(tx.data.len(), 2);
+        assert!(tx.gas_price == 0);
+        assert_eq!(tx.chain_id, Some(42));
+    }
+
+    #[test]
+    fn balancer_success_with_mock_pool_and_vault() {
+        let pool = address!("5c6Ee304399DBdB9C8Ef030aB642B10820DB8F56");
+        let vault = address!("0000000000000000000000000000000000000f1a");
+        let t0 = address!("C02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2");
+        let t1 = address!("ba100000625a3754423978a60c9317c58a424e3D");
+        let pool_id_val = U256::from(0xdeadbeefcafebabeu64);
+
+        let mut state = ForkedState::new_empty(18_000_000, 1_700_000_000, 1_000_000_000);
+        state.insert_account_balance(default_victim().from, U256::from(10u128.pow(18)));
+
+        // Pool bytecode: return 32 bytes (poolId as uint256 → bytes32)
+        state.insert_account(pool, U256::ZERO, {
+            let mut c = Vec::with_capacity(38);
+            c.push(0x7f);
+            c.extend_from_slice(&pool_id_val.to_be_bytes::<32>());
+            c.extend_from_slice(&[0x60, 0x00, 0x52, 0x60, 0x20, 0x60, 0x00, 0xf3]);
+            c
+        }.into());
+
+        // Vault bytecode: return getPoolTokens ABI (tokens array, balances array, lastChangeBlock)
+        //
+        // Tuple head: [tokens_offset=96, balances_offset=192, lastChangeBlock=0]
+        //   tokens_offset = 0x60 = 3 head words
+        //   balances_offset = 0xC0 = 3 head words + tokens_encoding (32+64=96 bytes)
+        // Tail: tokens_len=2, token0, token1, balances_len=2, balance0, balance1
+        {
+            let mut bal0_word = [0u8; 32];
+            bal0_word[12..32].copy_from_slice(t0.as_slice());
+            let mut bal1_word = [0u8; 32];
+            bal1_word[12..32].copy_from_slice(t1.as_slice());
+
+            let vault_words = vec![
+                U256::from(0x60u64),         // offset to tokens array (= 96 = 3 head words)
+                U256::from(0xC0u64),         // offset to balances array (= 192 = 96 + tokens_len word + 2 tokens)
+                U256::ZERO,                  // lastChangeBlock
+                U256::from(2u64),            // tokens length
+                U256::from_be_bytes(bal0_word), // token0
+                U256::from_be_bytes(bal1_word), // token1
+                U256::from(2u64),            // balances length
+                U256::from(1_000_000u64),    // balance0
+                U256::from(2_000_000u64),    // balance1
+            ];
+            state.insert_account(vault, U256::ZERO, multiword_returner(&vault_words).into());
+        }
+
+        let result = replay_balancer_post_state_cache(
+            state, &default_victim(), pool, vault, t0, t1, &default_params(),
+        );
+        let post = result.expect("Balancer replay should succeed with mock pool+vault");
+        assert_eq!(post.new_balance0, U256::from(1_000_000u64));
+        assert_eq!(post.new_balance1, U256::from(2_000_000u64));
+        assert_eq!(post.amount_out, U256::ZERO);
+        assert!(!post.analytical);
+    }
+
+    #[test]
+    fn balancer_replay_vault_reverts_get_pool_tokens() {
+        let pool = address!("5c6Ee304399DBdB9C8Ef030aB642B10820DB8F56");
+        let vault = address!("0000000000000000000000000000000000000f1a");
+        let t0 = address!("C02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2");
+        let t1 = address!("ba100000625a3754423978a60c9317c58a424e3D");
+
+        let mut state = ForkedState::new_empty(18_000_000, 1_700_000_000, 1_000_000_000);
+        state.insert_account_balance(default_victim().from, U256::from(10u128.pow(18)));
+
+        // Pool returns valid poolId
+        state.insert_account(pool, U256::ZERO, {
+            let mut c = Vec::with_capacity(38);
+            c.push(0x7f);
+            c.extend_from_slice(&U256::from(1u64).to_be_bytes::<32>());
+            c.extend_from_slice(&[0x60, 0x00, 0x52, 0x60, 0x20, 0x60, 0x00, 0xf3]);
+            c
+        }.into());
+
+        // Vault reverts
+        state.insert_account(vault, U256::ZERO, vec![0x60, 0x00, 0x60, 0x00, 0xfd].into());
+
+        let result = replay_balancer_post_state_cache(
+            state, &default_victim(), pool, vault, t0, t1, &default_params(),
+        );
+        assert!(
+            matches!(result, Err(ReplayError::ReadCallFailed("getPoolTokens"))),
+            "expected ReadCallFailed(getPoolTokens), got {result:?}"
+        );
+    }
+
+    #[test]
+    fn balancer_pool_no_code_get_pool_id_decode_failed() {
+        let pool = address!("5c6Ee304399DBdB9C8Ef030aB642B10820DB8F56");
+        let vault = BALANCER_V2_VAULT;
+        let t0 = address!("C02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2");
+        let t1 = address!("ba100000625a3754423978a60c9317c58a424e3D");
+        let state = ForkedState::new_empty(18_000_000, 1_700_000_000, 1_000_000_000);
+        let result = replay_balancer_post_state_cache(
+            state, &default_victim(), pool, vault, t0, t1, &default_params(),
+        );
+        assert!(
+            matches!(result, Err(ReplayError::DecodeFailed("getPoolId"))),
+            "expected DecodeFailed(getPoolId), got {result:?}"
+        );
+    }
+
     #[test]
     fn balancer_pool_no_code_returns_decode_failed() {
         let pool = address!("5c6Ee304399DBdB9C8Ef030aB642B10820DB8F56");
@@ -1139,6 +1318,55 @@ mod tests {
         assert!(
             matches!(result, Err(ReplayError::DecodeFailed("getPoolId"))),
             "expected DecodeFailed(getPoolId), got {result:?}"
+        );
+    }
+
+    #[test]
+    fn balancer_vault_returns_unmatched_tokens_decode_failed() {
+        let pool = address!("5c6Ee304399DBdB9C8Ef030aB642B10820DB8F56");
+        let vault = address!("0000000000000000000000000000000000000f1a");
+        let t0 = address!("C02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2");
+        let t1 = address!("ba100000625a3754423978a60c9317c58a424e3D");
+        let pool_id_val = U256::from(0xdeadbeefcafebabeu64);
+
+        let mut state = ForkedState::new_empty(18_000_000, 1_700_000_000, 1_000_000_000);
+        state.insert_account_balance(default_victim().from, U256::from(10u128.pow(18)));
+
+        // Pool bytecode: return 32 bytes (poolId as uint256 → bytes32)
+        state.insert_account(pool, U256::ZERO, {
+            let mut c = Vec::with_capacity(38);
+            c.push(0x7f);
+            c.extend_from_slice(&pool_id_val.to_be_bytes::<32>());
+            c.extend_from_slice(&[0x60, 0x00, 0x52, 0x60, 0x20, 0x60, 0x00, 0xf3]);
+            c
+        }.into());
+
+        // Vault bytecode: return getPoolTokens ABI with a token not matching
+        // token0 or token1, so the loop never sets bal0/bal1 and the
+        // DecodeFailed("getPoolTokens") path is exercised.
+        let other_token = address!("1111111111111111111111111111111111111111");
+        {
+            let mut t_word = [0u8; 32];
+            t_word[12..32].copy_from_slice(other_token.as_slice());
+
+            let vault_words = vec![
+                U256::from(0x60u64),
+                U256::from(0xC0u64),
+                U256::ZERO,
+                U256::from(1u64),
+                U256::from_be_bytes(t_word),
+                U256::from(1u64),
+                U256::from(999_999u64),
+            ];
+            state.insert_account(vault, U256::ZERO, multiword_returner(&vault_words).into());
+        }
+
+        let result = replay_balancer_post_state_cache(
+            state, &default_victim(), pool, vault, t0, t1, &default_params(),
+        );
+        assert!(
+            matches!(result, Err(ReplayError::DecodeFailed("getPoolTokens"))),
+            "expected DecodeFailed(getPoolTokens), got {result:?}"
         );
     }
 }

@@ -1687,6 +1687,30 @@ mod tests {
     }
 
     #[test]
+    fn read_post_balance_returns_stored_value_when_key_present() {
+        use revm::state::{EvmState, Account, EvmStorageSlot};
+        let mut state = EvmState::default();
+        let key = U256::from(42u64);
+        let value = U256::from(12345u64);
+        let mut acct = Account::default();
+        acct.storage.insert(key, EvmStorageSlot::new(value, 0));
+        state.insert(WETH, acct);
+        let result = read_post_balance(&state, WETH, key, U256::from(999u64));
+        assert_eq!(result, value);
+    }
+
+    #[test]
+    fn read_post_balance_returns_fallback_when_key_absent_but_token_present() {
+        use revm::state::{EvmState, Account};
+        let mut state = EvmState::default();
+        state.insert(WETH, Account::default());
+        let key = U256::from(42u64);
+        let fallback = U256::from(999u64);
+        let result = read_post_balance(&state, WETH, key, fallback);
+        assert_eq!(result, fallback);
+    }
+
+    #[test]
     fn classify_transaction_header_error() {
         let err: EVMError<String> = EVMError::Header(revm::context::result::InvalidHeader::PrevrandaoNotSet);
         assert_eq!(classify_transact_err(&err), RejectReason::SimError);

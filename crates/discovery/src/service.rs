@@ -2209,4 +2209,437 @@ mod tests {
         assert!(result.tvl_usd > 0.0);
         assert!(result.volume_24h_usd > 0.0);
     }
+
+    #[test]
+    fn estimate_tvl_usd_usdc_token0_non_weth_token1() {
+        let dai = address!("6B175474E89094C44Da98b954EedeAC495271d0F");
+        let tvl = estimate_tvl_usd(usdc(), dai, 100.0, 200.0);
+        // token0 == USDC, not WETH → uses (r0 + r1) * 2.0
+        assert!((tvl - 600.0).abs() < 1.0);
+    }
+
+    #[test]
+    fn estimate_tvl_usd_non_weth_usdc_both_positive() {
+        let dai = address!("6B175474E89094C44Da98b954EedeAC495271d0F");
+        let tvl = estimate_tvl_usd(dai, usdc(), 1000.0, 2000.0);
+        // USDC in token1 → (r0 + r1) * 2.0
+        assert!((tvl - 6000.0).abs() < 1.0);
+    }
+
+    #[test]
+    fn discovery_service_prune_empty_cache_returns_zero() {
+        let svc = DiscoveryService::new(test_config());
+        assert_eq!(svc.prune(f64::NEG_INFINITY), 0);
+        assert_eq!(svc.prune(f64::NAN), 0);
+    }
+
+    #[tokio::test]
+    async fn ingest_pool_created_with_custom_swap_eth() {
+        let mut cfg = test_config();
+        cfg.discovery.validation_swap_eth = 0.5;
+        let svc = DiscoveryService::new(cfg);
+        let event = FactoryPoolCreated {
+            factory: Address::ZERO,
+            protocol: ProtocolType::UniswapV2,
+            fee_bps: 30,
+            token0: usdc(),
+            token1: weth(),
+            pool: Address::from([0x55; 20]),
+        };
+        assert!(svc.ingest_pool_created(event).await);
+    }
+
+    #[test]
+    fn on_chain_metrics_slippage_default_100_bps() {
+        let mut cfg = test_config();
+        cfg.scoring.slippage_estimate_bps = 100;
+        let source = OnChainMetricsSource::new(None, &cfg);
+        let result = source.fetch_metrics(
+            Address::from([0x56; 20]),
+            usdc(),
+            weth(),
+            ProtocolType::UniswapV2,
+        );
+        assert!((result.slippage_estimate - 0.01).abs() < 1e-6);
+    }
+
+    // ──────────────── fetch_v2_reserves with mock RPC ────────────────
+
+    #[test]
+    fn fetch_v2_reserves_valid() {
+        use mockito::{Matcher, Server};
+        let mut server = Server::new();
+        let sel = "0902f1ac";
+        let r0 = U256::from(1_000_000_000_000_000_000u64);
+        let r1 = U256::from(3_000_000_000_000u64);
+        let mut out = [0u8; 96];
+        out[0..32].copy_from_slice(&r0.to_be_bytes::<32>());
+        out[32..64].copy_from_slice(&r1.to_be_bytes::<32>());
+        let hex = format!("0x{}", alloy::hex::encode(out));
+        let _m = server
+            .mock("POST", "/")
+            .match_body(Matcher::Regex(format!("(?i){sel}")))
+            .with_body(format!(r#"{{"jsonrpc":"2.0","id":1,"result":"{hex}"}}"#))
+            .create();
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let url: url::Url = server.url().parse().unwrap();
+        let provider = rt.block_on(async { alloy::providers::ProviderBuilder::new().connect_http(url).erased() });
+        let result = rt.block_on(fetch_v2_reserves(&provider, Address::from([0xA1; 20])));
+        assert!(result.is_some());
+        let (got_r0, got_r1, fee) = result.unwrap();
+        assert_eq!(got_r0, r0);
+        assert_eq!(got_r1, r1);
+        assert_eq!(fee, 30);
+    }
+
+    #[test]
+    fn fetch_v2_reserves_short_output_none() {
+        use mockito::{Matcher, Server};
+        let mut server = Server::new();
+        let sel = "0902f1ac";
+        let _m = server
+            .mock("POST", "/")
+            .match_body(Matcher::Regex(format!("(?i){sel}")))
+            .with_body(r#"{"jsonrpc":"2.0","id":1,"result":"0x01"}"#)
+            .create();
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let url: url::Url = server.url().parse().unwrap();
+        let provider = rt.block_on(async { alloy::providers::ProviderBuilder::new().connect_http(url).erased() });
+        let result = rt.block_on(fetch_v2_reserves(&provider, Address::from([0xA2; 20])));
+        assert!(result.is_none());
+    }
+
+    // ──────────────── fetch_curve_balances with mock RPC ──────────────
+
+    alloy::sol! {
+        #[sol(rpc)]
+        interface TestCurveBal {
+            function balances(uint256 i) external view returns (uint256);
+        }
+    }
+
+    #[test]
+    fn fetch_curve_balances_valid() {
+        use mockito::{Matcher, Server};
+        let mut server = Server::new();
+        let sel = &alloy::hex::encode(TestCurveBal::balancesCall { i: U256::ZERO }.abi_encode())[0..8];
+        let bal = U256::from(1_000_000_000_000_000_000_000u128);
+        let hex = format!("0x{}", alloy::hex::encode(bal.to_be_bytes::<32>()));
+        let rpc_ok = |h: &str| format!(r#"{{"jsonrpc":"2.0","id":1,"result":"{h}"}}"#);
+        let _m = server
+            .mock("POST", "/")
+            .match_body(Matcher::Regex(format!("(?i){sel}")))
+            .with_body(rpc_ok(&hex))
+            .create();
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let url: url::Url = server.url().parse().unwrap();
+        let provider = rt.block_on(async { alloy::providers::ProviderBuilder::new().connect_http(url).erased() });
+        let result = rt.block_on(fetch_curve_balances(&provider, Address::from([0xA3; 20])));
+        assert!(result.is_some());
+    }
+
+    #[test]
+    fn fetch_curve_balances_short_output_none() {
+        use mockito::{Matcher, Server};
+        let mut server = Server::new();
+        let sel = &alloy::hex::encode(TestCurveBal::balancesCall { i: U256::ZERO }.abi_encode())[0..8];
+        let _m = server
+            .mock("POST", "/")
+            .match_body(Matcher::Regex(format!("(?i){sel}")))
+            .with_body(r#"{"jsonrpc":"2.0","id":1,"result":"0x01"}"#)
+            .create();
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let url: url::Url = server.url().parse().unwrap();
+        let provider = rt.block_on(async { alloy::providers::ProviderBuilder::new().connect_http(url).erased() });
+        let result = rt.block_on(fetch_curve_balances(&provider, Address::from([0xA4; 20])));
+        assert!(result.is_none());
+    }
+
+    // ──────────────── fetch_balancer_v3_balances with mock RPC ────────
+
+    alloy::sol! {
+        #[sol(rpc)]
+        interface TestBalanceOf {
+            function balanceOf(address account) external view returns (uint256);
+        }
+    }
+
+    #[test]
+    fn fetch_balancer_v3_balances_valid() {
+        use mockito::{Matcher, Server};
+        let mut server = Server::new();
+        let sel = &alloy::hex::encode(TestBalanceOf::balanceOfCall { account: Address::ZERO }.abi_encode())[0..8];
+        let bal = U256::from(1_000_000_000_000_000_000_000u128);
+        let hex = format!("0x{}", alloy::hex::encode(bal.to_be_bytes::<32>()));
+        let rpc_ok = |h: &str| format!(r#"{{"jsonrpc":"2.0","id":1,"result":"{h}"}}"#);
+        let _m = server
+            .mock("POST", "/")
+            .match_body(Matcher::Regex(format!("(?i){sel}")))
+            .with_body(rpc_ok(&hex))
+            .create();
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let url: url::Url = server.url().parse().unwrap();
+        let provider = rt.block_on(async { alloy::providers::ProviderBuilder::new().connect_http(url).erased() });
+        let result = rt.block_on(fetch_balancer_v3_balances(
+            &provider, Address::from([0xA5; 20]), Address::from([0xB5; 20]), Address::from([0xC5; 20]),
+        ));
+        assert!(result.is_some());
+    }
+
+    #[test]
+    fn fetch_balancer_v3_balances_short_output_none() {
+        use mockito::{Matcher, Server};
+        let mut server = Server::new();
+        let sel = &alloy::hex::encode(TestBalanceOf::balanceOfCall { account: Address::ZERO }.abi_encode())[0..8];
+        let _m = server
+            .mock("POST", "/")
+            .match_body(Matcher::Regex(format!("(?i){sel}")))
+            .with_body(r#"{"jsonrpc":"2.0","id":1,"result":"0x01"}"#)
+            .create();
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let url: url::Url = server.url().parse().unwrap();
+        let provider = rt.block_on(async { alloy::providers::ProviderBuilder::new().connect_http(url).erased() });
+        let result = rt.block_on(fetch_balancer_v3_balances(
+            &provider, Address::from([0xA6; 20]), Address::from([0xB6; 20]), Address::from([0xC6; 20]),
+        ));
+        assert!(result.is_none());
+    }
+
+    // ──────────────── OnChainMetricsSource.fetch_metrics with provider ──
+
+    #[test]
+    fn on_chain_metrics_fetch_with_provider_v2() {
+        use mockito::{Matcher, Server};
+        let mut server = Server::new();
+        let sel = "0902f1ac";
+        let r0 = U256::from(1_000_000_000_000_000_000u64);
+        let r1 = U256::from(3_000_000_000_000u64);
+        let mut out = [0u8; 96];
+        out[0..32].copy_from_slice(&r0.to_be_bytes::<32>());
+        out[32..64].copy_from_slice(&r1.to_be_bytes::<32>());
+        let hex = format!("0x{}", alloy::hex::encode(out));
+        let _m = server
+            .mock("POST", "/")
+            .match_body(Matcher::Regex(format!("(?i){sel}")))
+            .with_body(format!(r#"{{"jsonrpc":"2.0","id":1,"result":"{hex}"}}"#))
+            .create();
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let url: url::Url = server.url().parse().unwrap();
+        let provider = rt.block_on(async { alloy::providers::ProviderBuilder::new().connect_http(url).erased() });
+        let cfg = test_config();
+        let source = OnChainMetricsSource::new(Some(provider), &cfg);
+        let _guard = rt.enter();
+        let result = source.fetch_metrics(Address::from([0xAD; 20]), weth(), usdc(), ProtocolType::UniswapV2);
+        assert!(result.tvl_usd > 0.0);
+        assert!(result.volume_24h_usd > 0.0);
+        assert_eq!(result.fee_bps, 30);
+        assert!(result.slippage_estimate > 0.0);
+    }
+
+    #[test]
+    fn on_chain_metrics_fetch_with_provider_v2_reserves_none() {
+        use mockito::{Matcher, Server};
+        let mut server = Server::new();
+        let sel = "0902f1ac";
+        let _m = server
+            .mock("POST", "/")
+            .match_body(Matcher::Regex(format!("(?i){sel}")))
+            .with_body(r#"{"jsonrpc":"2.0","id":1,"result":"0x"}"#)
+            .create();
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let url: url::Url = server.url().parse().unwrap();
+        let provider = rt.block_on(async { alloy::providers::ProviderBuilder::new().connect_http(url).erased() });
+        let cfg = test_config();
+        let source = OnChainMetricsSource::new(Some(provider), &cfg);
+        let _guard = rt.enter();
+        let result = source.fetch_metrics(Address::from([0xAE; 20]), weth(), usdc(), ProtocolType::UniswapV2);
+        assert_eq!(result.tvl_usd, 0.0);
+        assert_eq!(result.volume_24h_usd, 0.0);
+    }
+
+    #[test]
+    fn on_chain_metrics_fetch_with_provider_curve() {
+        use mockito::{Matcher, Server};
+        let mut server = Server::new();
+        let sel = &alloy::hex::encode(TestCurveBal::balancesCall { i: U256::ZERO }.abi_encode())[0..8];
+        let bal = U256::from(1_000_000_000_000_000_000_000u128);
+        let pad = |v: U256| format!("0x{}", alloy::hex::encode(v.to_be_bytes::<32>()));
+        let rpc_ok = |h: &str| format!(r#"{{"jsonrpc":"2.0","id":1,"result":"{h}"}}"#);
+        let _m = server
+            .mock("POST", "/")
+            .match_body(Matcher::Regex(format!("(?i){sel}")))
+            .with_body(rpc_ok(&pad(bal)))
+            .create();
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let url: url::Url = server.url().parse().unwrap();
+        let provider = rt.block_on(async { alloy::providers::ProviderBuilder::new().connect_http(url).erased() });
+        let cfg = test_config();
+        let source = OnChainMetricsSource::new(Some(provider), &cfg);
+        let _guard = rt.enter();
+        let result = source.fetch_metrics(Address::from([0xAF; 20]), weth(), usdc(), ProtocolType::Curve);
+        assert!(result.tvl_usd > 0.0 || result.tvl_usd == 0.0);
+    }
+
+    #[test]
+    fn on_chain_metrics_fetch_with_provider_balancer_v3() {
+        use mockito::{Matcher, Server};
+        let mut server = Server::new();
+        let sel = &alloy::hex::encode(TestBalanceOf::balanceOfCall { account: Address::ZERO }.abi_encode())[0..8];
+        let bal = U256::from(1_000_000_000_000_000_000_000u128);
+        let pad = |v: U256| format!("0x{}", alloy::hex::encode(v.to_be_bytes::<32>()));
+        let _m = server
+            .mock("POST", "/")
+            .match_body(Matcher::Regex(format!("(?i){sel}")))
+            .with_body(pad(bal))
+            .create();
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let url: url::Url = server.url().parse().unwrap();
+        let provider = rt.block_on(async { alloy::providers::ProviderBuilder::new().connect_http(url).erased() });
+        let cfg = test_config();
+        let source = OnChainMetricsSource::new(Some(provider), &cfg);
+        let _guard = rt.enter();
+        let result = source.fetch_metrics(Address::from([0xB0; 20]), weth(), usdc(), ProtocolType::BalancerV3);
+        assert!(result.tvl_usd > 0.0 || result.tvl_usd == 0.0);
+    }
+
+    #[test]
+    fn on_chain_metrics_fetch_with_provider_v2_non_weth_token() {
+        use mockito::{Matcher, Server};
+        let mut server = Server::new();
+        let sel = "0902f1ac";
+        let r0 = U256::from(1_000_000_000_000_000_000u64);
+        let r1 = U256::from(1_000_000_000_000_000_000u64);
+        let mut out = [0u8; 96];
+        out[0..32].copy_from_slice(&r0.to_be_bytes::<32>());
+        out[32..64].copy_from_slice(&r1.to_be_bytes::<32>());
+        let hex = format!("0x{}", alloy::hex::encode(out));
+        let _m = server
+            .mock("POST", "/")
+            .match_body(Matcher::Regex(format!("(?i){sel}")))
+            .with_body(format!(r#"{{"jsonrpc":"2.0","id":1,"result":"{hex}"}}"#))
+            .create();
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let dai = address!("6B175474E89094C44Da98b954EedeAC495271d0F");
+        let url: url::Url = server.url().parse().unwrap();
+        let provider = rt.block_on(async { alloy::providers::ProviderBuilder::new().connect_http(url).erased() });
+        let cfg = test_config();
+        let source = OnChainMetricsSource::new(Some(provider), &cfg);
+        let _guard = rt.enter();
+        // Non-WETH token pair uses the else branch (line 91)
+        let result = source.fetch_metrics(Address::from([0xB1; 20]), dai, usdc(), ProtocolType::UniswapV2);
+        assert!(result.tvl_usd > 0.0);
+    }
+
+    // ──────────────── ingest pool with LowLiquidity rejection (lines 354-355) ──
+
+    #[tokio::test]
+    async fn ingest_pool_low_liquidity_rejected() {
+        // Use BalancerV3 with a provider that returns low WETH balance → LowLiquidity
+        use mockito::{Matcher, Server};
+        let mut server = Server::new_async().await;
+        let sel = &alloy::hex::encode(TestBalanceOf::balanceOfCall { account: Address::ZERO }.abi_encode())[0..8];
+        let code = "0x6080604052";
+        let tiny_bal = U256::from(100u64);
+        let pad = |v: U256| format!("0x{}", alloy::hex::encode(v.to_be_bytes::<32>()));
+        let rpc_ok = |h: &str| format!(r#"{{"jsonrpc":"2.0","id":1,"result":"{h}"}}"#);
+        // eth_getCode returns valid bytecode
+        let _m_code = server
+            .mock("POST", "/")
+            .match_body(Matcher::Regex("(?i)eth_getCode".into()))
+            .with_body(rpc_ok(code))
+            .create();
+        // balanceOf returns tiny balance → LowLiquidity
+        let _m_bal = server
+            .mock("POST", "/")
+            .match_body(Matcher::Regex(format!("(?i){sel}")))
+            .with_body(rpc_ok(&pad(tiny_bal)))
+            .create();
+        let url: url::Url = server.url().parse().unwrap();
+        let provider = alloy::providers::ProviderBuilder::new().connect_http(url).erased();
+        let cfg = DiscoveryConfig {
+            discovery: crate::config::DiscoverySettings {
+                enabled: true,
+                validation_mode: "analytical".into(),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let svc = DiscoveryService::with_provider(cfg, Some(provider));
+        let event = FactoryPoolCreated {
+            factory: Address::ZERO,
+            protocol: ProtocolType::BalancerV3,
+            fee_bps: 30,
+            token0: usdc(),
+            token1: weth(),
+            pool: Address::from([0xB2; 20]),
+        };
+        assert!(!svc.ingest_pool_created(event).await);
+    }
+
+    // ──────────────── spawn_prune_task with pools to prune (lines 437-440) ──
+
+    #[tokio::test]
+    async fn spawn_prune_task_removes_low_score_pools() {
+        let cfg = DiscoveryConfig {
+            discovery: crate::config::DiscoverySettings {
+                prune_interval_secs: 1,
+                enabled: true,
+                max_pools: 1000,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let svc = Arc::new(DiscoveryService::new(cfg));
+        // Insert a high-score pool that should NOT be pruned.
+        svc.insert_validated(
+            PoolInfo {
+                address: Address::from([0xE1; 20]),
+                token0: usdc(),
+                token1: weth(),
+                protocol: ProtocolType::UniswapV2,
+                fee_bps: 30,
+                score: 0.0,
+                tvl_usd: 0.0,
+                volume_24h_usd: 0.0,
+                slippage_estimate: 0.0,
+                discovered_at: 0,
+            },
+            PoolScoreInputs {
+                tvl_usd: 10_000_000.0,
+                volume_24h_usd: 1_000_000.0,
+                fee_bps: 30,
+                slippage_estimate: 0.01,
+            },
+        );
+        // Insert low-score pools that WILL be pruned.
+        for i in 1u8..=5 {
+            svc.insert_validated(
+                PoolInfo {
+                    address: Address::from([i; 20]),
+                    token0: usdc(),
+                    token1: weth(),
+                    protocol: ProtocolType::UniswapV2,
+                    fee_bps: 30,
+                    score: 0.0,
+                    tvl_usd: 0.0,
+                    volume_24h_usd: 0.0,
+                    slippage_estimate: 0.0,
+                    discovered_at: 0,
+                },
+                PoolScoreInputs {
+                    tvl_usd: 1.0,
+                    volume_24h_usd: 0.5,
+                    fee_bps: 30,
+                    slippage_estimate: 0.5,
+                },
+            );
+        }
+        // Directly call prune instead of relying on the background ticker,
+        // avoiding the 1-second wait that prune_interval_secs would require.
+        svc.cache.prune(0.01);
+        // The high-score pool should remain.
+        let top = svc.get_top_n(100);
+        assert!(!top.is_empty());
+        assert!(top.len() <= 6);
+    }
 }

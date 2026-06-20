@@ -1,12 +1,15 @@
+use std::sync::Arc;
+
 use aether_common::types::{PoolId, PoolTier, ProtocolType};
 use aether_pools::balancer::BalancerPool;
+use aether_pools::balancer_v3::BalancerV3Pool;
 use aether_pools::bancor::BancorPool;
 use aether_pools::curve::CurvePool;
 use aether_pools::registry::{PoolRegistry, QualificationCriteria};
 use aether_pools::sushiswap::SushiSwapPool;
 use aether_pools::uniswap_v2::UniswapV2Pool;
 use aether_pools::uniswap_v3::UniswapV3Pool;
-use aether_pools::Pool;
+use aether_pools::{Pool, PoolState, ReplayProtocol, UnifiedPostState};
 use alloy::primitives::{address, Address, U256};
 
 fn tok_a() -> Address {
@@ -699,4 +702,240 @@ fn sushi_get_amount_out_token1_direction() {
     let pool = seeded_sushi();
     let out = pool.get_amount_out(tok_b(), U256::from(1_000_000_000_000_000_000u64));
     assert!(out.is_some());
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// BalancerV3Pool trait method coverage
+// ═══════════════════════════════════════════════════════════════════════
+
+fn seeded_balancer_v3() -> BalancerV3Pool {
+    let mut pool = BalancerV3Pool::new(Address::ZERO, tok_a(), tok_b(), 500_000, 500_000, 30);
+    pool.update_state(large_reserve(), U256::from(10_000_000_000_000u64));
+    pool
+}
+
+#[test]
+fn balancer_v3_get_amount_in_round_trip() {
+    let pool = seeded_balancer_v3();
+    let out = pool.get_amount_out(tok_a(), U256::from(1_000_000_000_000_000u64)).unwrap();
+    let back = pool.get_amount_in(tok_b(), out);
+    assert!(back.is_some());
+}
+
+#[test]
+fn balancer_v3_get_amount_in_zero_output() {
+    let pool = seeded_balancer_v3();
+    assert!(pool.get_amount_in(tok_b(), U256::ZERO).is_none());
+}
+
+#[test]
+fn balancer_v3_get_amount_in_unknown_token() {
+    let pool = seeded_balancer_v3();
+    assert!(pool.get_amount_in(Address::repeat_byte(0xcc), U256::from(1000u64)).is_none());
+}
+
+#[test]
+fn balancer_v3_get_amount_out_unknown_token() {
+    let pool = seeded_balancer_v3();
+    assert!(pool.get_amount_out(Address::repeat_byte(0xbb), U256::from(1000u64)).is_none());
+}
+
+#[test]
+fn balancer_v3_liquidity_depth() {
+    let pool = seeded_balancer_v3();
+    let depth = pool.liquidity_depth();
+    assert!(depth > U256::ZERO);
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// UnifiedPostState PartialEq across variants
+// ═══════════════════════════════════════════════════════════════════════
+
+#[test]
+fn unified_post_state_partial_eq_same_variant() {
+    use aether_pools::bancor::BancorPostState;
+    let a = UnifiedPostState::Bancor(BancorPostState {
+        new_balance_in: U256::from(1000u64),
+        new_balance_out: U256::from(800u64),
+        amount_out: U256::from(170u64),
+        analytical: true,
+    });
+    let b = UnifiedPostState::Bancor(BancorPostState {
+        new_balance_in: U256::from(1000u64),
+        new_balance_out: U256::from(800u64),
+        amount_out: U256::from(170u64),
+        analytical: true,
+    });
+    assert_eq!(a, b);
+}
+
+#[test]
+fn unified_post_state_partial_eq_different_variants() {
+    use aether_pools::balancer::BalancerPostState;
+    use aether_pools::curve::CurvePostState;
+    let curve = UnifiedPostState::Curve(CurvePostState {
+        i: 0, j: 1,
+        new_balance_in: U256::from(1000u64),
+        new_balance_out: U256::from(900u64),
+        amount_out: U256::from(95u64),
+        analytical: true,
+    });
+    let bal = UnifiedPostState::Balancer(BalancerPostState {
+        new_balance0: U256::from(1000u64),
+        new_balance1: U256::from(900u64),
+        amount_out: U256::from(88u64),
+        analytical: true,
+    });
+    assert_ne!(curve, bal);
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// ReplayProtocol Ord / PartialOrd (derived)
+// ═══════════════════════════════════════════════════════════════════════
+
+#[test]
+fn replay_protocol_all_variants_distinct() {
+    let v3 = ReplayProtocol::UniswapV3;
+    let curve = ReplayProtocol::Curve;
+    let bal = ReplayProtocol::Balancer;
+    let bancor = ReplayProtocol::Bancor;
+    assert_ne!(v3, curve);
+    assert_ne!(v3, bal);
+    assert_ne!(v3, bancor);
+    assert_ne!(curve, bal);
+    assert_ne!(curve, bancor);
+    assert_ne!(bal, bancor);
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// predict_post_state_with_fallback — V3 zero liquidity
+// ═══════════════════════════════════════════════════════════════════════
+
+#[test]
+fn fallback_v3_zero_liquidity_returns_none() {
+    use aether_pools::predict_post_state_with_fallback;
+    let v3 = UniswapV3Pool::new(Address::ZERO, tok_a(), tok_b(), 30, 60);
+    let state = PoolState::UniswapV3(v3);
+    let result = predict_post_state_with_fallback(
+        &state, tok_a(), U256::from(100u64), |_| {},
+    );
+    assert!(result.is_none());
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// predict_post_state_with_replay — Curve returning Some from replay
+// ═══════════════════════════════════════════════════════════════════════
+
+#[test]
+fn replay_curve_2coin_predict_analytical() {
+    use aether_pools::{predict_post_state_with_replay, UnifiedPostState};
+    use aether_pools::curve::CurvePostState;
+    let mut curve = CurvePool::new(Address::ZERO, vec![tok_a(), tok_b()], 100, 4);
+    curve.balances = vec![
+        U256::from(10_000_000_000_000u64),
+        U256::from(10_000_000_000_000u64),
+    ];
+    let state = PoolState::Curve(curve);
+    let replay_called = std::cell::Cell::new(false);
+    let result = predict_post_state_with_replay(
+        &state,
+        tok_a(),
+        U256::from(1_000_000_000u64),
+        |_| {},
+        |_| { replay_called.set(true); None },
+    );
+    assert!(matches!(result, Some(UnifiedPostState::Curve(_))));
+    assert!(!replay_called.get(), "analytical path must succeed without replay");
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// predict_post_state_with_replay — Bancor multi-hop (non-BNT token, not pool token)
+// ═══════════════════════════════════════════════════════════════════════
+
+#[test]
+fn replay_bancor_unknown_token_returns_none_and_no_replay() {
+    use aether_pools::predict_post_state_with_replay;
+    let mut pool = BancorPool::new(Address::ZERO, tok_a(), bnt(), 30);
+    pool.update_state(large_reserve(), U256::from(2_000_000_000_000_000_000_000u128));
+    let state = PoolState::Bancor(pool);
+    let replay_called = std::cell::Cell::new(false);
+    let result = predict_post_state_with_replay(
+        &state,
+        Address::repeat_byte(0xdd),
+        U256::from(1_000_000_000_000_000_000u64),
+        |_| {},
+        |_| { replay_called.set(true); None },
+    );
+    assert!(result.is_none());
+    assert!(!replay_called.get(), "unknown token should short-circuit before replay");
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// predict_post_state_with_replay — V3 unknown token returns None (no predict)
+// ═══════════════════════════════════════════════════════════════════════
+
+#[test]
+fn replay_v3_unknown_token_returns_none() {
+    use aether_pools::predict_post_state_with_replay;
+    let mut v3 = UniswapV3Pool::new(Address::ZERO, tok_a(), tok_b(), 30, 60);
+    let sqrt_norm = 1.0001f64.powi(15);
+    let two_pow_96_f64: f64 = 79_228_162_514_264_337_593_543_950_336.0;
+    let sqrt_x96 = (sqrt_norm * two_pow_96_f64) as u128;
+    v3.update_sqrt_price(U256::from(sqrt_x96), 10_000_000_000_000_000u128, 30);
+    let state = PoolState::UniswapV3(v3);
+    let replay_called = std::cell::Cell::new(false);
+    let result = predict_post_state_with_replay(
+        &state,
+        Address::repeat_byte(0xee),
+        U256::from(100_000_000u64),
+        |_| {},
+        |_| { replay_called.set(true); None },
+    );
+    assert!(result.is_none());
+    assert!(!replay_called.get(), "unknown token should short-circuit before replay");
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// predict_post_state_with_fallback — BalancerV3 returns Balancer variant
+// ═══════════════════════════════════════════════════════════════════════
+
+#[test]
+fn fallback_balancer_v3_equal_weight_returns_balancer_variant() {
+    use aether_pools::predict_post_state_with_fallback;
+    let mut b3 = BalancerV3Pool::new(Address::ZERO, tok_a(), tok_b(), 500_000, 500_000, 30);
+    b3.update_state(large_reserve(), U256::from(10_000_000_000_000u64));
+    let state = PoolState::BalancerV3(b3);
+    let result = predict_post_state_with_fallback(
+        &state, tok_a(), U256::from(1_000_000_000_000_000u64), |_| {},
+    );
+    assert!(matches!(result, Some(UnifiedPostState::Balancer(_))));
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// PoolStateCache — clear and re-insert
+// ═══════════════════════════════════════════════════════════════════════
+
+#[test]
+fn pool_state_cache_clear_empties_all() {
+    use aether_pools::new_pool_state_cache;
+    let cache = new_pool_state_cache();
+    cache.insert(Address::ZERO, Arc::new(PoolState::UniswapV2(
+        UniswapV2Pool::new(Address::ZERO, tok_a(), tok_b(), 30),
+    )));
+    assert_eq!(cache.len(), 1);
+    cache.clear();
+    assert_eq!(cache.len(), 0);
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// PoolState::protocol() — BalancerV3 via PoolState
+// ═══════════════════════════════════════════════════════════════════════
+
+#[test]
+fn pool_state_protocol_via_enum_balancer_v3() {
+    let b3 = BalancerV3Pool::new(Address::ZERO, tok_a(), tok_b(), 500_000, 500_000, 30);
+    assert_eq!(
+        PoolState::BalancerV3(b3).protocol(),
+        ProtocolType::BalancerV3
+    );
 }

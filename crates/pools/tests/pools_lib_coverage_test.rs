@@ -1001,3 +1001,159 @@ fn sushiswap_pool_basic_properties() {
     assert_eq!(Pool::address(&pool), addr(1));
     assert_eq!(Pool::fee_bps(&pool), 30);
 }
+
+// ─── Pool trait — BalancerV3 specific ──────────────────────────────
+
+#[test]
+fn balancer_v3_pool_trait_basics() {
+    let pool = BalancerV3Pool::new(addr(10), token_a(), token_b(), 500_000, 500_000, 30);
+    assert_eq!(Pool::protocol(&pool), ProtocolType::BalancerV3);
+    assert_eq!(Pool::address(&pool), addr(10));
+    assert_eq!(Pool::fee_bps(&pool), 30);
+    assert_eq!(Pool::tokens(&pool), vec![token_a(), token_b()]);
+}
+
+// ─── Pool trait — CurvePool specific ───────────────────────────────
+
+#[test]
+fn curve_pool_trait_basics() {
+    let pool = CurvePool::new(addr(11), vec![token_a(), token_b()], 100, 4);
+    assert_eq!(Pool::protocol(&pool), ProtocolType::Curve);
+    assert_eq!(Pool::address(&pool), addr(11));
+    assert_eq!(Pool::fee_bps(&pool), 4);
+    assert_eq!(Pool::tokens(&pool), vec![token_a(), token_b()]);
+}
+
+// ─── Pool trait — BancorPool specific ──────────────────────────────
+
+#[test]
+fn bancor_pool_trait_basics() {
+    let pool = BancorPool::new(addr(12), token_a(), bnt_addr(), 30);
+    assert_eq!(Pool::protocol(&pool), ProtocolType::BancorV3);
+    assert_eq!(Pool::address(&pool), addr(12));
+    assert_eq!(Pool::fee_bps(&pool), 30);
+    assert_eq!(Pool::tokens(&pool), vec![token_a(), bnt_addr()]);
+}
+
+// ─── Pool trait — BalancerPool specific ────────────────────────────
+
+#[test]
+fn balancer_pool_trait_basics() {
+    let pool = BalancerPool::new(addr(13), token_a(), token_b(), 500_000, 500_000, 30);
+    assert_eq!(Pool::protocol(&pool), ProtocolType::BalancerV2);
+    assert_eq!(Pool::address(&pool), addr(13));
+    assert_eq!(Pool::fee_bps(&pool), 30);
+    assert_eq!(Pool::tokens(&pool), vec![token_a(), token_b()]);
+}
+
+// ─── PoolState::protocol() via enum — all variants ─────────────────
+
+#[test]
+fn pool_state_protocol_curves_variant() {
+    let pool = CurvePool::new(addr(14), vec![token_a(), token_b()], 100, 4);
+    assert_eq!(PoolState::Curve(pool).protocol(), ProtocolType::Curve);
+}
+
+#[test]
+fn pool_state_protocol_bancor_variant() {
+    let pool = BancorPool::new(addr(15), token_a(), bnt_addr(), 30);
+    assert_eq!(PoolState::Bancor(pool).protocol(), ProtocolType::BancorV3);
+}
+
+#[test]
+fn pool_state_protocol_balancer_v2_variant() {
+    let pool = BalancerPool::new(addr(16), token_a(), token_b(), 500_000, 500_000, 30);
+    assert_eq!(PoolState::Balancer(pool).protocol(), ProtocolType::BalancerV2);
+}
+
+// ─── UnifiedPostState debug formatting — all variants ──────────────
+
+#[test]
+fn unified_post_state_debug_uniswap_v3() {
+    let ps = UnifiedPostState::UniswapV3(V3PostState {
+        new_sqrt_price_x96: U256::from(42u64),
+        new_liquidity: 99,
+        amount_out: U256::from(7u64),
+        single_tick: true,
+    });
+    let dbg = format!("{:?}", ps);
+    assert!(dbg.contains("UniswapV3"));
+}
+
+#[test]
+fn unified_post_state_debug_bancor() {
+    use aether_pools::bancor::BancorPostState;
+    let ps = UnifiedPostState::Bancor(BancorPostState {
+        new_balance_in: U256::from(1000u64),
+        new_balance_out: U256::from(800u64),
+        amount_out: U256::from(170u64),
+        analytical: true,
+    });
+    let dbg = format!("{:?}", ps);
+    assert!(dbg.contains("Bancor"));
+}
+
+// ─── predict_post_state_with_fallback — V3 zero liquidity (no fallback called) ──
+
+#[test]
+fn fallback_v3_zero_liquidity_no_fallback_call() {
+    let v3 = UniswapV3Pool::new(addr(20), token_a(), token_b(), 30, 60);
+    let state = PoolState::UniswapV3(v3);
+    let captured = std::cell::RefCell::new(Vec::<String>::new());
+    let result = predict_post_state_with_fallback(
+        &state,
+        token_a(),
+        U256::from(100u64),
+        |reason| captured.borrow_mut().push(reason.to_string()),
+    );
+    assert!(result.is_none());
+    assert!(captured.borrow().is_empty(), "predictor should reject before confidence check");
+}
+
+// ─── predict_post_state_with_replay — V3 zero returns None ─────────
+
+#[test]
+fn replay_v3_zero_liquidity_short_circuit() {
+    let v3 = UniswapV3Pool::new(addr(21), token_a(), token_b(), 30, 60);
+    let state = PoolState::UniswapV3(v3);
+    let replay_called = std::cell::Cell::new(false);
+    let result = predict_post_state_with_replay(
+        &state,
+        token_a(),
+        U256::from(100u64),
+        |_| {},
+        |_| { replay_called.set(true); None },
+    );
+    assert!(result.is_none());
+    assert!(!replay_called.get(), "replay must not be called when predictor short-circuits");
+}
+
+// ─── PoolState::Clone derived via the enum ──────────────────────────
+
+#[test]
+fn pool_state_clone_all_variants_through_enum() {
+    let v2 = PoolState::UniswapV2(UniswapV2Pool::new(addr(30), token_a(), token_b(), 30));
+    let v3 = PoolState::UniswapV3(UniswapV3Pool::new(addr(31), token_a(), token_b(), 5, 10));
+    let sushi = PoolState::SushiSwap(UniswapV2Pool::new(addr(32), token_a(), token_b(), 30));
+    let curve = PoolState::Curve(CurvePool::new(addr(33), vec![token_a(), token_b()], 100, 4));
+    let bal = PoolState::Balancer(BalancerPool::new(addr(34), token_a(), token_b(), 500_000, 500_000, 30));
+    let b3 = PoolState::BalancerV3(BalancerV3Pool::new(addr(35), token_a(), token_b(), 500_000, 500_000, 30));
+    let bancor = PoolState::Bancor(BancorPool::new(addr(36), token_a(), bnt_addr(), 30));
+    for s in [v2, v3, sushi, curve, bal, b3, bancor] {
+        let _cloned = s.clone();
+    }
+}
+
+// ─── ReplayProtocol::Bancor matching ────────────────────────────────
+
+#[test]
+fn replay_protocol_bancor_variant() {
+    match ReplayProtocol::Bancor {
+        ReplayProtocol::Bancor => {}
+        _ => panic!("expected Bancor"),
+    }
+    match ReplayProtocol::Curve {
+        ReplayProtocol::Curve => {}
+        _ => panic!("expected Curve"),
+    }
+}

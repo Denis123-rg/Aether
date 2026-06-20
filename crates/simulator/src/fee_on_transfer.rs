@@ -1464,6 +1464,35 @@ mod tests {
     }
 
     #[test]
+    fn round_trip_is_admissible_inconclusive() {
+        assert!(!RoundTripVerdict::Inconclusive { reason: "x".into() }.is_admissible());
+    }
+
+    #[test]
+    fn classify_round_trip_fee_bps_over_10000_saturates() {
+        // fee_bps=20000 → ff=0 → expected_bps=0
+        // actual_bps = 1000*10000/1000 = 10000
+        // loss_bps = 0 - 10000 → saturates to 0 → 0 <= 100 → Clean { recovery_bps: 10000 }
+        let v = classify_round_trip(U256::from(1000u64), U256::from(1000u64), 20000, true, 100);
+        assert!(matches!(v, RoundTripVerdict::Clean { recovery_bps: 10000 }));
+    }
+
+    #[test]
+    fn classify_round_trip_fee_bps_zero() {
+        let v = classify_round_trip(U256::from(1000u64), U256::from(1000u64), 0, true, 0);
+        assert!(matches!(v, RoundTripVerdict::Clean { recovery_bps: 10000 }));
+    }
+
+    #[test]
+    fn classify_round_trip_loss_exceeds_max() {
+        // expected_bps = (10000-30)^2 / 10000 = 9940
+        // actual_bps = 9900*10000/10000 = 9900
+        // loss_bps = 9940 - 9900 = 40 → > 0 → FeeOnTransfer
+        let v = classify_round_trip(U256::from(10_000u64), U256::from(9_900u64), 30, true, 0);
+        assert!(matches!(v, RoundTripVerdict::FeeOnTransfer { loss_bps: 40 }));
+    }
+
+    #[test]
     fn classify_transfer_exact_boundary() {
         for tol in [0, 1, 5, 10, 100] {
             let _ = classify_transfer(U256::from(10_000u64), U256::from(9_990u64), tol);

@@ -25,6 +25,7 @@ serial_test = { workspace = true }
 tempfile = "3"
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 url = "2"
+mockito = "1.6"
 
 [[bench]]
 name = "simulation"

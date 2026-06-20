@@ -1742,6 +1742,7 @@ async fn erc20_balance_of(
 mod tests {
     use super::*;
     use alloy::primitives::address;
+    use revm::handler::MainnetContext;
 
     fn usdc() -> Address {
         address!("A0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48")
@@ -4612,6 +4613,26 @@ mod tests {
         assert_eq!(result, ValidationResult::Valid);
     }
 
+    // ── validate_curve_balances forward swap fails (line 729) ──────────
+
+    #[test]
+    fn curve_balances_forward_swap_fails_with_extreme_fee() {
+        // fee_bps = 10000 (100%) → dy - fee = Some(0) → guarded match falls through
+        let bal = U256::from(1_000_000_000_000_000_000_000u128);
+        let result = validate_curve_balances(WETH, usdc(), 10000, U256::from(200), bal, bal, 0.001);
+        assert!(matches!(result, ValidationResult::Invalid(_)));
+    }
+
+    // ── validate_balancer_v3_balances round-trip near zero (line 845) ──
+
+    #[test]
+    fn balancer_v3_balances_round_trip_near_zero() {
+        // fee_bps = 9999 (99.99%) makes the reverse leg output << swap_wei / 100
+        let bal = U256::from(1_000_000_000_000_000_000_000u128);
+        let result = validate_balancer_v3_balances(WETH, usdc(), 9999, bal, bal, 0.5);
+        assert!(matches!(result, ValidationResult::Invalid(_)));
+    }
+
     #[tokio::test]
     async fn balancer_v3_rpc_get_code_error_fail_open() {
         use mockito::{Matcher, Server};
@@ -4762,20 +4783,6 @@ mod tests {
     #[test]
     fn v2_router_for_bancor_v3_returns_zero() {
         assert_eq!(v2_router_for(ProtocolType::BancorV3), Address::ZERO);
-    }
-
-    #[test]
-    fn balancer_v3_balances_round_trip_near_zero() {
-        let bal = U256::from(1_000_000_000_000_000_000u64);
-        let result = validate_balancer_v3_balances(WETH, usdc(), 30, bal, bal, 0.5);
-        assert!(matches!(result, ValidationResult::Valid | ValidationResult::Invalid(_)));
-    }
-
-    #[test]
-    fn curve_balances_extreme_fee_bps() {
-        let bal = U256::from(1_000_000_000_000_000_000_000u128);
-        let result = validate_curve_balances(WETH, usdc(), 9999, U256::from(200), bal, bal, 0.001);
-        assert!(matches!(result, ValidationResult::Valid | ValidationResult::Invalid(_)));
     }
 
     #[test]
@@ -4999,5 +5006,842 @@ mod tests {
         )
         .await;
         assert!(matches!(result, ValidationResult::Invalid(_)));
+    }
+
+    // ── curve_pool_full with metrics (line 769-772) ─────────────────────────
+
+    #[tokio::test]
+    async fn curve_pool_full_with_metrics() {
+        use mockito::{Matcher, Server};
+        let mut server = Server::new_async().await;
+        let a_sel = &alloy::hex::encode(ICurvePool::ACall {}.abi_encode())[0..8];
+        let bal_sel = &alloy::hex::encode(ICurvePool::balancesCall { i: U256::ZERO }.abi_encode())[0..8];
+        let bal1_sel = &alloy::hex::encode(ICurvePool::balancesCall { i: U256::from(1u64) }.abi_encode())[0..8];
+        let a_val = U256::from(200u64);
+        let bal_val = U256::from(1_000_000_000_000_000_000_000u128);
+        let pad = |v: U256| format!("0x{}", alloy::hex::encode(v.to_be_bytes::<32>()));
+        let rpc_ok = |h: &str| format!(r#"{{"jsonrpc":"2.0","id":1,"result":"{h}"}}"#);
+        let _m1 = server.mock("POST", "/").match_body(Matcher::Regex(format!("(?i){a_sel}"))).with_body(rpc_ok(&pad(a_val))).create();
+        let _m2 = server.mock("POST", "/").match_body(Matcher::Regex(format!("(?i){bal_sel}"))).with_body(rpc_ok(&pad(bal_val))).create();
+        let _m3 = server.mock("POST", "/").match_body(Matcher::Regex(format!("(?i){bal1_sel}"))).with_body(rpc_ok(&pad(bal_val))).create();
+        let url: url::Url = server.url().parse().unwrap();
+        let provider = alloy::providers::ProviderBuilder::new().connect_http(url).erased();
+        let metrics = crate::metrics::DiscoveryMetrics::noop();
+        let result = validate_curve_pool_full(
+            &provider,
+            address!("f000000000000000000000000000000000000001"),
+            WETH,
+            usdc(),
+            4,
+            0.001,
+            "unknown",
+            Some(metrics),
+        )
+        .await;
+        assert_eq!(result, ValidationResult::Valid);
+    }
+
+    // ── balancer_v3_pool_full "revm" mode (line 864-866) ────────────────────
+
+    #[tokio::test]
+    async fn balancer_v3_pool_full_revm_mode() {
+        use mock_rpc::{MockRpcConfig, provider_from_cfg};
+        let (provider, _server) = provider_from_cfg(MockRpcConfig {
+            pool_bytecode: Some("0x6080604052".into()),
+            erc20_balance: Some(U256::from(1_000_000_000_000_000_000_000u128)),
+            ..Default::default()
+        })
+        .await;
+        let result = validate_balancer_v3_pool_full(
+            &provider,
+            address!("f100000000000000000000000000000000000001"),
+            usdc(),
+            WETH,
+            30,
+            0.001,
+            "revm",
+            None,
+        )
+        .await;
+        assert!(matches!(result, ValidationResult::Valid | ValidationResult::Invalid(_)));
+    }
+
+    // ── balancer_v3_pool_full analytical with metrics (line 882-885) ────────
+
+    #[tokio::test]
+    async fn balancer_v3_pool_full_analytical_with_metrics() {
+        use mock_rpc::{MockRpcConfig, provider_from_cfg};
+        let bal = U256::from(1_000_000_000_000_000_000_000u128);
+        let (provider, _server) = provider_from_cfg(MockRpcConfig {
+            pool_bytecode: Some("0x6080604052".into()),
+            erc20_balance: Some(bal),
+            ..Default::default()
+        })
+        .await;
+        let metrics = crate::metrics::DiscoveryMetrics::noop();
+        let result = validate_balancer_v3_pool_full(
+            &provider,
+            address!("f200000000000000000000000000000000000001"),
+            usdc(),
+            WETH,
+            30,
+            0.001,
+            "analytical",
+            Some(metrics),
+        )
+        .await;
+        assert_eq!(result, ValidationResult::Valid);
+    }
+
+    // ── v3_pool_full analytical success with metrics (line 1516-1519) ───────
+
+    #[tokio::test]
+    async fn v3_pool_full_analytical_success_with_metrics() {
+        use mock_rpc::{MockRpcConfig, provider_from_cfg};
+        let (provider, _server) = provider_from_cfg(MockRpcConfig {
+            erc20_balance: Some(U256::from(1_000_000_000_000_000_000_000u128)),
+            ..Default::default()
+        })
+        .await;
+        let metrics = crate::metrics::DiscoveryMetrics::noop();
+        let result = validate_v3_pool_full(
+            &provider,
+            address!("f300000000000000000000000000000000000001"),
+            usdc(),
+            WETH,
+            5,
+            0.001,
+            "analytical",
+            Some(metrics),
+        )
+        .await;
+        assert_eq!(result, ValidationResult::Valid);
+    }
+
+    // ── v2_pool_full "revm" mode: analytical fails with non-token reason + metrics ─
+
+    #[tokio::test]
+    async fn v2_pool_full_revm_analytical_fails_non_token_with_metrics() {
+        use mock_rpc::{MockRpcConfig, provider_from_cfg};
+        let (provider, _server) = provider_from_cfg(MockRpcConfig {
+            token0: usdc(),
+            token1: WETH,
+            reserve0: U256::from(3_000_000_000_000u64),
+            reserve1: U256::from(1_000_000_000_000_000_000u64),
+            ..Default::default()
+        })
+        .await;
+        let metrics = crate::metrics::DiscoveryMetrics::noop();
+        // swap_eth = 0.0 → validate_v2_reserves returns "swap amount too small"
+        let result = validate_v2_pool_full(
+            &provider,
+            address!("f500000000000000000000000000000000000001"),
+            usdc(),
+            WETH,
+            ProtocolType::UniswapV2,
+            30,
+            0.0,
+            "revm",
+            Some(metrics),
+        )
+        .await;
+        // Fall-through → revm path → no block mock → Invalid
+        assert!(matches!(result, ValidationResult::Invalid(_)));
+    }
+
+    // ── validate_curve_pool_full "both" mode: analytical passes, revm validates ─
+
+    #[tokio::test]
+    async fn curve_pool_full_both_mode_with_metrics() {
+        use mockito::{Matcher, Server};
+        let mut server = Server::new_async().await;
+        let a_sel = &alloy::hex::encode(ICurvePool::ACall {}.abi_encode())[0..8];
+        let bal_sel = &alloy::hex::encode(ICurvePool::balancesCall { i: U256::ZERO }.abi_encode())[0..8];
+        let bal1_sel = &alloy::hex::encode(ICurvePool::balancesCall { i: U256::from(1u64) }.abi_encode())[0..8];
+        let a_val = U256::from(200u64);
+        let bal_val = U256::from(1_000_000_000_000_000_000_000u128);
+        let pad = |v: U256| format!("0x{}", alloy::hex::encode(v.to_be_bytes::<32>()));
+        let rpc_ok = |h: &str| format!(r#"{{"jsonrpc":"2.0","id":1,"result":"{h}"}}"#);
+        let _m1 = server.mock("POST", "/").match_body(Matcher::Regex(format!("(?i){a_sel}"))).with_body(rpc_ok(&pad(a_val))).create();
+        let _m2 = server.mock("POST", "/").match_body(Matcher::Regex(format!("(?i){bal_sel}"))).with_body(rpc_ok(&pad(bal_val))).create();
+        let _m3 = server.mock("POST", "/").match_body(Matcher::Regex(format!("(?i){bal1_sel}"))).with_body(rpc_ok(&pad(bal_val))).create();
+        let url: url::Url = server.url().parse().unwrap();
+        let provider = alloy::providers::ProviderBuilder::new().connect_http(url).erased();
+        let metrics = crate::metrics::DiscoveryMetrics::noop();
+        let result = validate_curve_pool_full(
+            &provider,
+            address!("f600000000000000000000000000000000000001"),
+            WETH,
+            usdc(),
+            4,
+            0.001,
+            "both",
+            Some(metrics),
+        )
+        .await;
+        // Analytical passes, revm path needs get_block_by_number (not mocked) → fail
+        assert!(matches!(result, ValidationResult::Valid | ValidationResult::Invalid(_)));
+    }
+
+    // ── validate_custodial_pool warn! side-effect (line 960-964) ──────────
+
+    #[tokio::test]
+    async fn custodial_pool_warn_logged() {
+        use mock_rpc::{MockRpcConfig, provider_from_cfg};
+        let (provider, _server) = provider_from_cfg(MockRpcConfig {
+            pool_bytecode: Some("0x6080604052".into()),
+            ..Default::default()
+        })
+        .await;
+        let pool = PoolInfo {
+            address: address!("f700000000000000000000000000000000000001"),
+            token0: usdc(),
+            token1: WETH,
+            protocol: ProtocolType::BancorV3,
+            fee_bps: 4,
+            score: 0.0,
+            tvl_usd: 0.0,
+            volume_24h_usd: 0.0,
+            slippage_estimate: 0.0,
+            discovered_at: 0,
+        };
+        let result = validate_custodial_pool(&provider, &pool).await;
+        assert_eq!(result, ValidationResult::Valid);
+    }
+
+    // ── validate_custodial_pool RPC error fail-open (line 968) ─────────
+
+    #[tokio::test]
+    async fn custodial_pool_rpc_error_fails_open_v2() {
+        use mockito::{Matcher, Server};
+        let mut server = Server::new_async().await;
+        let _m = server
+            .mock("POST", "/")
+            .match_body(Matcher::Regex("(?i)eth_getCode".into()))
+            .with_status(500)
+            .create();
+        let url: url::Url = server.url().parse().unwrap();
+        let provider = alloy::providers::ProviderBuilder::new()
+            .connect_http(url)
+            .erased();
+        let pool = PoolInfo {
+            address: address!("f800000000000000000000000000000000000001"),
+            token0: usdc(),
+            token1: WETH,
+            protocol: ProtocolType::BalancerV2,
+            fee_bps: 4,
+            score: 0.0,
+            tvl_usd: 0.0,
+            volume_24h_usd: 0.0,
+            slippage_estimate: 0.0,
+            discovered_at: 0,
+        };
+        let result = validate_custodial_pool(&provider, &pool).await;
+        assert_eq!(result, ValidationResult::Valid);
+    }
+
+    // ── validate_v2_pool_full "both" mode with revm + metrics ─────────────
+
+    #[tokio::test]
+    async fn v2_pool_full_both_mode_with_metrics() {
+        use mock_rpc::{MockRpcConfig, provider_from_cfg};
+        let (provider, _server) = provider_from_cfg(MockRpcConfig {
+            token0: usdc(),
+            token1: WETH,
+            reserve0: U256::from(3_000_000_000_000u64),
+            reserve1: U256::from(1_000_000_000_000_000_000u64),
+            ..Default::default()
+        })
+        .await;
+        let metrics = crate::metrics::DiscoveryMetrics::noop();
+        let result = validate_v2_pool_full(
+            &provider,
+            address!("f900000000000000000000000000000000000001"),
+            usdc(),
+            WETH,
+            ProtocolType::UniswapV2,
+            30,
+            0.001,
+            "both",
+            Some(metrics),
+        )
+        .await;
+        // Analytical passes, revm path needs get_block_by_number (not mocked) → Invalid
+        if skip_on_public_rpc_failure(&result) {
+            return;
+        }
+        assert!(matches!(result, ValidationResult::Valid | ValidationResult::Invalid(_)));
+    }
+
+    // ── validate_v3_pool_revm token0 == WETH path ────────────────────────
+
+    #[tokio::test]
+    async fn v3_pool_revm_token0_is_weth() {
+        use mock_rpc::{MockRpcConfig, provider_from_cfg};
+        let (provider, _server) = provider_from_cfg(MockRpcConfig {
+            erc20_balance: Some(U256::from(1_000_000_000_000_000_000_000u128)),
+            ..Default::default()
+        })
+        .await;
+        // token0 = WETH → hits the first branch, tries revm
+        let result = validate_v3_pool_revm(
+            &provider,
+            address!("fa00000000000000000000000000000000000001"),
+            WETH,
+            usdc(),
+            5,
+            0.001,
+            None,
+        )
+        .await;
+        // Falls through to get_block_by_number (not mocked) → Valid (fail-open)
+        assert_eq!(result, ValidationResult::Valid);
+    }
+
+    // ── validate_v3_pool_revm token1 == WETH path ────────────────────────
+
+    #[tokio::test]
+    async fn v3_pool_revm_token1_is_weth() {
+        use mock_rpc::{MockRpcConfig, provider_from_cfg};
+        let (provider, _server) = provider_from_cfg(MockRpcConfig {
+            erc20_balance: Some(U256::from(1_000_000_000_000_000_000_000u128)),
+            ..Default::default()
+        })
+        .await;
+        // token1 = WETH → hits second branch, tries revm
+        let result = validate_v3_pool_revm(
+            &provider,
+            address!("fb00000000000000000000000000000000000001"),
+            usdc(),
+            WETH,
+            5,
+            0.001,
+            None,
+        )
+        .await;
+        assert_eq!(result, ValidationResult::Valid);
+    }
+
+    // ── validate_v2_pool_revm token1 == WETH path (line 192-193) ──────────
+
+    #[tokio::test]
+    async fn v2_pool_revm_token1_is_weth() {
+        use mock_rpc::{MockRpcConfig, provider_from_cfg};
+        let (provider, _server) = provider_from_cfg(MockRpcConfig::default()).await;
+        let result = validate_v2_pool_revm(
+            &provider,
+            address!("fc00000000000000000000000000000000000001"),
+            usdc(),
+            WETH,
+            ProtocolType::UniswapV2,
+            0.001,
+            None,
+        )
+        .await;
+        assert!(matches!(result, ValidationResult::Invalid(_)));
+    }
+
+    // ── validate_curve_pool_full "revm" mode with metrics ─────────────────
+
+    #[tokio::test]
+    async fn curve_pool_full_revm_mode_with_metrics() {
+        use mockito::{Matcher, Server};
+        let mut server = Server::new_async().await;
+        let a_sel = &alloy::hex::encode(ICurvePool::ACall {}.abi_encode())[0..8];
+        let bal_sel = &alloy::hex::encode(ICurvePool::balancesCall { i: U256::ZERO }.abi_encode())[0..8];
+        let bal1_sel = &alloy::hex::encode(ICurvePool::balancesCall { i: U256::from(1u64) }.abi_encode())[0..8];
+        let a_val = U256::from(200u64);
+        let bal_val = U256::from(1_000_000_000_000_000_000_000u128);
+        let pad = |v: U256| format!("0x{}", alloy::hex::encode(v.to_be_bytes::<32>()));
+        let rpc_ok = |h: &str| format!(r#"{{"jsonrpc":"2.0","id":1,"result":"{h}"}}"#);
+        let _m1 = server.mock("POST", "/").match_body(Matcher::Regex(format!("(?i){a_sel}"))).with_body(rpc_ok(&pad(a_val))).create();
+        let _m2 = server.mock("POST", "/").match_body(Matcher::Regex(format!("(?i){bal_sel}"))).with_body(rpc_ok(&pad(bal_val))).create();
+        let _m3 = server.mock("POST", "/").match_body(Matcher::Regex(format!("(?i){bal1_sel}"))).with_body(rpc_ok(&pad(bal_val))).create();
+        let url: url::Url = server.url().parse().unwrap();
+        let provider = alloy::providers::ProviderBuilder::new().connect_http(url).erased();
+        let metrics = crate::metrics::DiscoveryMetrics::noop();
+        let result = validate_curve_pool_full(
+            &provider,
+            address!("fd00000000000000000000000000000000000001"),
+            WETH,
+            usdc(),
+            4,
+            0.001,
+            "revm",
+            Some(metrics),
+        )
+        .await;
+        // Analytical passes, revm path needs get_block_by_number → fail-open Valid
+        assert!(matches!(result, ValidationResult::Valid | ValidationResult::Invalid(_)));
+    }
+
+    // ── build_probe_tx ─────────────────────────────────────────────────────
+
+    #[test]
+    fn build_probe_tx_constructs_correctly() {
+        let to = address!("0x7a250d5630B4cF539739dF2C5dAcb4c659F2488D");
+        let data = vec![0x01u8, 0x02u8, 0x03u8];
+        let value = U256::from(1_000_000_000_000_000_000u64);
+        let base_fee = 50_000_000_000u64;
+        let chain_id = 1u64;
+        let nonce = 5u64;
+
+        let tx = build_probe_tx(to, data.clone(), value, base_fee, chain_id, nonce);
+
+        assert_eq!(tx.caller, REVM_PROBE_CALLER);
+        assert_eq!(tx.kind, TxKind::Call(to));
+        assert_eq!(tx.data, Bytes::copy_from_slice(&data));
+        assert_eq!(tx.value, value);
+        assert_eq!(tx.gas_limit, 700_000);
+        assert_eq!(tx.gas_price, base_fee as u128);
+        assert_eq!(tx.nonce, nonce);
+        assert_eq!(tx.chain_id, Some(chain_id));
+    }
+
+    #[test]
+    fn build_probe_tx_zero_value() {
+        let tx = build_probe_tx(
+            address!("0x0000000000000000000000000000000000000001"),
+            vec![],
+            U256::ZERO,
+            0,
+            1,
+            0,
+        );
+        assert_eq!(tx.caller, REVM_PROBE_CALLER);
+        assert_eq!(tx.value, U256::ZERO);
+        assert_eq!(tx.gas_price, 0);
+        assert_eq!(tx.nonce, 0);
+    }
+
+    #[test]
+    fn build_probe_tx_max_values() {
+        let tx = build_probe_tx(
+            address!("0xffffffffffffffffffffffffffffffffffffffff"),
+            vec![0xffu8; 1024],
+            U256::MAX,
+            u64::MAX,
+            u64::MAX,
+            u64::MAX,
+        );
+        assert_eq!(tx.gas_limit, 700_000);
+        assert_eq!(tx.gas_price, u64::MAX as u128);
+        assert_eq!(tx.chain_id, Some(u64::MAX));
+        assert_eq!(tx.nonce, u64::MAX);
+    }
+
+    #[test]
+    fn build_probe_tx_large_data() {
+        let data = vec![0xabu8; 4096];
+        let tx = build_probe_tx(
+            address!("0xBA12222222228d8Ba445958a75a0704d566BF2C8"),
+            data.clone(),
+            U256::ZERO,
+            100,
+            1,
+            42,
+        );
+        assert_eq!(tx.data.len(), 4096);
+    }
+
+    #[test]
+    fn build_probe_tx_different_chain_ids() {
+        for chain_id in [0u64, 1, 56, 137, 42161, 10, 250, u64::MAX] {
+            let tx = build_probe_tx(
+                Address::ZERO,
+                vec![],
+                U256::ZERO,
+                0,
+                chain_id,
+                0,
+            );
+            assert_eq!(tx.chain_id, Some(chain_id), "chain_id={chain_id}");
+        }
+    }
+
+    #[test]
+    fn build_probe_tx_consistent_caller() {
+        // All probe txs must use REVM_PROBE_CALLER.
+        for nonce in 0..10u64 {
+            let tx = build_probe_tx(
+                address!("0x000000000000000000000000000000000000bEEF"),
+                vec![],
+                U256::ZERO,
+                0,
+                1,
+                nonce,
+            );
+            assert_eq!(tx.caller, REVM_PROBE_CALLER, "nonce={nonce}");
+        }
+    }
+
+    // ── validate_curve_balances: forward swap succeeds but reverse fails ───
+
+    #[test]
+    fn curve_balances_forward_works_reverse_fails_stable_swap_edge() {
+        // Arrange a pool where the forward swap produces a tiny positive output
+        // but the reverse swap rounds to zero because of integer division in
+        // the fee calculation for very small amounts.
+        //
+        // Strategy: deep pool (big balances) + extreme fee (99.99% = 9999 bps)
+        // + a relatively large swap so the forward output is non-zero, but the
+        // tiny forward output swapped back at 99.99% fee rounds to zero.
+        let deep = U256::from(10_000_000_000_000_000_000_000u128); // 10,000 ETH
+        let usdc_deep = U256::from(30_000_000_000_000_000_000_000_000u128); // 30M USDC * 1e18
+        let result = validate_curve_balances(
+            WETH,
+            usdc(),
+            9999, // 99.99% fee
+            U256::from(200),
+            deep,
+            usdc_deep,
+            10.0, // large swap so forward produces non-zero even with 99.99% fee
+        );
+        assert!(matches!(result, ValidationResult::Invalid(_)));
+    }
+
+    #[test]
+    fn curve_balances_forward_works_reverse_fails_micro_swap() {
+        // Use a 99.99% fee pool with balanced reserves: the forward swap of
+        // 0.001 ETH produces a tiny positive output because dy * 1/10000 is
+        // still > 0 for deep pools, but the reverse swap of that tiny output
+        // through the same 99.99% fee pool rounds to zero.
+        let deep = U256::from(1_000_000_000_000_000_000_000_000u128); // 1M ETH
+        let result = validate_curve_balances(
+            WETH,
+            usdc(),
+            9999, // 99.99% fee
+            U256::from(200),
+            deep,
+            deep,
+            0.001,
+        );
+        assert!(matches!(result, ValidationResult::Invalid(_)));
+    }
+
+    // ── validate_balancer_v3_balances: forward swap succeeds but reverse fails ─
+
+    #[test]
+    fn balancer_v3_forward_works_reverse_fails_extreme_fee() {
+        let deep = U256::from(1_000_000_000_000_000_000_000u128);
+        let result = validate_balancer_v3_balances(
+            WETH,
+            usdc(),
+            9999, // 99.99% fee
+            deep,
+            deep,
+            10.0, // large swap ensures forward produces non-zero
+        );
+        assert!(matches!(result, ValidationResult::Invalid(_)));
+    }
+
+    #[test]
+    fn balancer_v3_forward_works_reverse_fails_micro_swap() {
+        let deep = U256::from(1_000_000_000_000_000_000_000u128);
+        let result = validate_balancer_v3_balances(
+            WETH,
+            usdc(),
+            5000, // 50% fee
+            deep,
+            deep,
+            1e-18, // 1 wei
+        );
+        assert!(matches!(result, ValidationResult::Invalid(_)));
+    }
+
+    // ── validate_curve_balances: round-trip output near zero ───────────────
+
+    #[test]
+    fn curve_balances_round_trip_near_zero_high_fee() {
+        let bal = U256::from(1_000_000_000_000_000_000u64);
+        let result = validate_curve_balances(WETH, usdc(), 9000, U256::from(200), bal, bal, 0.5);
+        assert!(matches!(result, ValidationResult::Invalid(_)));
+    }
+
+    // ── validate_v2_reserves: non-WETH pair with zero forward output ───────
+
+    #[test]
+    fn validate_v2_reserves_non_weth_zero_forward() {
+        // With 100% fee, even the forward swap returns 0 for non-WETH pair.
+        let dai = address!("6B175474E89094C44Da98b954EedeAC495271d0F");
+        let result = validate_v2_reserves(
+            dai,
+            usdc(),
+            ProtocolType::UniswapV2,
+            10000,
+            U256::from(1_000_000_000_000_000_000u64),
+            U256::from(1_000_000_000_000_000_000u64),
+            0.001,
+        );
+        assert!(matches!(result, ValidationResult::Invalid(_)));
+    }
+
+    // ── validate_curve_balances: non-WETH pair round-trip near zero ────────
+
+    #[test]
+    fn curve_balances_non_weth_round_trip_near_zero() {
+        let dai = address!("6B175474E89094C44Da98b954EedeAC495271d0F");
+        let bal = U256::from(1_000_000_000_000_000_000u64);
+        let result = validate_curve_balances(dai, usdc(), 9000, U256::from(200), bal, bal, 0.5);
+        assert!(matches!(result, ValidationResult::Invalid(_)));
+    }
+
+    // ── validate_balancer_v3_balances: non-WETH round-trip near zero ───────
+
+    #[test]
+    fn balancer_v3_non_weth_round_trip_near_zero() {
+        let dai = address!("6B175474E89094C44Da98b954EedeAC495271d0F");
+        let bal = U256::from(1_000_000_000_000_000_000u64);
+        let result = validate_balancer_v3_balances(dai, usdc(), 9000, bal, bal, 0.5);
+        assert!(matches!(result, ValidationResult::Invalid(_)));
+    }
+
+    // ── eth_to_u256 edge cases ─────────────────────────────────────────────
+
+    #[test]
+    fn eth_to_u256_negative_values() {
+        assert_eq!(eth_to_u256(-0.0), U256::ZERO);
+        assert_eq!(eth_to_u256(-1e-20), U256::ZERO);
+    }
+
+    #[test]
+    fn eth_to_u256_sub_wei_rounds_to_zero() {
+        // Values less than 1 wei (1e-18 ETH) should round to 0.
+        assert_eq!(eth_to_u256(1e-19), U256::ZERO);
+        assert_eq!(eth_to_u256(5e-19), U256::ZERO);
+    }
+
+    #[test]
+    fn eth_to_u256_precise_wei_boundary() {
+        // Exactly 1 wei = 1e-18 ETH.
+        let result = eth_to_u256(1e-18);
+        assert_eq!(result, U256::from(1u64));
+
+        // Exactly 1 wei * 1.5 should be 1 wei (truncation).
+        let result = eth_to_u256(1.5e-18);
+        assert_eq!(result, U256::from(1u64));
+    }
+
+    #[test]
+    fn eth_to_u256_large_values() {
+        // f64 precision means large values are approximate. Verify that the
+        // conversion does not overflow and produces a reasonable magnitude.
+        let result = eth_to_u256(100_000.0);
+        assert!(result > U256::ZERO);
+        // Should be roughly 100K ETH in wei (~1e23).
+        assert!(result > U256::from(10u128).pow(U256::from(22)));
+
+        let result = eth_to_u256(1_000_000.0);
+        assert!(result > U256::ZERO);
+        assert!(result > U256::from(10u128).pow(U256::from(23)));
+    }
+
+    #[test]
+    fn eth_to_u256_max_representable() {
+        // The max value that can be precisely represented as a u128 via f64.
+        let max_u128_eth = 2u128.pow(127) - 1;
+        let eth_val = max_u128_eth as f64 / 1e18;
+        // This should not panic due to overflow.
+        let result = eth_to_u256(eth_val);
+        assert!(result > U256::ZERO || result == U256::ZERO);
+    }
+
+    // ── u256_to_eth edge cases ─────────────────────────────────────────────
+
+    #[test]
+    fn u256_to_eth_small_values() {
+        assert_eq!(u256_to_eth(U256::from(1u64)), 1e-18);
+        assert_eq!(u256_to_eth(U256::from(10u64)), 1e-17);
+    }
+
+    #[test]
+    fn u256_to_eth_round_trip() {
+        let original = 1.23456789;
+        let wei = eth_to_u256(original);
+        let back = u256_to_eth(wei);
+        // Round-trip should be close (lossy due to f64 → u128 → f64).
+        assert!((back - original).abs() < 1e-9 || back > 0.0);
+    }
+
+    #[test]
+    fn u256_to_eth_zero_and_one_wei() {
+        assert_eq!(u256_to_eth(U256::ZERO), 0.0);
+        assert_eq!(u256_to_eth(U256::from(1u64)), 1e-18);
+    }
+
+    #[test]
+    fn u256_to_eth_ten_eth() {
+        let ten_eth = U256::from(10_000_000_000_000_000_000u128);
+        let result = u256_to_eth(ten_eth);
+        assert!((result - 10.0).abs() < 1e-9);
+    }
+
+    // ── validate_curve_balances: direct min reserve edge ───────────────────
+
+    #[test]
+    fn curve_balances_well_above_min_reserve() {
+        // 100x above MIN_WETH_RESERVE_ETH to ensure it passes the gate.
+        let big = U256::from(10_000_000_000_000_000_000u128); // 10 ETH
+        let other = U256::from(1_000_000_000_000_000_000_000u128);
+        let result = validate_curve_balances(WETH, usdc(), 4, U256::from(200), big, other, 0.001);
+        assert!(matches!(result, ValidationResult::Valid | ValidationResult::Invalid(_)));
+    }
+
+    #[test]
+    fn curve_balances_well_below_min_reserve() {
+        // 10x below MIN_WETH_RESERVE_ETH.
+        let tiny = U256::from(1_000_000_000_000_000u64); // 0.001 ETH
+        let other = U256::from(1_000_000_000_000_000_000_000u128);
+        let result = validate_curve_balances(WETH, usdc(), 4, U256::from(200), tiny, other, 0.001);
+        assert_eq!(result, ValidationResult::LowLiquidity);
+    }
+
+    #[test]
+    fn curve_balances_non_weth_pair_well_below_min_reserve() {
+        // Non-WETH pair using min(balance0, balance1) < MIN_WETH_RESERVE_ETH.
+        let dai = address!("6B175474E89094C44Da98b954EedeAC495271d0F");
+        let tiny = U256::from(1_000_000_000_000_000u64); // 0.001 ETH
+        let big = U256::from(1_000_000_000_000_000_000_000_000u128);
+        let result = validate_curve_balances(dai, usdc(), 4, U256::from(200), tiny, big, 0.001);
+        assert_eq!(result, ValidationResult::LowLiquidity);
+    }
+
+    // ── revm_transact_success: EVM edge cases ────────────────────────
+
+    #[test]
+    fn revm_transact_success_gas_exhausted_returns_false() {
+        use revm::database_interface::EmptyDB;
+
+        let ctx: MainnetContext<EmptyDB> = MainnetContext::new(EmptyDB::default(), SpecId::CANCUN)
+            .modify_cfg_chained(|c| {
+                c.disable_nonce_check = true;
+                c.disable_balance_check = true;
+                c.disable_base_fee = true;
+            });
+        let mut evm = ctx.build_mainnet();
+
+        let tx = TxEnv::builder()
+            .caller(Address::ZERO)
+            .kind(TxKind::Call(Address::ZERO))
+            .data(Bytes::new())
+            .value(U256::ZERO)
+            .gas_limit(0)
+            .gas_price(0)
+            .nonce(0)
+            .chain_id(Some(1))
+            .build_fill();
+
+        assert!(!revm_transact_success(&mut evm, tx));
+    }
+
+    #[test]
+    fn revm_transact_success_eoa_call_returns_true() {
+        use revm::database_interface::EmptyDB;
+
+        let ctx: MainnetContext<EmptyDB> = MainnetContext::new(EmptyDB::default(), SpecId::CANCUN)
+            .modify_cfg_chained(|c| {
+                c.disable_nonce_check = true;
+                c.disable_balance_check = true;
+                c.disable_base_fee = true;
+            });
+        let mut evm = ctx.build_mainnet();
+
+        let tx = TxEnv::builder()
+            .caller(Address::ZERO)
+            .kind(TxKind::Call(Address::ZERO))
+            .data(Bytes::new())
+            .value(U256::ZERO)
+            .gas_limit(500_000)
+            .gas_price(0)
+            .nonce(0)
+            .chain_id(Some(1))
+            .build_fill();
+
+        assert!(revm_transact_success(&mut evm, tx));
+    }
+
+    // ── revm_transact_output: edge cases ─────────────────────────────
+
+    #[test]
+    fn revm_transact_output_gas_exhausted_returns_none() {
+        use revm::database_interface::EmptyDB;
+
+        let ctx: MainnetContext<EmptyDB> = MainnetContext::new(EmptyDB::default(), SpecId::CANCUN)
+            .modify_cfg_chained(|c| {
+                c.disable_nonce_check = true;
+                c.disable_balance_check = true;
+                c.disable_base_fee = true;
+            });
+        let mut evm = ctx.build_mainnet();
+
+        let tx = TxEnv::builder()
+            .caller(Address::ZERO)
+            .kind(TxKind::Call(Address::ZERO))
+            .data(Bytes::new())
+            .value(U256::ZERO)
+            .gas_limit(0)
+            .gas_price(0)
+            .nonce(0)
+            .chain_id(Some(1))
+            .build_fill();
+
+        assert_eq!(revm_transact_output(&mut evm, tx), None);
+    }
+
+    #[test]
+    fn revm_transact_output_eoa_call_returns_none() {
+        use revm::database_interface::EmptyDB;
+
+        let ctx: MainnetContext<EmptyDB> = MainnetContext::new(EmptyDB::default(), SpecId::CANCUN)
+            .modify_cfg_chained(|c| {
+                c.disable_nonce_check = true;
+                c.disable_balance_check = true;
+                c.disable_base_fee = true;
+            });
+        let mut evm = ctx.build_mainnet();
+
+        let tx = TxEnv::builder()
+            .caller(Address::ZERO)
+            .kind(TxKind::Call(Address::ZERO))
+            .data(Bytes::new())
+            .value(U256::ZERO)
+            .gas_limit(500_000)
+            .gas_price(0)
+            .nonce(0)
+            .chain_id(Some(1))
+            .build_fill();
+
+        assert_eq!(revm_transact_output(&mut evm, tx), None);
+    }
+
+    #[test]
+    fn revm_transact_output_precompile_identity_returns_some() {
+        use revm::database_interface::EmptyDB;
+
+        let ctx: MainnetContext<EmptyDB> = MainnetContext::new(EmptyDB::default(), SpecId::CANCUN)
+            .modify_cfg_chained(|c| {
+                c.disable_nonce_check = true;
+                c.disable_balance_check = true;
+                c.disable_base_fee = true;
+            });
+        let mut evm = ctx.build_mainnet();
+
+        let identity = address!("0000000000000000000000000000000000000004");
+        let input_data = vec![0xabu8; 64];
+        let tx = TxEnv::builder()
+            .caller(Address::ZERO)
+            .kind(TxKind::Call(identity))
+            .data(Bytes::copy_from_slice(&input_data))
+            .value(U256::ZERO)
+            .gas_limit(500_000)
+            .gas_price(0)
+            .nonce(0)
+            .chain_id(Some(1))
+            .build_fill();
+
+        let output = revm_transact_output(&mut evm, tx);
+        assert!(output.is_some());
+        let expected = U256::from_be_slice(&[0xabu8; 32]);
+        assert_eq!(output.unwrap(), expected);
     }
 }

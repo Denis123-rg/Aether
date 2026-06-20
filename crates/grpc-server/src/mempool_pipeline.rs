@@ -5314,7 +5314,80 @@ mod tests {
     }
 
     #[test]
-    fn optimize_cycle_input_success_with_victim_overlay() {
+    fn emit_decoded_does_not_panic() {
+        let metrics = EngineMetrics::new();
+        let swap = fake_swap(Protocol::UniswapV2,
+            address!("C02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2"),
+            address!("A0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"),
+            U256::from(1_000u64));
+        emit_decoded(&metrics, "test_router", &swap, &fake_pending_event(address!("7a250d5630B4cF539739dF2C5dAcb4c659F2488D")));
+    }
+
+    #[test]
+    fn emit_failure_does_not_panic() {
+        let metrics = EngineMetrics::new();
+        emit_failure(&metrics, "test_router", &DecodeError::TooShort);
+        emit_failure(&metrics, "test_router", &DecodeError::EmptyPath);
+    }
+
+    #[test]
+    fn sim_context_with_gating_sets_field() {
+        let gating = GatingConfig { min_reserve_f64: 0.01, ..GatingConfig::default() };
+        let ctx = unwrap_empty_sim_ctx().with_gating(gating.clone());
+        assert!((ctx.gating.min_reserve_f64 - 0.01).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn sim_context_with_arb_publisher_sets_field() {
+        let (tx, _rx) = broadcast::channel(16);
+        let ctx = unwrap_empty_sim_ctx().with_arb_publisher(tx);
+        assert!(ctx.arb_publisher.is_some());
+    }
+
+    #[test]
+    fn saturating_u256_to_i128_normal_value() {
+        let val = U256::from(1_000_000_000_000_000_000u128);
+        let result = saturating_u256_to_i128(val);
+        assert_eq!(result, 1_000_000_000_000_000_000);
+    }
+
+    #[test]
+    fn victim_post_reserves_non_finite_returns_none() {
+        let pool = UniswapV2Pool::new(
+            address!("0000000000000000000000000000000000000011"),
+            address!("A0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"),
+            address!("C02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2"),
+            30,
+        );
+        assert!(victim_post_reserves(&pool, address!("A0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"), f64::NAN, 1.0).is_none());
+        assert!(victim_post_reserves(&pool, address!("A0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"), -1.0, 1.0).is_none());
+    }
+
+    #[test]
+    fn victim_post_reserves_swapped_direction() {
+        let pool = UniswapV2Pool::new(
+            address!("0000000000000000000000000000000000000011"),
+            address!("A0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"), // usdc = token0
+            address!("C02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2"), // weth = token1
+            30,
+        );
+        // victim_token_in is weth (token1), so reserves should be swapped
+        let result = victim_post_reserves(&pool, address!("C02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2"), 1000.0, 2000.0);
+        let (r0, r1) = result.unwrap();
+        assert_eq!(r0, U256::from(2000u64)); // r0 should be post_out
+        assert_eq!(r1, U256::from(1000u64)); // r1 should be post_in
+    }
+
+    #[test]
+    fn decode_error_label_unknown_selector() {
+        assert_eq!(
+            decode_error_label(&DecodeError::UnknownSelector { selector: [0xde, 0xad, 0xbe, 0xef] }),
+            "unknown_selector"
+        );
+    }
+
+    #[test]
+    fn optimize_cycle_input_succeeds_with_victim_overlay() {
         use aether_pools::uniswap_v2::UniswapV2Pool;
         let weth = address!("C02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2");
         let usdc = address!("A0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48");

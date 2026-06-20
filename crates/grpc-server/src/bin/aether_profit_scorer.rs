@@ -3627,6 +3627,31 @@ mod tests {
     }
 
     #[test]
+    fn verify_cycle_u256_zero_amount_out_rounds_to_none() {
+        let (token_index, [ta, tb, _tc]) = make_token_index();
+        let a = *token_index.get_address(ta).unwrap();
+        let b = *token_index.get_address(tb).unwrap();
+        let pool = loaded(0x11, a, b);
+        let pools = vec![pool];
+
+        let mut graph = PriceGraph::new(token_index.len());
+        graph.resize(token_index.len());
+        let pid = PoolId { address: pools[0].address, protocol: pools[0].protocol };
+        graph.add_edge(ta, tb, 0.0, pid, pools[0].address, pools[0].protocol, U256::ZERO);
+        graph.add_edge(tb, ta, 0.0, pid, pools[0].address, pools[0].protocol, U256::ZERO);
+
+        let mut states = HashMap::new();
+        states.insert(0, PoolState::V2 {
+            r0: U256::from(1_000_000_000_000_000_000_000u128),
+            r1: U256::from(1u64),
+        });
+
+        let cycle = DetectedCycle { path: vec![ta, tb, ta], total_weight: -0.05 };
+        let result = verify_cycle_u256(&cycle, &graph, &token_index, &pools, &states, U256::from(1u64));
+        assert!(result.is_none());
+    }
+
+    #[test]
     fn build_steps_from_cycle_sync_bancor_returns_none() {
         let (token_index, [ta, tb, _tc]) = make_token_index();
         let a = *token_index.get_address(ta).unwrap();

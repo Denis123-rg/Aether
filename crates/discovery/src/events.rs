@@ -2388,4 +2388,84 @@ mod tests {
             h.await.unwrap();
         }
     }
+
+    // ── spawn_polling_listener with poll_when_ws_healthy = true (line 429) ──
+
+    #[tokio::test]
+    async fn spawn_polling_listener_poll_when_ws_healthy_true() {
+        use mockito::{Matcher, Server};
+        let mut server = Server::new_async().await;
+        let _bn = server
+            .mock("POST", "/")
+            .match_body(Matcher::Regex("eth_blockNumber".into()))
+            .with_body(r#"{"jsonrpc":"2.0","id":1,"result":"0x64"}"#)
+            .create();
+        let _gl = server
+            .mock("POST", "/")
+            .match_body(Matcher::Regex("eth_getLogs".into()))
+            .with_body(r#"{"jsonrpc":"2.0","id":1,"result":[]}"#)
+            .create();
+
+        let url: url::Url = server.url().parse().expect("url");
+        let provider = ProviderBuilder::new().connect_http(url).erased();
+        let service = Arc::new(crate::service::DiscoveryService::new(
+            crate::config::DiscoveryConfig::default(),
+        ));
+        let entries = vec![];
+        let ws_health = WsHealth::new();
+        ws_health.set_healthy(true);
+        let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+
+        let handle = spawn_polling_listener(
+            provider,
+            service,
+            entries,
+            1,
+            true,
+            ws_health,
+            shutdown_rx,
+        );
+
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        shutdown_tx.send(true).unwrap();
+        handle.await.unwrap();
+    }
+
+    // ── spawn_polling_listener with current <= last_block (poll skip at line 440) ─
+
+    #[tokio::test]
+    async fn spawn_polling_listener_same_block_skips_poll() {
+        use mockito::{Matcher, Server};
+        let mut server = Server::new_async().await;
+        // Both block number calls return the same value → current == last_block → skip poll
+        let _bn = server
+            .mock("POST", "/")
+            .match_body(Matcher::Regex("eth_blockNumber".into()))
+            .with_body(r#"{"jsonrpc":"2.0","id":1,"result":"0x64"}"#)
+            .create();
+        // eth_getLogs should NOT be called; if it is, we'll let it 500
+
+        let url: url::Url = server.url().parse().expect("url");
+        let provider = ProviderBuilder::new().connect_http(url).erased();
+        let service = Arc::new(crate::service::DiscoveryService::new(
+            crate::config::DiscoveryConfig::default(),
+        ));
+        let entries = vec![];
+        let ws_health = WsHealth::new();
+        let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+
+        let handle = spawn_polling_listener(
+            provider,
+            service,
+            entries,
+            1,
+            false,
+            ws_health,
+            shutdown_rx,
+        );
+
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        shutdown_tx.send(true).unwrap();
+        handle.await.unwrap();
+    }
 }
