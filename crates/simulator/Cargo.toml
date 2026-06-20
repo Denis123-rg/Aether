@@ -21,6 +21,7 @@ dashmap = { workspace = true }
 
 [dev-dependencies]
 criterion = { workspace = true }
+serial_test = { workspace = true }
 tempfile = "3"
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 url = "2"

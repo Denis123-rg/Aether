@@ -60,6 +60,7 @@ tonic-build = { workspace = true }
 prost-build = { workspace = true }
 
 [dev-dependencies]
+serial_test = { workspace = true }
 tempfile = "3.27.0"
 tokio = { workspace = true }
 url = "2"

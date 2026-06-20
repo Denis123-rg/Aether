@@ -602,6 +602,7 @@ pub fn protocol_label(p: ProtocolType) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serial_test::serial;
     use std::sync::Arc;
 
     #[test]
@@ -702,6 +703,7 @@ mod tests {
         let _: NoopLedger = NoopLedger::default();
     }
 
+    #[serial]
     #[tokio::test]
     async fn ledger_from_env_empty_url_returns_noop() {
         let registry = Registry::new();
@@ -713,6 +715,7 @@ mod tests {
         std::env::remove_var("DATABASE_URL");
     }
 
+    #[serial]
     #[tokio::test]
     async fn ledger_from_env_unset_returns_noop() {
         let registry = Registry::new();
@@ -863,6 +866,7 @@ mod tests {
         assert!(u.included);
     }
 
+    #[serial]
     #[tokio::test]
     async fn ledger_from_env_invalid_url_falls_back_to_noop() {
         let registry = Registry::new();

@@ -4860,7 +4860,144 @@ mod tests {
             30,
             0.001,
         )
-        .await;
+         .await;
         assert_eq!(result, ValidationResult::Valid);
+    }
+
+    // ──────────────────────────────────────────────────────────────────────────
+    //  Coverage push: remaining uncovered branches (validator.rs pure logic
+    //  and mock-based tests).
+    // ──────────────────────────────────────────────────────────────────────────
+
+    // ── simulate_round_trip: token→ETH swap fails (line 474) ────────────
+
+    #[test]
+    fn simulate_round_trip_token_to_eth_swap_fails() {
+        // Pool with WETH + random_token — the `other` param does NOT match
+        // token1 so get_amount_out(other, …) returns None.
+        let random_token = address!("1111111111111111111111111111111111111111");
+        let other = address!("2222222222222222222222222222222222222222");
+        let mut pool = UniswapV2Pool::new(Address::ZERO, WETH, random_token, 30);
+        pool.update_state(
+            U256::from(1_000_000_000_000_000_000u64),
+            U256::from(1_000_000_000_000u64),
+        );
+        let result = simulate_round_trip(&pool, WETH, other, U256::from(1_000_000_000_000_000u64));
+        assert!(matches!(result, ValidationResult::Invalid(_)));
+    }
+
+    // ── validate_v2_reserves non-WETH forward swap fails (line 452) ─────
+
+    #[test]
+    fn validate_v2_reserves_non_weth_forward_swap_fails() {
+        // fee_bps = 10000 (100%) makes the output zero even with healthy
+        // reserves → forward swap returns Some(0) → "forward swap failed".
+        let dai = address!("6B175474E89094C44Da98b954EedeAC495271d0F");
+        let result = validate_v2_reserves(
+            dai,
+            usdc(),
+            ProtocolType::UniswapV2,
+            10000,
+            U256::from(1_000_000_000_000_000_000u64),
+            U256::from(1_000_000_000_000_000_000u64),
+            0.001,
+        );
+        assert!(matches!(result, ValidationResult::Invalid(_)));
+    }
+
+    // ── validate_v2_reserves non-WETH round-trip unprofitable (line 457) ─
+
+    #[test]
+    fn validate_v2_reserves_non_weth_round_trip_unprofitable() {
+        // fee_bps = 5000 (50%) causes the round trip to lose >50% of value
+        // → back <= swap_wei/2 → "round-trip swap unprofitable".
+        let dai = address!("6B175474E89094C44Da98b954EedeAC495271d0F");
+        let result = validate_v2_reserves(
+            dai,
+            usdc(),
+            ProtocolType::UniswapV2,
+            5000,
+            U256::from(1_000_000_000_000_000_000u64),
+            U256::from(1_000_000_000_000_000_000u64),
+            0.001,
+        );
+        assert!(matches!(result, ValidationResult::Invalid(_)));
+    }
+
+    // ── validate_v2_pool_full "revm" mode fall-through (lines 146-150) ──
+
+    #[tokio::test]
+    async fn v2_pool_full_revm_mode_falls_through_on_non_token_error() {
+        // When the analytical pre-filter fails with a reason that does NOT
+        // contain "token" or "getReserves" (e.g. "swap amount too small"),
+        // the function falls through to validate_v2_pool_revm.
+        use mock_rpc::{MockRpcConfig, provider_from_cfg};
+        let pool = address!("fac0000000000000000000000000000000000001");
+        let (provider, _server) = provider_from_cfg(MockRpcConfig {
+            token0: usdc(),
+            token1: WETH,
+            reserve0: U256::from(3_000_000_000_000u64),
+            reserve1: U256::from(1_000_000_000_000_000_000u64),
+            ..Default::default()
+        })
+        .await;
+        // swap_eth = 0.0 → validate_v2_reserves returns
+        // "swap amount too small" (no "token" / "getReserves").
+        let result = validate_v2_pool_full(
+            &provider,
+            pool,
+            usdc(),
+            WETH,
+            ProtocolType::UniswapV2,
+            30,
+            0.0,
+            "revm",
+            None,
+        )
+        .await;
+        // Fall-through → validate_v2_pool_revm → no block mock → error.
+        assert!(matches!(result, ValidationResult::Invalid(_)));
+    }
+
+    // ── validate_v2_pool_revm token0 == WETH path (line 190-191) ────────
+
+    #[tokio::test]
+    async fn v2_pool_revm_token0_is_weth() {
+        use mock_rpc::{MockRpcConfig, provider_from_cfg};
+        let (provider, _server) = provider_from_cfg(MockRpcConfig::default()).await;
+        // token0 = WETH → the first branch in the if-else chain.
+        let result = validate_v2_pool_revm(
+            &provider,
+            address!("feb0000000000000000000000000000000000001"),
+            WETH,
+            usdc(),
+            ProtocolType::UniswapV2,
+            0.001,
+            None,
+        )
+        .await;
+        // Falls through to get_block_by_number which is not mocked → error.
+        assert!(matches!(result, ValidationResult::Invalid(_)));
+    }
+
+    // ── validate_v2_pool_revm swap too small after token check (line 201) ─
+
+    #[tokio::test]
+    async fn v2_pool_revm_swap_too_small_with_weth_token0() {
+        use mock_rpc::{MockRpcConfig, provider_from_cfg};
+        let (provider, _server) = provider_from_cfg(MockRpcConfig::default()).await;
+        // token0 = WETH and swap_eth = 0.0 → swap_wei is zero after the
+        // if-else branch → hits line 201.
+        let result = validate_v2_pool_revm(
+            &provider,
+            address!("fed0000000000000000000000000000000000001"),
+            WETH,
+            usdc(),
+            ProtocolType::UniswapV2,
+            0.0,
+            None,
+        )
+        .await;
+        assert!(matches!(result, ValidationResult::Invalid(_)));
     }
 }

@@ -630,6 +630,7 @@ impl Default for SimConfig {
 mod tests {
     use super::*;
     use alloy::primitives::{address, U256};
+    use serial_test::serial;
 
     #[test]
     fn test_new_empty_state() {
@@ -800,6 +801,7 @@ mod tests {
             .unwrap_or_else(|e| e.into_inner())
     }
 
+    #[serial]
     #[test]
     fn prewarm_max_concurrent_defaults_when_env_absent() {
         let _guard = prewarm_env_guard();
@@ -811,6 +813,7 @@ mod tests {
         );
     }
 
+    #[serial]
     #[test]
     fn prewarm_max_concurrent_reads_env_override() {
         let _guard = prewarm_env_guard();
@@ -819,6 +822,7 @@ mod tests {
         unsafe { std::env::remove_var("AETHER_PREWARM_MAX_CONCURRENT") };
     }
 
+    #[serial]
     #[test]
     fn prewarm_max_concurrent_rejects_zero_and_garbage() {
         let _guard = prewarm_env_guard();

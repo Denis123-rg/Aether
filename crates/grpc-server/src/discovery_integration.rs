@@ -176,6 +176,7 @@ pub async fn maybe_start_discovery(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serial_test::serial;
 
     #[test]
     fn default_config_path() {
@@ -190,6 +191,7 @@ mod tests {
         assert!(cfg.discovery.enabled);
     }
 
+    #[serial]
     #[test]
     fn discovery_config_path_respects_env_override() {
         std::env::set_var("AETHER_DISCOVERY_CONFIG", "/tmp/custom-discovery.toml");
@@ -354,6 +356,7 @@ mod tests {
         assert!(cache.pool_infos().is_empty());
     }
 
+    #[serial]
     #[tokio::test]
     async fn maybe_start_discovery_disabled_config() {
         let tmp = tempfile::NamedTempFile::new().unwrap();
@@ -386,6 +389,7 @@ update_interval_secs = 5
         drop(shutdown_tx);
     }
 
+    #[serial]
     #[tokio::test]
     async fn maybe_start_discovery_config_load_error() {
         std::env::set_var("AETHER_DISCOVERY_CONFIG", "/tmp/nonexistent_discovery_config_12345.toml");
@@ -402,6 +406,7 @@ update_interval_secs = 5
         drop(shutdown_tx);
     }
 
+    #[serial]
     #[tokio::test]
     async fn maybe_start_discovery_enabled_no_rpc() {
         let tmp = tempfile::NamedTempFile::new().unwrap();
@@ -437,6 +442,7 @@ update_interval_secs = 5
         shutdown_tx.send(true).unwrap();
     }
 
+    #[serial]
     #[tokio::test]
     async fn maybe_start_discovery_env_override() {
         std::env::set_var("AETHER_DISCOVERY_CONFIG", "/tmp/nonexistent_for_override_test.toml");

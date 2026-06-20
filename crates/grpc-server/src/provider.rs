@@ -615,6 +615,7 @@ impl RpcProvider {
 mod tests {
     use super::*;
     use alloy::primitives::U256;
+    use serial_test::serial;
     use std::sync::Mutex;
 
     static ENV_LOCK: Mutex<()> = Mutex::new(());
@@ -658,6 +659,7 @@ mod tests {
         assert!(!is_local_rpc("http://example.com:8545"));
     }
 
+    #[serial]
     #[test]
     fn test_resolve_http_poll_interval_defaults() {
         let _guard = ENV_LOCK.lock().unwrap();
@@ -672,6 +674,7 @@ mod tests {
         );
     }
 
+    #[serial]
     #[test]
     fn test_resolve_http_poll_interval_env_override() {
         let _guard = ENV_LOCK.lock().unwrap();
@@ -695,6 +698,7 @@ mod tests {
         std::env::remove_var("AETHER_HTTP_POLL_MS");
     }
 
+    #[serial]
     #[test]
     fn test_resolve_http_poll_interval_env_zero() {
         let _guard = ENV_LOCK.lock().unwrap();
@@ -706,6 +710,7 @@ mod tests {
         std::env::remove_var("AETHER_HTTP_POLL_MS");
     }
 
+    #[serial]
     #[test]
     fn test_resolve_http_poll_interval_env_large() {
         let _guard = ENV_LOCK.lock().unwrap();
@@ -717,6 +722,7 @@ mod tests {
         std::env::remove_var("AETHER_HTTP_POLL_MS");
     }
 
+    #[serial]
     #[test]
     fn test_provider_config_nodes_config_path_defaults_to_env() {
         std::env::remove_var("AETHER_NODES_CONFIG");
@@ -1262,6 +1268,7 @@ min_healthy_nodes: 1
         assert!(debug_str.contains("ProviderConfig"));
     }
 
+    #[serial]
     #[test]
     fn test_provider_config_default_from_eth_ws_url() {
         let _guard = ENV_LOCK.lock().unwrap();
@@ -1464,6 +1471,7 @@ min_healthy_nodes: 1
         );
     }
 
+    #[serial]
     #[test]
     fn test_provider_config_default_rpc_url_fallback() {
         let _guard = ENV_LOCK.lock().unwrap();
@@ -1473,6 +1481,7 @@ min_healthy_nodes: 1
         assert_eq!(config.rpc_url, "http://localhost:8545");
     }
 
+    #[serial]
     #[test]
     fn test_provider_config_default_rpc_url_from_eth_rpc_url() {
         let _guard = ENV_LOCK.lock().unwrap();

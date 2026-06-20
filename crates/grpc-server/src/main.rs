@@ -646,6 +646,7 @@ fn splice_immutable_aave_pool(
 
 #[cfg(test)]
 mod tests {
+    use serial_test::serial;
     use super::*;
 
     /// The loader must splice the real Aave V3 Pool address into every
@@ -949,6 +950,7 @@ mod tests {
         assert!(result.is_err());
     }
 
+    #[serial]
     #[test]
     fn build_backrun_validator_config_returns_none_without_env() {
         std::env::remove_var("AETHER_EXECUTOR_ADDRESS");
@@ -956,6 +958,7 @@ mod tests {
         assert!(result.is_none());
     }
 
+    #[serial]
     #[test]
     fn build_backrun_validator_config_returns_some_with_env() {
         std::env::set_var("AETHER_EXECUTOR_ADDRESS", "0x1111111111111111111111111111111111111111");
@@ -964,6 +967,7 @@ mod tests {
         std::env::remove_var("AETHER_EXECUTOR_ADDRESS");
     }
 
+    #[serial]
     #[test]
     fn build_backrun_validator_config_default_values() {
         std::env::set_var("AETHER_EXECUTOR_ADDRESS", "0x1111111111111111111111111111111111111111");
@@ -990,6 +994,7 @@ mod tests {
         std::env::remove_var("AETHER_EXECUTOR_ADDRESS");
     }
 
+    #[serial]
     #[test]
     fn build_backrun_validator_config_custom_values() {
         std::env::set_var("AETHER_EXECUTOR_ADDRESS", "0x2222222222222222222222222222222222222222");
@@ -1072,6 +1077,7 @@ mod tests {
         assert!(result.is_err());
     }
 
+    #[serial]
     #[test]
     fn build_backrun_validator_config_invalid_executor_address() {
         std::env::set_var("AETHER_EXECUTOR_ADDRESS", "not_a_valid_address");
@@ -1080,6 +1086,7 @@ mod tests {
         std::env::remove_var("AETHER_EXECUTOR_ADDRESS");
     }
 
+    #[serial]
     #[test]
     fn build_backrun_validator_config_invalid_gas_price() {
         std::env::set_var("AETHER_EXECUTOR_ADDRESS", "0x1111111111111111111111111111111111111111");
@@ -1091,6 +1098,7 @@ mod tests {
         std::env::remove_var("AETHER_MEMPOOL_GAS_PRICE_GWEI");
     }
 
+    #[serial]
     #[test]
     fn build_backrun_validator_config_negative_gas_price() {
         std::env::set_var("AETHER_EXECUTOR_ADDRESS", "0x1111111111111111111111111111111111111111");
@@ -1102,6 +1110,7 @@ mod tests {
         std::env::remove_var("AETHER_MEMPOOL_GAS_PRICE_GWEI");
     }
 
+    #[serial]
     #[test]
     fn build_backrun_validator_config_nan_gas_price() {
         std::env::set_var("AETHER_EXECUTOR_ADDRESS", "0x1111111111111111111111111111111111111111");
@@ -1113,6 +1122,7 @@ mod tests {
         std::env::remove_var("AETHER_MEMPOOL_GAS_PRICE_GWEI");
     }
 
+    #[serial]
     #[test]
     fn build_backrun_validator_config_infinity_gas_price() {
         std::env::set_var("AETHER_EXECUTOR_ADDRESS", "0x1111111111111111111111111111111111111111");
@@ -1124,6 +1134,7 @@ mod tests {
         std::env::remove_var("AETHER_MEMPOOL_GAS_PRICE_GWEI");
     }
 
+    #[serial]
     #[test]
     fn build_backrun_validator_config_zero_gas_price() {
         std::env::set_var("AETHER_EXECUTOR_ADDRESS", "0x1111111111111111111111111111111111111111");
@@ -1135,6 +1146,7 @@ mod tests {
         std::env::remove_var("AETHER_MEMPOOL_GAS_PRICE_GWEI");
     }
 
+    #[serial]
     #[test]
     fn build_backrun_validator_config_custom_min_profit_wei() {
         std::env::set_var("AETHER_EXECUTOR_ADDRESS", "0x1111111111111111111111111111111111111111");
@@ -1151,6 +1163,7 @@ mod tests {
         std::env::remove_var("AETHER_MEMPOOL_MIN_PROFIT_WEI");
     }
 
+    #[serial]
     #[test]
     fn build_backrun_validator_config_custom_input_amount_wei() {
         std::env::set_var("AETHER_EXECUTOR_ADDRESS", "0x1111111111111111111111111111111111111111");
@@ -1166,6 +1179,7 @@ mod tests {
         std::env::remove_var("AETHER_MEMPOOL_INPUT_AMOUNT_WEI");
     }
 
+    #[serial]
     #[test]
     fn build_backrun_validator_config_invalid_searcher_caller_falls_back() {
         std::env::set_var("AETHER_EXECUTOR_ADDRESS", "0x1111111111111111111111111111111111111111");
@@ -1179,6 +1193,7 @@ mod tests {
         std::env::remove_var("AETHER_SEARCHER_CALLER");
     }
 
+    #[serial]
     #[test]
     fn build_backrun_validator_config_invalid_profit_token_falls_back() {
         std::env::set_var("AETHER_EXECUTOR_ADDRESS", "0x1111111111111111111111111111111111111111");
@@ -1192,6 +1207,7 @@ mod tests {
         std::env::remove_var("AETHER_PROFIT_TOKEN");
     }
 
+    #[serial]
     #[test]
     fn build_backrun_validator_config_invalid_balance_slot_falls_back() {
         std::env::set_var("AETHER_EXECUTOR_ADDRESS", "0x1111111111111111111111111111111111111111");
@@ -1203,6 +1219,7 @@ mod tests {
         std::env::remove_var("AETHER_PROFIT_TOKEN_BALANCE_SLOT");
     }
 
+    #[serial]
     #[test]
     fn build_backrun_validator_config_invalid_chain_id_falls_back() {
         std::env::set_var("AETHER_EXECUTOR_ADDRESS", "0x1111111111111111111111111111111111111111");
@@ -1214,6 +1231,7 @@ mod tests {
         std::env::remove_var("AETHER_CHAIN_ID");
     }
 
+    #[serial]
     #[test]
     fn build_backrun_validator_config_invalid_min_profit_wei_falls_back() {
         std::env::set_var("AETHER_EXECUTOR_ADDRESS", "0x1111111111111111111111111111111111111111");
@@ -1228,6 +1246,7 @@ mod tests {
         std::env::remove_var("AETHER_MEMPOOL_MIN_PROFIT_WEI");
     }
 
+    #[serial]
     #[test]
     fn build_backrun_validator_config_invalid_input_amount_wei_falls_back() {
         std::env::set_var("AETHER_EXECUTOR_ADDRESS", "0x1111111111111111111111111111111111111111");
@@ -1242,6 +1261,7 @@ mod tests {
         std::env::remove_var("AETHER_MEMPOOL_INPUT_AMOUNT_WEI");
     }
 
+    #[serial]
     #[test]
     fn build_backrun_validator_config_invalid_sim_concurrency_falls_back() {
         std::env::set_var("AETHER_EXECUTOR_ADDRESS", "0x1111111111111111111111111111111111111111");
@@ -1413,6 +1433,7 @@ mod tests {
         assert!(bytecode.iter().all(|&b| b == 0x00));
     }
 
+    #[serial]
     #[test]
     fn build_backrun_validator_config_with_provider() {
         use alloy::providers::{Provider, ProviderBuilder};
@@ -1460,6 +1481,7 @@ mod tests {
         assert!(result.is_ok());
     }
 
+    #[serial]
     #[test]
     fn build_backrun_validator_config_trimmed_executor_address() {
         std::env::set_var("AETHER_EXECUTOR_ADDRESS", "  0x1111111111111111111111111111111111111111  ");
@@ -1471,6 +1493,7 @@ mod tests {
         std::env::remove_var("AETHER_EXECUTOR_ADDRESS");
     }
 
+    #[serial]
     #[test]
     fn build_backrun_validator_config_trimmed_searcher_caller() {
         std::env::set_var("AETHER_EXECUTOR_ADDRESS", "0x1111111111111111111111111111111111111111");
@@ -1508,6 +1531,7 @@ mod tests {
         assert!(bytes.iter().all(|&b| b == 0xAA));
     }
 
+    #[serial]
     #[test]
     fn build_backrun_validator_config_trimmed_profit_token() {
         std::env::set_var("AETHER_EXECUTOR_ADDRESS", "0x1111111111111111111111111111111111111111");

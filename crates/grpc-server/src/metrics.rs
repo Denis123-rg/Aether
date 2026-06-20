@@ -1150,6 +1150,7 @@ fn metrics_addr() -> SocketAddr {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serial_test::serial;
     use std::sync::Mutex;
 
     #[test]
@@ -1622,6 +1623,7 @@ mod tests {
 
     // ── metrics_addr edge cases ──
 
+    #[serial]
     #[test]
     fn metrics_addr_default_port() {
         let _guard = ENV_LOCK.lock().unwrap();
@@ -1632,6 +1634,7 @@ mod tests {
         assert_eq!(addr.ip(), std::net::IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED));
     }
 
+    #[serial]
     #[test]
     fn metrics_addr_env_port_override() {
         let _guard = ENV_LOCK.lock().unwrap();
@@ -1642,6 +1645,7 @@ mod tests {
         std::env::remove_var("RUST_METRICS_PORT");
     }
 
+    #[serial]
     #[test]
     fn metrics_addr_env_full_override() {
         let _guard = ENV_LOCK.lock().unwrap();
@@ -1653,6 +1657,7 @@ mod tests {
         std::env::remove_var("RUST_METRICS_ADDR");
     }
 
+    #[serial]
     #[test]
     fn metrics_addr_invalid_full_override_falls_back_to_port() {
         let _guard = ENV_LOCK.lock().unwrap();
@@ -1665,6 +1670,7 @@ mod tests {
         std::env::remove_var("RUST_METRICS_PORT");
     }
 
+    #[serial]
     #[test]
     fn metrics_addr_invalid_both_env_falls_back_to_default() {
         let _guard = ENV_LOCK.lock().unwrap();
@@ -1679,6 +1685,7 @@ mod tests {
 
     // ── start_metrics_server smoke ──
 
+    #[serial]
     #[tokio::test]
     async fn start_metrics_server_binds_and_serves() {
         let metrics = Arc::new(EngineMetrics::new());

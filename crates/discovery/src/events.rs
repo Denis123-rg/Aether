@@ -572,6 +572,7 @@ pub fn mock_pair_created_log(
 mod tests {
     use super::*;
     use alloy::primitives::{address, U256};
+    use serial_test::serial;
 
     fn uni_v2_factory() -> Address {
         address!("5C69bEe701ef814a2B6a3EDD4B1652CB9cc5aA6f")
@@ -1309,6 +1310,7 @@ mod tests {
 
     // ── resolve_ws_url edge cases ──
 
+    #[serial]
     #[test]
     fn resolve_ws_url_empty_no_env() {
         std::env::remove_var("ETH_WS_URL");
@@ -1317,6 +1319,7 @@ mod tests {
         assert!(result.is_none());
     }
 
+    #[serial]
     #[test]
     fn resolve_ws_url_env_ws_url() {
         std::env::remove_var("ETH_RPC_URL");
@@ -1326,6 +1329,7 @@ mod tests {
         std::env::remove_var("ETH_WS_URL");
     }
 
+    #[serial]
     #[test]
     fn resolve_ws_url_env_ws_empty_falls_through() {
         std::env::remove_var("ETH_RPC_URL");
@@ -1335,6 +1339,7 @@ mod tests {
         std::env::remove_var("ETH_WS_URL");
     }
 
+    #[serial]
     #[test]
     fn resolve_ws_url_env_rpc_url() {
         std::env::remove_var("ETH_WS_URL");
@@ -1347,6 +1352,7 @@ mod tests {
         std::env::remove_var("ETH_RPC_URL");
     }
 
+    #[serial]
     #[test]
     fn resolve_ws_url_env_rpc_not_http() {
         std::env::remove_var("ETH_WS_URL");
@@ -1356,6 +1362,7 @@ mod tests {
         std::env::remove_var("ETH_RPC_URL");
     }
 
+    #[serial]
     #[test]
     fn resolve_ws_url_env_ws_priority_over_rpc() {
         std::env::set_var("ETH_WS_URL", "wss://ws-priority.example/ws");
@@ -2128,5 +2135,257 @@ mod tests {
 
         let ingested = process_logs(&service, &entries, vec![log]).await;
         assert_eq!(ingested, 0);
+    }
+
+    // ── poll_factory_logs (mock RPC) ──
+
+    #[tokio::test]
+    async fn poll_factory_logs_valid() {
+        use mockito::{Matcher, Server};
+        let mut server = Server::new_async().await;
+        let factory = address!("5C69bEe701ef814a2B6a3EDD4B1652CB9cc5aA6f");
+        let token0 = address!("A0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48");
+        let token1 = address!("C02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2");
+        let pair = Address::from([0xAA; 20]);
+        let (topics, data) = mock_pair_created_log(factory, token0, token1, pair, 1);
+
+        let topics_json: String = topics
+            .iter()
+            .map(|t| format!("\"0x{}\"", alloy::hex::encode(t)))
+            .collect::<Vec<_>>()
+            .join(",");
+        let data_hex = alloy::hex::encode(&data);
+        let addr_hex = alloy::hex::encode(factory);
+        let log_json = format!(
+            r#"{{"address":"0x{}","topics":[{}],"data":"0x{}","blockNumber":"0x1","transactionHash":"0x0000000000000000000000000000000000000000000000000000000000000000","transactionIndex":"0x0","blockHash":"0x0000000000000000000000000000000000000000000000000000000000000000","logIndex":"0x0","removed":false}}"#,
+            addr_hex, topics_json, data_hex,
+        );
+        let rpc_resp = format!(r#"{{"jsonrpc":"2.0","id":1,"result":[{}]}}"#, log_json);
+
+        let _m = server
+            .mock("POST", "/")
+            .match_body(Matcher::Regex("eth_getLogs".into()))
+            .with_body(rpc_resp)
+            .create();
+
+        let url: url::Url = server.url().parse().expect("url");
+        let provider = ProviderBuilder::new().connect_http(url).erased();
+        let service =
+            crate::service::DiscoveryService::new(crate::config::DiscoveryConfig::default());
+        let entries = vec![FactoryEntry {
+            address: factory,
+            protocol: ProtocolType::UniswapV2,
+            fee_bps: 30,
+            event_type: FactoryEventType::PairCreated,
+        }];
+
+        let ingested = poll_factory_logs(&provider, &service, &entries, 0, 1)
+            .await
+            .unwrap();
+        assert_eq!(ingested, 1);
+    }
+
+    #[tokio::test]
+    async fn poll_factory_logs_empty() {
+        use mockito::{Matcher, Server};
+        let mut server = Server::new_async().await;
+        let _m = server
+            .mock("POST", "/")
+            .match_body(Matcher::Regex("eth_getLogs".into()))
+            .with_body(r#"{"jsonrpc":"2.0","id":1,"result":[]}"#)
+            .create();
+
+        let url: url::Url = server.url().parse().expect("url");
+        let provider = ProviderBuilder::new().connect_http(url).erased();
+        let service =
+            crate::service::DiscoveryService::new(crate::config::DiscoveryConfig::default());
+        let entries = vec![];
+
+        let ingested = poll_factory_logs(&provider, &service, &entries, 0, 1)
+            .await
+            .unwrap();
+        assert_eq!(ingested, 0);
+    }
+
+    #[tokio::test]
+    async fn poll_factory_logs_rpc_error() {
+        use mockito::{Matcher, Server};
+        let mut server = Server::new_async().await;
+        let _m = server
+            .mock("POST", "/")
+            .match_body(Matcher::Regex("eth_getLogs".into()))
+            .with_status(500)
+            .with_body("internal server error")
+            .create();
+
+        let url: url::Url = server.url().parse().expect("url");
+        let provider = ProviderBuilder::new().connect_http(url).erased();
+        let service =
+            crate::service::DiscoveryService::new(crate::config::DiscoveryConfig::default());
+        let entries = vec![];
+
+        let result = poll_factory_logs(&provider, &service, &entries, 0, 1).await;
+        assert!(result.is_err());
+    }
+
+    // ── spawn_polling_listener (mock RPC) ──
+
+    #[tokio::test]
+    async fn spawn_polling_listener_stops_on_shutdown() {
+        use mockito::{Matcher, Server};
+        let mut server = Server::new_async().await;
+        let _m = server
+            .mock("POST", "/")
+            .match_body(Matcher::Regex("eth_blockNumber".into()))
+            .with_body(r#"{"jsonrpc":"2.0","id":1,"result":"0x64"}"#)
+            .create();
+
+        let url: url::Url = server.url().parse().expect("url");
+        let provider = ProviderBuilder::new().connect_http(url).erased();
+        let service = Arc::new(crate::service::DiscoveryService::new(
+            crate::config::DiscoveryConfig::default(),
+        ));
+        let entries = vec![];
+        let ws_health = WsHealth::new();
+        ws_health.set_healthy(true);
+        let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+
+        let handle = spawn_polling_listener(
+            provider,
+            service,
+            entries,
+            10,
+            false,
+            ws_health,
+            shutdown_rx,
+        );
+
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        shutdown_tx.send(true).unwrap();
+        handle.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn spawn_polling_listener_initial_block_number_error() {
+        use mockito::{Matcher, Server};
+        let mut server = Server::new_async().await;
+        let _m = server
+            .mock("POST", "/")
+            .match_body(Matcher::Regex("eth_blockNumber".into()))
+            .with_status(500)
+            .with_body("err")
+            .create();
+
+        let url: url::Url = server.url().parse().expect("url");
+        let provider = ProviderBuilder::new().connect_http(url).erased();
+        let service = Arc::new(crate::service::DiscoveryService::new(
+            crate::config::DiscoveryConfig::default(),
+        ));
+        let entries = vec![];
+        let ws_health = WsHealth::new();
+        ws_health.set_healthy(true);
+        let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+
+        let handle = spawn_polling_listener(
+            provider,
+            service,
+            entries,
+            10,
+            false,
+            ws_health,
+            shutdown_rx,
+        );
+
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        shutdown_tx.send(true).unwrap();
+        handle.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn spawn_polling_listener_poll_and_shutdown() {
+        use mockito::{Matcher, Server};
+        let mut server = Server::new_async().await;
+        let _bn = server
+            .mock("POST", "/")
+            .match_body(Matcher::Regex("eth_blockNumber".into()))
+            .with_body(r#"{"jsonrpc":"2.0","id":1,"result":"0x64"}"#)
+            .create();
+        let _gl = server
+            .mock("POST", "/")
+            .match_body(Matcher::Regex("eth_getLogs".into()))
+            .with_body(r#"{"jsonrpc":"2.0","id":1,"result":[]}"#)
+            .create();
+
+        let url: url::Url = server.url().parse().expect("url");
+        let provider = ProviderBuilder::new().connect_http(url).erased();
+        let service = Arc::new(crate::service::DiscoveryService::new(
+            crate::config::DiscoveryConfig::default(),
+        ));
+        let entries = vec![];
+        let ws_health = WsHealth::new();
+        let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+
+        let handle = spawn_polling_listener(
+            provider,
+            service,
+            entries,
+            1,
+            false,
+            ws_health,
+            shutdown_rx,
+        );
+
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        shutdown_tx.send(true).unwrap();
+        handle.await.unwrap();
+    }
+
+    // ── spawn_factory_listener with real provider ──
+
+    #[tokio::test]
+    async fn spawn_factory_listener_poll_with_provider() {
+        use mockito::{Matcher, Server};
+        let mut server = Server::new_async().await;
+        let _bn = server
+            .mock("POST", "/")
+            .match_body(Matcher::Regex("eth_blockNumber".into()))
+            .with_body(r#"{"jsonrpc":"2.0","id":1,"result":"0x64"}"#)
+            .create();
+        let _gl = server
+            .mock("POST", "/")
+            .match_body(Matcher::Regex("eth_getLogs".into()))
+            .with_body(r#"{"jsonrpc":"2.0","id":1,"result":[]}"#)
+            .create();
+
+        let url: url::Url = server.url().parse().expect("url");
+        let provider = ProviderBuilder::new().connect_http(url).erased();
+        let service = Arc::new(crate::service::DiscoveryService::new(
+            crate::config::DiscoveryConfig::default(),
+        ));
+        let entries = vec![];
+        let ws_health = WsHealth::new();
+        let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+
+        let handles = spawn_factory_listener(
+            Some(provider),
+            service,
+            entries,
+            "poll",
+            "",
+            1,
+            false,
+            false,
+            ws_health,
+            None,
+            shutdown_rx,
+        );
+
+        assert_eq!(handles.len(), 1);
+
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        shutdown_tx.send(true).unwrap();
+        for h in handles {
+            h.await.unwrap();
+        }
     }
 }

@@ -20,6 +20,7 @@ prometheus = "0.13.4"
 
 [dev-dependencies]
 serde_json = { workspace = true }
+serial_test = { workspace = true }
 testcontainers = "0.23"
 testcontainers-modules = { version = "0.11", features = ["postgres"] }
 tokio = { workspace = true }

@@ -74,3 +74,5 @@ bigdecimal = "0.4"
 # Embedded ACID key/value store (used for the bytecode disk cache: pure Rust,
 # zero C dependencies, copy-on-write semantics).
 redb = "2"
+# Test isolation for env-dependent tests
+serial_test = "3"

@@ -23,6 +23,7 @@ futures = "0.3"
 prometheus = "0.13.4"
 
 [dev-dependencies]
+serial_test = { workspace = true }
 tempfile = "3.27.0"
 tokio = { workspace = true }
 url = "2"

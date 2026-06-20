@@ -103,6 +103,7 @@ pub fn load_nodes_config(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serial_test::serial;
 
     fn test_resolver(key: &str) -> Option<String> {
         match key {
@@ -187,6 +188,7 @@ mod tests {
         assert_eq!(result, "1-${UNKNOWN}-2");
     }
 
+    #[serial]
     #[test]
     fn test_expand_env_vars_real_env() {
         std::env::set_var("AETHER_TEST_EXPAND_MARKER", "expanded_value");
@@ -195,6 +197,7 @@ mod tests {
         std::env::remove_var("AETHER_TEST_EXPAND_MARKER");
     }
 
+    #[serial]
     #[test]
     fn test_expand_env_vars_real_env_unset() {
         std::env::remove_var("AETHER_TEST_UNSET_MARKER_98765");
@@ -323,6 +326,7 @@ nodes:
         std::fs::remove_dir(&dir).ok();
     }
 
+    #[serial]
     #[test]
     fn test_load_nodes_config_with_env_var_expansion() {
         use std::io::Write;

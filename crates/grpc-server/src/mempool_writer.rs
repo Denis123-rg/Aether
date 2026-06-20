@@ -474,6 +474,7 @@ fn u256_to_decimal(v: U256) -> BigDecimal {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serial_test::serial;
     use std::sync::Mutex;
 
     /// In-memory sink used by the pipeline test to assert that a row was
@@ -607,6 +608,7 @@ mod tests {
         }
     }
 
+    #[serial]
     #[tokio::test]
     async fn mempool_writer_from_env_falls_back_when_dsn_unset() {
         // Save/restore so the test does not leak state into siblings.
@@ -631,6 +633,7 @@ mod tests {
         }
     }
 
+    #[serial]
     #[tokio::test]
     async fn mempool_writer_from_env_falls_back_on_empty_dsn() {
         let prev = std::env::var("MEMPOOL_LEDGER_DSN").ok();
@@ -865,6 +868,7 @@ mod tests {
 
     // ---- mempool_writer_from_env with invalid DSN ----
 
+    #[serial]
     #[tokio::test]
     async fn mempool_writer_from_env_invalid_dsn_falls_back() {
         let prev = std::env::var("MEMPOOL_LEDGER_DSN").ok();

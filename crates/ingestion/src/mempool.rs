@@ -382,6 +382,7 @@ mod tests {
     use alloy::consensus::{SignableTransaction, TxEip1559, TxEnvelope};
     use alloy::primitives::{address, TxKind, U256 as AlloyU256};
     use alloy::signers::{local::PrivateKeySigner, SignerSync};
+    use serial_test::serial;
 
     #[test]
     fn is_enabled_respects_truthy_strings() {
@@ -404,6 +405,7 @@ mod tests {
         assert!(is_enabled_from_str("ON"));
     }
 
+    #[serial]
     #[test]
     fn is_enabled_reads_env_var() {
         use std::env;

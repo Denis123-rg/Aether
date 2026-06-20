@@ -446,6 +446,7 @@ impl From<RawUnscored> for UnscoredConfirmedPrediction {
 mod tests {
     use super::*;
     use alloy::primitives::Address;
+    use serial_test::serial;
 
     fn sample_score() -> NewProfitabilityScore {
         NewProfitabilityScore {
@@ -679,6 +680,7 @@ mod tests {
         assert_eq!(d, BigDecimal::from(1u64));
     }
 
+    #[serial]
     #[test]
     fn profit_writer_from_env_no_dsn_returns_noop() {
         std::env::remove_var("MEMPOOL_LEDGER_DSN");
@@ -689,6 +691,7 @@ mod tests {
         sink.insert_score(sample_score());
     }
 
+    #[serial]
     #[test]
     fn profit_writer_from_env_empty_dsn_returns_noop() {
         std::env::set_var("MEMPOOL_LEDGER_DSN", "");
@@ -700,6 +703,7 @@ mod tests {
         std::env::remove_var("MEMPOOL_LEDGER_DSN");
     }
 
+    #[serial]
     #[test]
     fn profit_writer_from_env_invalid_dsn_returns_noop() {
         std::env::set_var("MEMPOOL_LEDGER_DSN", "postgres://invalid-host:5432/noexist");
@@ -994,6 +998,7 @@ mod tests {
 
     // ---- profit_writer_from_env with various DSN values ----
 
+    #[serial]
     #[test]
     fn profit_writer_from_env_unreachable_dsn_returns_noop() {
         std::env::set_var("MEMPOOL_LEDGER_DSN", "postgres://unreachable:5432/noexist");

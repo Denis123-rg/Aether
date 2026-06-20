@@ -110,6 +110,7 @@ pub fn init() -> TracingGuard {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serial_test::serial;
 
     #[test]
     fn tracing_guard_construction_otel_installed() {
@@ -172,6 +173,7 @@ mod tests {
         assert!(filter.to_string().contains("aether_grpc_server=debug"));
     }
 
+    #[serial]
     #[test]
     fn json_format_detection_with_json_env() {
         std::env::set_var("LOG_FORMAT", "json");
@@ -180,6 +182,7 @@ mod tests {
         std::env::remove_var("LOG_FORMAT");
     }
 
+    #[serial]
     #[test]
     fn json_format_detection_without_json_env() {
         std::env::remove_var("LOG_FORMAT");
@@ -187,6 +190,7 @@ mod tests {
         assert!(!is_json);
     }
 
+    #[serial]
     #[test]
     fn json_format_detection_with_non_json_value() {
         std::env::set_var("LOG_FORMAT", "pretty");
@@ -195,6 +199,7 @@ mod tests {
         std::env::remove_var("LOG_FORMAT");
     }
 
+    #[serial]
     #[test]
     fn otlp_endpoint_empty_string_is_none() {
         std::env::set_var("OTEL_EXPORTER_OTLP_ENDPOINT", "");
@@ -205,6 +210,7 @@ mod tests {
         std::env::remove_var("OTEL_EXPORTER_OTLP_ENDPOINT");
     }
 
+    #[serial]
     #[test]
     fn otlp_endpoint_set_to_value() {
         std::env::set_var("OTEL_EXPORTER_OTLP_ENDPOINT", "http://localhost:4317");
@@ -215,6 +221,7 @@ mod tests {
         std::env::remove_var("OTEL_EXPORTER_OTLP_ENDPOINT");
     }
 
+    #[serial]
     #[test]
     fn otlp_endpoint_unset_is_none() {
         std::env::remove_var("OTEL_EXPORTER_OTLP_ENDPOINT");
@@ -224,6 +231,7 @@ mod tests {
         assert!(endpoint.is_none());
     }
 
+    #[serial]
     #[test]
     fn otlp_service_name_default() {
         std::env::remove_var("OTEL_SERVICE_NAME");
@@ -232,6 +240,7 @@ mod tests {
         assert_eq!(name, "aether-rust");
     }
 
+    #[serial]
     #[test]
     fn otlp_service_name_custom() {
         std::env::set_var("OTEL_SERVICE_NAME", "my-service");
@@ -331,6 +340,7 @@ mod tests {
 
     // ---- init() with LOG_FORMAT=json ----
 
+    #[serial]
     #[test]
     #[ignore = "calls init() which panics when global subscriber already set"]
     fn init_with_json_format() {
@@ -344,6 +354,7 @@ mod tests {
 
     // ---- init() with RUST_LOG set ----
 
+    #[serial]
     #[test]
     #[ignore = "calls init() which panics when global subscriber already set"]
     fn init_with_rust_log() {
@@ -357,6 +368,7 @@ mod tests {
 
     // ---- init() with empty OTEL_EXPORTER_OTLP_ENDPOINT ----
 
+    #[serial]
     #[test]
     #[ignore = "calls init() which panics when global subscriber already set"]
     fn init_with_empty_otel_endpoint() {
@@ -370,6 +382,7 @@ mod tests {
 
     // ---- init() with OTEL_SERVICE_NAME set ----
 
+    #[serial]
     #[test]
     #[ignore = "calls init() which panics when global subscriber already set"]
     fn init_with_otel_service_name() {
@@ -430,6 +443,7 @@ mod tests {
 
     // ---- LOG_FORMAT edge cases ----
 
+    #[serial]
     #[test]
     fn log_format_other_values_not_json() {
         for val in &["text", "console", "pretty", "compact", "full"] {
@@ -442,6 +456,7 @@ mod tests {
 
     // ---- init() env var detection logic (without calling init itself) ----
 
+    #[serial]
     #[test]
     fn init_otel_endpoint_empty_is_none() {
         std::env::set_var("OTEL_EXPORTER_OTLP_ENDPOINT", "");
@@ -452,6 +467,7 @@ mod tests {
         std::env::remove_var("OTEL_EXPORTER_OTLP_ENDPOINT");
     }
 
+    #[serial]
     #[test]
     fn init_json_format_env_detection() {
         std::env::set_var("LOG_FORMAT", "json");
@@ -460,6 +476,7 @@ mod tests {
         std::env::remove_var("LOG_FORMAT");
     }
 
+    #[serial]
     #[test]
     fn init_otel_service_name_env_detection() {
         std::env::set_var("OTEL_SERVICE_NAME", "test-service");
@@ -505,6 +522,7 @@ mod tests {
         assert!(!guard.otel_installed);
     }
 
+    #[serial]
     #[test]
     fn env_filter_try_from_default_env_returns_ok_or_default() {
         std::env::remove_var("RUST_LOG");
@@ -512,6 +530,7 @@ mod tests {
         assert_eq!(filter.to_string(), "warn");
     }
 
+    #[serial]
     #[test]
     fn env_filter_try_from_default_env_with_value() {
         std::env::set_var("RUST_LOG", "trace");
@@ -520,6 +539,7 @@ mod tests {
         std::env::remove_var("RUST_LOG");
     }
 
+    #[serial]
     #[test]
     fn log_format_json_detection_exact_match() {
         std::env::set_var("LOG_FORMAT", "json");
@@ -530,6 +550,7 @@ mod tests {
         std::env::remove_var("LOG_FORMAT");
     }
 
+    #[serial]
     #[test]
     fn log_format_json_detection_no_match() {
         std::env::set_var("LOG_FORMAT", "JSON");
@@ -538,6 +559,7 @@ mod tests {
         std::env::remove_var("LOG_FORMAT");
     }
 
+    #[serial]
     #[test]
     fn otlp_endpoint_some_when_set() {
         std::env::set_var("OTEL_EXPORTER_OTLP_ENDPOINT", "http://localhost:4317");
@@ -549,6 +571,7 @@ mod tests {
         std::env::remove_var("OTEL_EXPORTER_OTLP_ENDPOINT");
     }
 
+    #[serial]
     #[test]
     fn otlp_endpoint_none_when_unset() {
         std::env::remove_var("OTEL_EXPORTER_OTLP_ENDPOINT");
@@ -612,6 +635,7 @@ mod tests {
         assert_eq!(filter.to_string(), "error");
     }
 
+    #[serial]
     #[test]
     fn log_format_unset_is_not_json() {
         std::env::remove_var("LOG_FORMAT");
@@ -666,6 +690,7 @@ mod tests {
         assert!(s.contains("trace"), "expected 'trace' in EnvFilter output, got: {s:?}");
     }
 
+    #[serial]
     #[test]
     fn otlp_endpoint_whitespace_only_is_none() {
         std::env::set_var("OTEL_EXPORTER_OTLP_ENDPOINT", "   ");
@@ -676,6 +701,7 @@ mod tests {
         std::env::remove_var("OTEL_EXPORTER_OTLP_ENDPOINT");
     }
 
+    #[serial]
     #[test]
     fn otlp_service_name_default_when_unset() {
         std::env::remove_var("OTEL_SERVICE_NAME");

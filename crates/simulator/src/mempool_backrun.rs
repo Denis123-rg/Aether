@@ -590,6 +590,7 @@ mod tests {
     use alloy::providers::Provider;
     #[allow(unused_imports)] // used only by the #[ignore] fork test
     use alloy::sol_types::SolCall;
+    use serial_test::serial;
 
     const WETH: Address = address!("c02aaa39b223fe8d0a0e5c4f27ead9083c756cc2");
     const RECIPIENT: Address = address!("1111111111111111111111111111111111111111");
@@ -1403,6 +1404,7 @@ mod tests {
         assert!(!calldata.is_empty());
     }
 
+    #[serial]
     #[test]
     fn resolve_rpc_url_with_env_var() {
         let old = std::env::var("ETH_RPC_URL").ok();
@@ -1415,6 +1417,7 @@ mod tests {
         }
     }
 
+    #[serial]
     #[test]
     fn resolve_rpc_url_empty_env_falls_through() {
         let old = std::env::var("ETH_RPC_URL").ok();
@@ -1426,6 +1429,7 @@ mod tests {
         }
     }
 
+    #[serial]
     #[test]
     fn resolve_rpc_url_env_with_placeholder() {
         let old = std::env::var("ETH_RPC_URL").ok();
@@ -1437,6 +1441,7 @@ mod tests {
         }
     }
 
+    #[serial]
     #[test]
     fn resolve_rpc_url_existing_env_restores() {
         std::env::set_var("ETH_RPC_URL", "old_value");
@@ -1445,6 +1450,7 @@ mod tests {
         std::env::set_var("ETH_RPC_URL", "old_value");
     }
 
+    #[serial]
     #[test]
     fn resolve_rpc_url_no_env_no_dotenv() {
         let old = std::env::var("ETH_RPC_URL").ok();
