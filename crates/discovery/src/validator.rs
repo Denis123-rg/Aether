@@ -704,7 +704,7 @@ pub fn validate_curve_balances(
         return ValidationResult::LowLiquidity;
     }
 
-    let amp = amplification.as_limbs()[0] as u64;
+    let amp = amplification.as_limbs()[0];
     let mut pool = CurvePool::new(Address::ZERO, vec![token0, token1], amp.max(1), fee_bps);
     pool.balances = vec![balance0, balance1];
 
@@ -1059,6 +1059,7 @@ pub async fn validate_curve_pool_revm(
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 fn run_curve_exchange_round_trip(
     state: RpcForkedState,
     pool_addr: Address,
@@ -1879,7 +1880,7 @@ mod tests {
 
     #[test]
     fn min_weth_reserve_constant() {
-        assert!(MIN_WETH_RESERVE_ETH > 0.0);
+        const { assert!(MIN_WETH_RESERVE_ETH > 0.0); }
     }
 
     #[test]
@@ -2152,7 +2153,7 @@ mod tests {
 
     fn skip_on_public_rpc_failure(result: &ValidationResult) -> bool {
         if let ValidationResult::Invalid(ref msg) = result {
-            if msg.contains("revm") || msg.contains("call failed") || msg.contains("Curve") {
+            if msg.contains("revm") || msg.contains("call failed") || msg.contains("Curve") || msg.contains("failed to fetch") {
                 eprintln!("skip fork test: simulation/RPC failure against public RPC ({msg})");
                 return true;
             }
@@ -5643,7 +5644,7 @@ mod tests {
         let eth_val = max_u128_eth as f64 / 1e18;
         // This should not panic due to overflow.
         let result = eth_to_u256(eth_val);
-        assert!(result > U256::ZERO || result == U256::ZERO);
+        assert!(result >= U256::ZERO);
     }
 
     // ── u256_to_eth edge cases ─────────────────────────────────────────────

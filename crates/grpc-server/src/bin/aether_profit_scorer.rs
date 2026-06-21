@@ -2526,8 +2526,8 @@ mod tests {
 
     #[test]
     fn score_batch_limit_is_reasonable() {
-        assert!(SCORE_BATCH_LIMIT > 0);
-        assert!(SCORE_BATCH_LIMIT <= 1000);
+        const { assert!(SCORE_BATCH_LIMIT > 0); }
+        const { assert!(SCORE_BATCH_LIMIT <= 1000); }
     }
 
     #[test]
@@ -2537,8 +2537,8 @@ mod tests {
 
     #[test]
     fn detect_budget_is_reasonable() {
-        assert!(DETECT_BUDGET_US > 0);
-        assert!(DETECT_BUDGET_US <= 100_000);
+        const { assert!(DETECT_BUDGET_US > 0); }
+        const { assert!(DETECT_BUDGET_US <= 100_000); }
     }
 
     #[test]

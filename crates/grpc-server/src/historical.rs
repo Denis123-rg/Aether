@@ -730,7 +730,7 @@ fee_bps = 30
 
     #[test]
     fn q96_is_positive_finite() {
-        assert!(Q96 > 0.0);
+        const { assert!(Q96 > 0.0); }
         assert!(Q96.is_finite());
     }
 

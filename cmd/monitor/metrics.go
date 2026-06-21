@@ -6,14 +6,11 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
-	"sync"
 	"sync/atomic"
 )
 
 // Metrics holds all Prometheus-style metrics
 type Metrics struct {
-	mu sync.RWMutex
-
 	// Counters
 	OpportunitiesDetected atomic.Int64
 	BundlesSubmitted      atomic.Int64

@@ -12,11 +12,11 @@ import (
 func withShortCloseTimeouts(t *testing.T, fn func()) {
 	t.Helper()
 	oldLedger := ledgerCloseDrainTimeout
-	oldLedgerSec := ledgerCloseSecondaryWait
+	oldLedgerSecondary := ledgerCloseSecondaryWait
 	oldRecon := reconCloseDrainTimeout
-	oldReconSec := reconCloseSecondaryWait
+	oldReconSecondary := reconCloseSecondaryWait
 	oldMetrics := metricsCloseDrain
-	oldMetricsSec := metricsCloseSecondaryWait
+	oldMetricsSecondary := metricsCloseSecondaryWait
 
 	ledgerCloseDrainTimeout = 25 * time.Millisecond
 	ledgerCloseSecondaryWait = 5 * time.Millisecond
@@ -27,11 +27,11 @@ func withShortCloseTimeouts(t *testing.T, fn func()) {
 
 	t.Cleanup(func() {
 		ledgerCloseDrainTimeout = oldLedger
-		ledgerCloseSecondaryWait = oldLedgerSec
+		ledgerCloseSecondaryWait = oldLedgerSecondary
 		reconCloseDrainTimeout = oldRecon
-		reconCloseSecondaryWait = oldReconSec
+		reconCloseSecondaryWait = oldReconSecondary
 		metricsCloseDrain = oldMetrics
-		metricsCloseSecondaryWait = oldMetricsSec
+		metricsCloseSecondaryWait = oldMetricsSecondary
 	})
 
 	fn()

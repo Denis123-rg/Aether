@@ -48,27 +48,6 @@ func (m *mockBotFailing) Request(tgbotapi.Chattable) (*tgbotapi.APIResponse, err
 	return &tgbotapi.APIResponse{Ok: true}, nil
 }
 
-func (m *mockBotFailing) lastSentText() string {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if len(m.sent) == 0 {
-		return ""
-	}
-	switch v := m.sent[len(m.sent)-1].(type) {
-	case tgbotapi.MessageConfig:
-		return v.Text
-	case tgbotapi.EditMessageTextConfig:
-		return v.Text
-	}
-	return ""
-}
-
-func (m *mockBotFailing) sentCount() int {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	return len(m.sent)
-}
-
 func TestHandleCallbackPools(t *testing.T) {
 	srv := startMockExecutor(t)
 	defer srv.Close()

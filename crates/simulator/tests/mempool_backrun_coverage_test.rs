@@ -68,18 +68,14 @@ fn build_mock_weth_bytecode(storage_key: U256, profit_value: U256) -> Vec<u8> {
 }
 
 fn build_arb_call_bytecode(target: Address) -> Vec<u8> {
-    let mut code = Vec::new();
-    code.push(0x60);
-    code.push(0x00);
-    code.push(0x60);
-    code.push(0x00);
-    code.push(0x60);
-    code.push(0x00);
-    code.push(0x60);
-    code.push(0x00);
-    code.push(0x60);
-    code.push(0x00);
-    code.push(0x73);
+    let mut code = vec![
+        0x60, 0x00,
+        0x60, 0x00,
+        0x60, 0x00,
+        0x60, 0x00,
+        0x60, 0x00,
+        0x73,
+    ];
     code.extend_from_slice(target.as_slice());
     code.push(0x61);
     code.push(0x60);

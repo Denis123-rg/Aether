@@ -357,10 +357,10 @@ pub fn gate_pre_sim(
 /// Select the lowest-weight unfiltered edge for a directed hop.
 /// Filtered edges (below min-liquidity floor or failed reserve fetch) are
 /// excluded so cycle reconstruction matches what Bellman-Ford traversed.
-pub fn select_best_edge_for_hop<'a>(
-    edges: &'a [aether_state::price_graph::PriceEdge],
+pub fn select_best_edge_for_hop(
+    edges: &[aether_state::price_graph::PriceEdge],
     to_idx: usize,
-) -> Option<&'a aether_state::price_graph::PriceEdge> {
+) -> Option<&aether_state::price_graph::PriceEdge> {
     edges
         .iter()
         .filter(|e| e.to == to_idx && !e.filtered)

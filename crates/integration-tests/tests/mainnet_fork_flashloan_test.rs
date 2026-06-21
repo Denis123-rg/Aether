@@ -353,7 +353,9 @@ async fn run_flash_loan_test(anvil_url: &str) -> Result<(), String> {
     let sushi_usdc_out = get_amount_out(flashloan_amount, sushi_r1_post, sushi_r0_post);
     let uni_weth_out = get_amount_out(sushi_usdc_out, uni_r0_post, uni_r1_post);
 
-    let aave_premium = flashloan_amount * U256::from(5) / U256::from(10000);
+    let premium_bps = common::aave_flashloan_premium(&ro_provider, common::AAVE_V3_POOL).await;
+    eprintln!("Aave flashloan premium: {} bps", premium_bps);
+    let aave_premium = flashloan_amount * U256::from(premium_bps) / U256::from(10000);
     let total_repay = flashloan_amount + aave_premium;
 
     eprintln!(

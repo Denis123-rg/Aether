@@ -217,7 +217,7 @@ func TestGRPCClientsAndHandlers(t *testing.T) {
 	defer srv.Stop()
 
 	ctx := context.Background()
-	conn, err := grpc.DialContext(ctx, "bufnet",
+	conn, err := grpc.NewClient("passthrough:///bufnet",
 		grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) { return lis.DialContext(ctx) }),
 		grpc.WithTransportCredentials(insecure.NewCredentials()),
 	)

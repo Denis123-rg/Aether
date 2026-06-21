@@ -1691,13 +1691,15 @@ mod tests {
         let metrics = Arc::new(EngineMetrics::new());
         metrics.inc_blocks_processed();
 
-        let _guard = ENV_LOCK.lock().unwrap();
-        std::env::set_var("RUST_METRICS_PORT", "0");
-        std::env::remove_var("RUST_METRICS_ADDR");
+        {
+            let _guard = ENV_LOCK.lock().unwrap();
+            std::env::set_var("RUST_METRICS_PORT", "0");
+            std::env::remove_var("RUST_METRICS_ADDR");
 
-        // start_metrics_server spawns a background task; we can't control the
-        // port when using port 0, but the point is it doesn't panic.
-        start_metrics_server(Arc::clone(&metrics));
+            // start_metrics_server spawns a background task; we can't control the
+            // port when using port 0, but the point is it doesn't panic.
+            start_metrics_server(Arc::clone(&metrics));
+        }
 
         // Give the server time to start.
         tokio::time::sleep(Duration::from_millis(100)).await;

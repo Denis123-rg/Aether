@@ -4324,7 +4324,7 @@ fee_bps = 30
         let (tx, _rx) = broadcast::channel(100);
         let engine = AetherEngine::new(EngineConfig::default(), tx);
         let pools: Vec<PoolInfo> = (0x40u8..0x48)
-            .map(|b| sample_pool_info(b))
+            .map(sample_pool_info)
             .collect();
         // Returns only after prewarm completes (or times out) — no background spawn.
         engine.sync_hot_cache_pools(&pools, &[]).await;
@@ -4336,7 +4336,7 @@ fee_bps = 30
         let engine = AetherEngine::new(EngineConfig::default(), tx);
         let pool = sample_pool_info(0x11);
 
-        engine.sync_hot_cache_pools(&[pool.clone()], &[]).await;
+        engine.sync_hot_cache_pools(std::slice::from_ref(&pool), &[]).await;
 
         assert!(
             engine.pool_registry().load().contains_key(&pool.address),
@@ -4410,7 +4410,7 @@ fee_bps = 30
         let (tx, _rx) = broadcast::channel(100);
         let engine = AetherEngine::new(EngineConfig::default(), tx);
         let pool = sample_pool_info(0x55);
-        engine.sync_hot_cache_pools(&[pool.clone()], &[]).await;
+        engine.sync_hot_cache_pools(std::slice::from_ref(&pool), &[]).await;
         assert!(engine.pool_ready_for_simulation(pool.address));
     }
 
@@ -4419,7 +4419,7 @@ fee_bps = 30
         let (tx, _rx) = broadcast::channel(100);
         let engine = AetherEngine::new(EngineConfig::default(), tx);
         let pool = sample_pool_info(0x66);
-        engine.sync_hot_cache_pools(&[pool.clone()], &[]).await;
+        engine.sync_hot_cache_pools(std::slice::from_ref(&pool), &[]).await;
         engine.mark_pool_bytecode_warmed(pool.address).await;
         let reg = engine.pool_registry().load();
         let meta = reg.get(&pool.address).unwrap();
@@ -5795,7 +5795,7 @@ tier = "hot"
         let pool_old = sample_pool_info(0xA0);
         let pool_new = sample_pool_info(0xB0);
 
-        engine.sync_hot_cache_pools(&[pool_old.clone()], &[]).await;
+        engine.sync_hot_cache_pools(std::slice::from_ref(&pool_old), &[]).await;
         assert!(engine.pool_registry().load().contains_key(&pool_old.address));
 
         engine.sync_hot_cache_pools(&[pool_new], &[pool_old.address]).await;

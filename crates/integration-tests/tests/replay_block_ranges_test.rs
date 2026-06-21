@@ -36,9 +36,7 @@ async fn replay_block_range_no_panic() {
     let latest = provider
         .get_block_number()
         .await
-        .expect("block number")
-        .try_into()
-        .unwrap_or(21_000_000u64);
+        .expect("block number");
 
     let start = latest.saturating_sub(block_count);
     let pools: Vec<PoolDef> = default_pool_set();

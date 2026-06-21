@@ -204,8 +204,8 @@ fn decode_factory_log_wrong_event_type_none() {
 
 #[test]
 fn curve_fee_bps_high_values_clamp() {
-    let bps = curve_fee_to_bps(U256::from(u128::MAX));
-    assert!(bps <= u32::MAX);
+    let _bps = curve_fee_to_bps(U256::from(u128::MAX));
+    // bps is always <= u32::MAX by type; just exercise the function to avoid dead-code removal
 }
 
 #[test]

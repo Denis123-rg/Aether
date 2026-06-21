@@ -74,8 +74,7 @@ impl PoolMetricsSource for OnChainMetricsSource {
                 rt.block_on(fetch_balancer_v3_balances(provider, pool, token0, token1))
             }
             _ => rt
-                .block_on(fetch_v2_reserves(provider, pool))
-                .map(|(r0, r1, fee)| (r0, r1, fee)),
+                .block_on(fetch_v2_reserves(provider, pool)),
         };
 
         match reserves {
@@ -2477,7 +2476,7 @@ mod tests {
         let source = OnChainMetricsSource::new(Some(provider), &cfg);
         let _guard = rt.enter();
         let result = source.fetch_metrics(Address::from([0xAF; 20]), weth(), usdc(), ProtocolType::Curve);
-        assert!(result.tvl_usd > 0.0 || result.tvl_usd == 0.0);
+        assert!(result.tvl_usd >= 0.0);
     }
 
     #[test]
@@ -2499,7 +2498,7 @@ mod tests {
         let source = OnChainMetricsSource::new(Some(provider), &cfg);
         let _guard = rt.enter();
         let result = source.fetch_metrics(Address::from([0xB0; 20]), weth(), usdc(), ProtocolType::BalancerV3);
-        assert!(result.tvl_usd > 0.0 || result.tvl_usd == 0.0);
+        assert!(result.tvl_usd >= 0.0);
     }
 
     #[test]

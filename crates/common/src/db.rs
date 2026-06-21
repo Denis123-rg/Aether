@@ -647,15 +647,15 @@ mod tests {
     #[test]
     fn ledger_op_label_matches_variant() {
         assert_eq!(
-            LedgerOp::InsertArb(Box::new(NewArb::default())).label(),
+            LedgerOp::InsertArb(Box::<NewArb>::default()).label(),
             "insert_arb"
         );
         assert_eq!(
-            LedgerOp::InsertPool(Box::new(NewPool::default())).label(),
+            LedgerOp::InsertPool(Box::<NewPool>::default()).label(),
             "insert_pool"
         );
         assert_eq!(
-            LedgerOp::UpdateInclusion(Box::new(InclusionUpdate::default())).label(),
+            LedgerOp::UpdateInclusion(Box::<InclusionUpdate>::default()).label(),
             "update_inclusion"
         );
     }
@@ -700,7 +700,7 @@ mod tests {
     fn noop_ledger_default_equals_new() {
         let ledger = NoopLedger::new();
         ledger.update_inclusion(&InclusionUpdate::default());
-        let _: NoopLedger = NoopLedger::default();
+        let _: NoopLedger = NoopLedger;
     }
 
     #[serial]

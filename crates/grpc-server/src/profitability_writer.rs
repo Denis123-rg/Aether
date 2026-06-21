@@ -472,7 +472,7 @@ mod tests {
 
     #[test]
     fn noop_sink_default_trait() {
-        let sink = NoopProfitabilitySink::default();
+        let sink = NoopProfitabilitySink;
         sink.insert_score(sample_score());
     }
 

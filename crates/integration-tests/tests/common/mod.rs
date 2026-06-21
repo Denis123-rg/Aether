@@ -44,6 +44,7 @@ pub const ANVIL_ACCOUNT0_KEY: &str =
     "ac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80";
 pub const AAVE_V3_POOL: Address = address!("87870Bca3F3fD6335C3F4ce8392D69350B4fA4E2");
 pub const BALANCER_V2_VAULT: Address = address!("BA12222222228d8Ba445958a75a0704d566BF2C8");
+pub const BANCOR_NETWORK: Address = address!("eEF417e1D5CC832e619ae18D2F140De2999dD4fB");
 pub const WETH_BALANCE_SLOT: u64 = 3;
 
 // Aave-flashloanable tokens
@@ -56,6 +57,7 @@ sol! {
     function transfer(address to, uint256 amount) external returns (bool);
     function balanceOf(address account) external view returns (uint256);
     function swap(uint256 amount0Out, uint256 amount1Out, address to, bytes calldata data);
+    function FLASHLOAN_PREMIUM_TOTAL() external view returns (uint256);
 }
 
 // ── Pool definition ─────────────────────────────────────────────────
@@ -489,6 +491,23 @@ pub async fn erc20_balance(provider: &impl Provider, token: Address, account: Ad
     }
 }
 
+/// Query the Aave V3 flashloan premium at runtime (can change via governance).
+pub async fn aave_flashloan_premium(provider: &impl Provider, aave_pool: Address) -> u128 {
+    let calldata = FLASHLOAN_PREMIUM_TOTALCall {}.abi_encode();
+    let tx = alloy::rpc::types::TransactionRequest::default()
+        .to(aave_pool)
+        .input(calldata.into());
+    match provider.call(tx).await {
+        Ok(output) if output.len() >= 32 => {
+            U256::from_be_slice(&output[0..32]).to::<u128>()
+        }
+        _ => {
+            eprintln!("WARNING: could not query Aave flashloan premium, defaulting to 5 bps");
+            5
+        }
+    }
+}
+
 /// Get the contracts/ directory path relative to the integration-tests crate.
 pub fn contracts_root() -> std::path::PathBuf {
     let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
@@ -520,6 +539,7 @@ pub fn deploy_executor(anvil_url: &str) -> Result<Address, String> {
             "--constructor-args",
             &format!("{}", AAVE_V3_POOL),
             &format!("{}", BALANCER_V2_VAULT),
+            &format!("{}", BANCOR_NETWORK),
         ])
         .output()
         .map_err(|e| format!("forge create failed to run: {e}"))?;

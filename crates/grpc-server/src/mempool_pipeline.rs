@@ -5333,7 +5333,7 @@ mod tests {
     #[test]
     fn sim_context_with_gating_sets_field() {
         let gating = GatingConfig { min_reserve_f64: 0.01, ..GatingConfig::default() };
-        let ctx = unwrap_empty_sim_ctx().with_gating(gating.clone());
+        let ctx = unwrap_empty_sim_ctx().with_gating(gating);
         assert!((ctx.gating.min_reserve_f64 - 0.01).abs() < f64::EPSILON);
     }
 

@@ -170,13 +170,6 @@ func TestGenerateBundleID_Format(t *testing.T) {
 	}
 }
 
-// intETHToWei is a test helper that converts an integer ETH amount to wei.
-func intETHToWei(t *testing.T, eth int64) *big.Int {
-	t.Helper()
-	oneETH := new(big.Int).Exp(big.NewInt(10), big.NewInt(18), nil)
-	return new(big.Int).Mul(big.NewInt(eth), oneETH)
-}
-
 // ---------------------------------------------------------------------------
 // BuildMempoolBackrunBundle
 // ---------------------------------------------------------------------------

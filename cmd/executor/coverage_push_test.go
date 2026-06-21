@@ -2484,18 +2484,6 @@ func TestHandleSetMinProfit_WrongMethod(t *testing.T) {
 
 // ── admin handlers: non-transition error → 500 ───────────────────
 
-type mockRiskMgrNonTransition struct {
-	*risk.RiskManager
-	failErr error
-}
-
-func (m *mockRiskMgrNonTransition) Pause(reason string) error {
-	if m.failErr != nil {
-		return m.failErr
-	}
-	return m.RiskManager.Pause(reason)
-}
-
 func TestHandleAdminPause_InternalServerError(t *testing.T) {
 	rm := risk.NewRiskManager(risk.DefaultRiskConfig())
 	prevDeps := globalAdminDeps

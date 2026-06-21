@@ -56,6 +56,7 @@ func TestPgMetricsStore_RunFlushesOnClose(t *testing.T) {
 		cancel: func() {},
 	}
 	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	s.wg.Add(1)
 	go s.run(ctx)
 

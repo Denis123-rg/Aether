@@ -2166,7 +2166,7 @@ mod tests {
     fn default_pool_set_token0_before_token1() {
         let pools = default_pool_set();
         for pool in &pools {
-            assert!(pool.token0 < pool.token1 || pool.token0 == pool.token1,
+            assert!(pool.token0 <= pool.token1,
                 "token0 {:?} should be <= token1 {:?}", pool.token0, pool.token1);
         }
     }
@@ -3302,6 +3302,7 @@ mod tests {
         assert!(result.is_some());
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn build_test_rpc_tx_eip1559(
         nonce: u64, gas_limit: u64, max_fee: u128, max_tip: u128,
         to_addr: Address, value: U256, input: Vec<u8>,

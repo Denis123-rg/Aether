@@ -1351,7 +1351,7 @@ mod tests {
     #[test]
     fn v2_amount_out_symmetric() {
         let reserves = U256::from(1000u128 * 10u128.pow(18));
-        let amount_in = U256::from(1u128 * 10u128.pow(18));
+        let amount_in = U256::from(10u128.pow(18));
         let result = v2_amount_out(amount_in, reserves, reserves);
         assert!(result > U256::ZERO);
         assert!(result < amount_in);
@@ -1456,17 +1456,13 @@ mod tests {
         let old = std::env::var("ETH_RPC_URL").ok();
         std::env::remove_var("ETH_RPC_URL");
         let _ = resolve_rpc_url();
-        match old {
-            Some(v) => std::env::set_var("ETH_RPC_URL", v),
-            None => {}
-        }
+        if let Some(v) = old { std::env::set_var("ETH_RPC_URL", v); }
     }
 
     #[test]
     fn load_executor_bytecode_when_artifact_missing() {
         let result = load_executor_bytecode(false);
-        if result.is_some() {
-            let bytes = result.unwrap();
+        if let Some(bytes) = result {
             assert!(!bytes.is_empty());
         }
     }
@@ -1474,8 +1470,7 @@ mod tests {
     #[test]
     fn load_executor_bytecode_splice_mode() {
         let result = load_executor_bytecode(true);
-        if result.is_some() {
-            let bytes = result.unwrap();
+        if let Some(bytes) = result {
             assert!(!bytes.is_empty());
         }
     }
@@ -1592,21 +1587,19 @@ mod tests {
             code
         };
 
-        let arb_code = {
-            let mut code = Vec::new();
-            code.push(0x60); code.push(0x00);
-            code.push(0x60); code.push(0x00);
-            code.push(0x60); code.push(0x00);
-            code.push(0x60); code.push(0x00);
-            code.push(0x60); code.push(0x00);
-            code.push(0x73);
-            code.extend_from_slice(WETH.as_slice());
-            code.push(0x61); code.push(0x60); code.push(0x00);
-            code.push(0xf1);
-            code.push(0x50);
-            code.push(0x00);
-            code
-        };
+        let mut arb_code = vec![
+            0x60, 0x00,
+            0x60, 0x00,
+            0x60, 0x00,
+            0x60, 0x00,
+            0x60, 0x00,
+            0x73,
+        ];
+        arb_code.extend_from_slice(WETH.as_slice());
+        arb_code.push(0x61); arb_code.push(0x60); arb_code.push(0x00);
+        arb_code.push(0xf1);
+        arb_code.push(0x50);
+        arb_code.push(0x00);
 
         let mut state = ForkedState::new_empty(18_000_000, 1_700_000_000, 0);
         state.insert_account(WETH, U256::ZERO, mock_weth_code.into());
@@ -1777,21 +1770,19 @@ mod tests {
             code.push(0xf3);
             code
         };
-        let arb_code = {
-            let mut code = Vec::new();
-            code.push(0x60); code.push(0x00);
-            code.push(0x60); code.push(0x00);
-            code.push(0x60); code.push(0x00);
-            code.push(0x60); code.push(0x00);
-            code.push(0x60); code.push(0x00);
-            code.push(0x73);
-            code.extend_from_slice(WETH.as_slice());
-            code.push(0x61); code.push(0x60); code.push(0x00);
-            code.push(0xf1);
-            code.push(0x50);
-            code.push(0x00);
-            code
-        };
+        let mut arb_code = vec![
+            0x60, 0x00,
+            0x60, 0x00,
+            0x60, 0x00,
+            0x60, 0x00,
+            0x60, 0x00,
+            0x73,
+        ];
+        arb_code.extend_from_slice(WETH.as_slice());
+        arb_code.push(0x61); arb_code.push(0x60); arb_code.push(0x00);
+        arb_code.push(0xf1);
+        arb_code.push(0x50);
+        arb_code.push(0x00);
         let mut state = ForkedState::new_empty(18_000_000, 1_700_000_000, 0);
         state.insert_account(WETH, U256::ZERO, mock_weth_code.into());
         state.insert_account(ARB_TO, U256::ZERO, arb_code.into());
@@ -1906,21 +1897,19 @@ mod tests {
             code
         };
 
-        let arb_code = {
-            let mut code = Vec::new();
-            code.push(0x60); code.push(0x00);
-            code.push(0x60); code.push(0x00);
-            code.push(0x60); code.push(0x00);
-            code.push(0x60); code.push(0x00);
-            code.push(0x60); code.push(0x00);
-            code.push(0x73);
-            code.extend_from_slice(WETH.as_slice());
-            code.push(0x61); code.push(0x60); code.push(0x00);
-            code.push(0xf1);
-            code.push(0x50);
-            code.push(0x00);
-            code
-        };
+        let mut arb_code = vec![
+            0x60, 0x00,
+            0x60, 0x00,
+            0x60, 0x00,
+            0x60, 0x00,
+            0x60, 0x00,
+            0x73,
+        ];
+        arb_code.extend_from_slice(WETH.as_slice());
+        arb_code.push(0x61); arb_code.push(0x60); arb_code.push(0x00);
+        arb_code.push(0xf1);
+        arb_code.push(0x50);
+        arb_code.push(0x00);
 
         let mut state = ForkedState::new_empty(18_000_000, 1_700_000_000, 0);
         state.insert_account(WETH, U256::ZERO, mock_weth_code.into());

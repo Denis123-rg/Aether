@@ -104,7 +104,7 @@ func (m *MockArbServer) StartBufconn(bufSize int) (dialer func(context.Context, 
 
 // DialBufconn connects a grpc.ClientConn to a bufconn-started mock server.
 func (m *MockArbServer) DialBufconn(ctx context.Context, dialer func(context.Context, string) (net.Conn, error)) (*grpc.ClientConn, error) {
-	return grpc.DialContext(ctx, "bufnet",
+	return grpc.NewClient("passthrough:///bufnet",
 		grpc.WithContextDialer(dialer),
 		grpc.WithTransportCredentials(insecure.NewCredentials()),
 	)

@@ -63,8 +63,7 @@ fn gate_post_sim_drops_negative_actual_as_zero() {
 #[test]
 fn gate_post_sim_passes_at_threshold_boundary() {
     let metrics = EngineMetrics::new();
-    let mut config = GatingConfig::default();
-    config.revm_profit_mismatch_threshold = 0.5;
+    let config = GatingConfig { revm_profit_mismatch_threshold: 0.5, ..GatingConfig::default() };
     let expected = 1_000_000u128;
     let actual = 500_000u128;
     let verdict = gate_post_sim(expected, actual, &config, &metrics);

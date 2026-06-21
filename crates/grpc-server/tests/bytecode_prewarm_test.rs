@@ -341,7 +341,7 @@ fn prewarm_two_distinct_pools_both_cached() {
             .put(a, B256::ZERO, &sample_bytecode())
             .unwrap();
         cache
-            .put(b, B256::ZERO, &vec![0x60, 0x02])
+            .put(b, B256::ZERO, &[0x60, 0x02])
             .unwrap();
         cache.prewarm_bytecode(a, &provider).await;
         cache.prewarm_bytecode(b, &provider).await;

@@ -699,7 +699,7 @@ mod tests {
 
     #[test]
     fn noop_sink_default_trait() {
-        let sink = NoopMempoolSink::default();
+        let sink = NoopMempoolSink;
         sink.insert_prediction(sample_prediction());
     }
 

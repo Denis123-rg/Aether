@@ -260,8 +260,8 @@ fn validate_balancer_v3_zero_swap_invalid() {
 
 #[test]
 fn balancer_v3_fee_high_clamps() {
-    let bps = balancer_v3_fee_to_bps(U256::from(u128::MAX));
-    assert!(bps <= u32::MAX);
+    let _bps = balancer_v3_fee_to_bps(U256::from(u128::MAX));
+    // bps is always <= u32::MAX by type; just exercise the function to avoid dead-code removal
 }
 
 #[test]

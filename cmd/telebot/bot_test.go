@@ -244,15 +244,6 @@ func cmdMessage(chatID int64, text string) *tgbotapi.Message {
 	}
 }
 
-func splitCmd(text string) []string {
-	for i, c := range text {
-		if c == ' ' {
-			return []string{text[:i], text[i+1:]}
-		}
-	}
-	return []string{text}
-}
-
 func containsStr(s, sub string) bool {
 	return len(s) >= len(sub) && (s == sub || indexStr(s, sub) >= 0)
 }

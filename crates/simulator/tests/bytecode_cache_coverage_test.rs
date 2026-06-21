@@ -107,7 +107,7 @@ fn get_disk_error_via_removed_file() {
 
 #[test]
 fn cache_error_display_io() {
-    let err: CacheError = std::io::Error::new(std::io::ErrorKind::Other, "test error").into();
+    let err: CacheError = std::io::Error::other("test error").into();
     let msg = format!("{}", err);
     assert!(msg.contains("io error"));
 }
