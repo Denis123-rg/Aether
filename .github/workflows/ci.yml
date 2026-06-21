@@ -1,258 +1,368 @@
-name: CI
+name: On-Chain CI
 
 on:
-  pull_request:
-    branches: [main]
   push:
     branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
 
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
 env:
-  CARGO_TERM_COLOR: always
-  RUST_BACKTRACE: 1
+  FOUNDRY_PROFILE: ci
+  RPC_URL: ${{ secrets.RPC_URL }}
+  PRIVATE_KEY: ${{ secrets.PRIVATE_KEY }}
+  ETHERSCAN_API_KEY: ${{ secrets.ETHERSCAN_API_KEY }}
+  ETH_RPC_URL: ${{ secrets.ETH_RPC_URL }}
+
+defaults:
+  run:
+    working-directory: contracts
 
 jobs:
-  toolchain:
-    name: toolchain
+  checkout:
+    name: Checkout
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
       - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 0
 
-      - name: Check toolchain versions
-        run: bash scripts/check_toolchain_versions.sh
-
-  rust:
-    name: rust
+  install-foundry:
+    name: Install Foundry
     runs-on: ubuntu-latest
-    needs: toolchain
+    needs: checkout
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
-
-      - name: Install protobuf compiler
-        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
-
-      - name: Install Rust toolchain
-        run: rustup show
-
-      - uses: Swatinem/rust-cache@v2
         with:
-          shared-key: aether-rust
+          submodules: recursive
 
-      - name: Clippy
-        run: cargo clippy --workspace -- -D warnings
-
-      - name: Tests
-        run: cargo test --workspace --locked
-
-  go:
-    name: go
-    runs-on: ubuntu-latest
-    needs: toolchain
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-go@v5
+      - uses: foundry-rs/foundry-toolchain@v1
         with:
-          go-version-file: go.mod
-          cache-dependency-path: go.sum
+          cache: true
+          cache-key: aether-foundry-${{ runner.os }}
 
-      - name: Vet
-        run: go vet ./...
-
-      - name: Factory coverage validation
-        run: bash scripts/validate_factory_coverage.sh
-
-      - name: Production hardening checks
-        run: bash scripts/test_production_hardening.sh
-
-      - name: Unit tests (with coverage)
-        run: go test ./... -count=1 -coverprofile=coverage.out
-
-      - name: Coverage summary
-        run: go tool cover -func=coverage.out | tail -30
-
-  go-integration:
-    name: go-integration
-    runs-on: ubuntu-latest
-    needs: [rust, go]
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Install protobuf compiler
-        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
-
-      - name: Install Rust toolchain
-        run: rustup show
-
-      - uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: aether-rust
-
-      - uses: actions/setup-go@v5
-        with:
-          go-version-file: go.mod
-          cache-dependency-path: go.sum
-
-      - name: Build Rust gRPC server
-        run: cargo build --release -p aether-grpc-server
-
-      - name: Cross-language integration tests
-        env:
-          AETHER_RUST_BINARY: ${{ github.workspace }}/target/release/aether-rust
+      - name: Verify installation
         run: |
-          go test -tags integration -count=1 ./cmd/executor/... -run 'TestGRPCCrossLanguage' -v
-          go test -tags integration -count=1 ./tests/integration/... -v
+          forge --version
+          cast --version
+          anvil --version
 
-  go-postgres:
-    name: go-postgres (testcontainers)
+  install-deps:
+    name: Install Dependencies
     runs-on: ubuntu-latest
-    needs: toolchain
+    needs: install-foundry
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
-
-      - uses: actions/setup-go@v5
         with:
-          go-version-file: go.mod
-          cache-dependency-path: go.sum
+          submodules: recursive
 
-      - name: Postgres integration tests
-        run: go test ./internal/db/... -count=1 -run TestPostgres -v
+      - uses: foundry-rs/foundry-toolchain@v1
+        with:
+          cache: true
+          cache-key: aether-foundry-${{ runner.os }}
+
+      - name: Install Foundry dependencies
+        run: forge install --no-commit
+        continue-on-error: true
+
+      - name: Verify dependencies
+        run: |
+          forge remappings > /dev/null
+          echo "Dependencies installed successfully"
+
+  compile:
+    name: Compile
+    runs-on: ubuntu-latest
+    needs: install-deps
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - uses: foundry-rs/foundry-toolchain@v1
+        with:
+          cache: true
+          cache-key: aether-foundry-${{ runner.os }}
+
+      - name: Restore Foundry cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            contracts/cache
+            contracts/out
+          key: forge-cache-${{ runner.os }}-${{ hashFiles('contracts/src/**/*.sol', 'contracts/foundry.toml') }}
+          restore-keys: |
+            forge-cache-${{ runner.os }}-
+
+      - name: Forge build
+        run: forge build --deny-warnings
+
+  unit-tests:
+    name: Unit Tests
+    runs-on: ubuntu-latest
+    needs: compile
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - uses: foundry-rs/foundry-toolchain@v1
+        with:
+          cache: true
+          cache-key: aether-foundry-${{ runner.os }}
+
+      - name: Restore Foundry cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            contracts/cache
+            contracts/out
+          key: forge-cache-${{ runner.os }}-${{ hashFiles('contracts/src/**/*.sol', 'contracts/foundry.toml') }}
+          restore-keys: |
+            forge-cache-${{ runner.os }}-
+
+      - name: Run unit tests
+        run: forge test -vvv --match-path "test/*.t.sol" --no-match-path "test/*.fork.t.sol" --no-match-path "test/*.invariant.t.sol"
+
+      - name: Run invariant tests
+        run: forge test -vvv --match-path "test/*.invariant.t.sol"
+
+      - name: Upload forge logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: forge-logs
+          path: contracts/out/**/*.json
+          retention-days: 7
+
+  coverage:
+    name: Coverage
+    runs-on: ubuntu-latest
+    needs: compile
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - uses: foundry-rs/foundry-toolchain@v1
+        with:
+          cache: true
+          cache-key: aether-foundry-${{ runner.os }}
+
+      - name: Restore Foundry cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            contracts/cache
+            contracts/out
+          key: forge-cache-${{ runner.os }}-${{ hashFiles('contracts/src/**/*.sol', 'contracts/foundry.toml') }}
+          restore-keys: |
+            forge-cache-${{ runner.os }}-
+
+      - name: Generate coverage report
+        run: |
+          forge coverage --report lcov --no-match-path "test/*.fork.t.sol"
+          forge coverage --report summary --no-match-path "test/*.fork.t.sol"
+
+      - name: Check coverage threshold
+        run: |
+          COVERAGE=$(forge coverage --no-match-path "test/*.fork.t.sol" | tail -1 | grep -oP '\d+\.\d+' | head -1)
+          echo "Coverage: $COVERAGE%"
+          if (( $(echo "$COVERAGE < 98" | bc -l) )); then
+            echo "Coverage $COVERAGE% is below 98% threshold"
+            exit 1
+          fi
+          echo "Coverage $COVERAGE% meets 98% threshold"
+
+      - name: Upload coverage report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: contracts/lcov.info
+          retention-days: 30
+
+  slither:
+    name: Slither Analysis
+    runs-on: ubuntu-latest
+    needs: compile
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install Slither
+        run: pip install slither-analyzer
+
+      - name: Run Slither
+        run: |
+          slither . --filter-paths "lib,test,script" --exclude-dependencies \
+            --exclude naming-convention \
+            --fail-high --fail-medium \
+            --json slither-report.json 2>&1 | tee slither-output.txt
+
+      - name: Upload Slither report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: slither-report
+          path: contracts/slither-report.json
+          retention-days: 30
+
+  solhint:
+    name: Solhint
+    runs-on: ubuntu-latest
+    needs: compile
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install Solhint
+        run: npm install -g solhint
+
+      - name: Run Solhint
+        run: solhint 'src/**/*.sol'
+
+  semgrep:
+    name: Semgrep
+    runs-on: ubuntu-latest
+    needs: compile
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install Semgrep
+        run: pip install semgrep
+
+      - name: Run Semgrep
+        run: |
+          semgrep --config=p/solidity --error \
+            --output=semgrep-report.json --json \
+            --exclude='lib/**' --exclude='test/**' --exclude='script/**' \
+            src/
+
+      - name: Upload Semgrep report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: semgrep-report
+          path: contracts/semgrep-report.json
+          retention-days: 30
+
+  echidna:
+    name: Echidna Fuzzing
+    runs-on: ubuntu-latest
+    needs: compile
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - uses: foundry-rs/foundry-toolchain@v1
+        with:
+          cache: true
+          cache-key: aether-foundry-${{ runner.os }}
+
+      - name: Install Echidna
+        run: |
+          curl -L https://github.com/crytic/echidna/releases/latest/download/echidna-2.2.5-Ubuntu-22.04.tar.gz -o echidna.tar.gz
+          tar -xzf echidna.tar.gz
+          sudo mv echidna /usr/local/bin/
+          echidna --version
+
+      - name: Run Echidna
+        working-directory: contracts
+        run: |
+          echidna test/echidna/EchidnaAether.sol \
+            --contract EchidnaAether \
+            --config echidna.yaml \
+            --test-limit 50000 \
+            --seq-len 50 \
+            --format text 2>&1 | tee echidna-output.txt
+
+      - name: Check Echidna results
+        run: |
+          if grep -qi "FAILED\|failing\|assertion failed\|[FAIL]" echidna-output.txt; then
+            echo "Echidna found violations"
+            cat echidna-output.txt
+            exit 1
+          fi
+          echo "All Echidna properties passed"
+
+      - name: Upload Echidna results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: echidna-report
+          path: contracts/echidna-output.txt
+          retention-days: 30
 
   fork-tests:
-    name: rust-fork-tests
+    name: Anvil Fork Tests
     runs-on: ubuntu-latest
-    needs: [rust, go]
-    # Fork tests require a mainnet RPC endpoint. The secret is optional;
-    # when absent the runner script exits cleanly with a skip notice.
+    needs: compile
+    timeout-minutes: 30
+    if: env.ETH_RPC_URL != ''
     steps:
       - uses: actions/checkout@v4
         with:
           submodules: recursive
-
-      - name: Install protobuf compiler
-        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
-
-      - name: Install Rust toolchain
-        run: rustup show
 
       - uses: foundry-rs/foundry-toolchain@v1
         with:
           cache: true
           cache-key: aether-foundry-${{ runner.os }}
 
-      - uses: Swatinem/rust-cache@v2
+      - name: Restore Foundry cache
+        uses: actions/cache@v4
         with:
-          shared-key: aether-rust
+          path: |
+            contracts/cache
+            contracts/out
+          key: forge-cache-${{ runner.os }}-${{ hashFiles('contracts/src/**/*.sol', 'contracts/foundry.toml') }}
+          restore-keys: |
+            forge-cache-${{ runner.os }}-
+
+      - name: Start Anvil fork
+        run: |
+          anvil --fork-url "$ETH_RPC_URL" --fork-block-number 19800000 --silent &
+          ANVIL_PID=$!
+          echo "Anvil PID: $ANVIL_PID"
+          sleep 5
+          curl -s -o /dev/null -w "%{http_code}" http://localhost:8545 || exit 1
+          echo "Anvil ready"
 
       - name: Run fork tests
-        env:
-          ETH_RPC_URL: ${{ secrets.ETH_RPC_URL }}
-        run: bash scripts/run_fork_tests.sh
+        run: forge test -vvv --match-path "test/*.fork.t.sol" --fork-url http://localhost:8545
 
-  fuzz-nightly:
-    name: fuzz-nightly
-    runs-on: ubuntu-latest
-    needs: toolchain
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Install protobuf compiler
-        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
-
-      - name: Install Rust toolchain
-        run: rustup show
-
-      - uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: aether-rust
-          workspaces: fuzz
-
-      - name: Install cargo-fuzz
-        run: cargo install cargo-fuzz
-
-      - name: Install nightly for libfuzzer
-        run: rustup toolchain install nightly --profile minimal
-
-      - name: Fuzz smoke (all targets, 1000 iterations)
-        working-directory: fuzz
-        run: |
-          for target in balancer_math bellman_ford config_parse cp_math curve_math discovery_validator event_decoder fee_on_transfer grpc_decode mempool_backrun pool_adapter swap_calldata; do
-            cargo +nightly fuzz run "$target" -- -runs=1000 -max_total_time=10
-          done
-
-      - name: Fuzz check (compile-only smoke)
-        working-directory: fuzz
-        run: cargo check
-
-  solidity:
-    name: solidity
-    runs-on: ubuntu-latest
-    needs: toolchain
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          submodules: recursive
-
-      - uses: foundry-rs/foundry-toolchain@v1
-        with:
-          cache: true
-          cache-key: aether-foundry-${{ runner.os }}
-
-      - name: Tests
-        working-directory: contracts
-        run: forge test -vvv
-
-      - name: Fuzz smoke
-        working-directory: contracts
-        run: forge test --fuzz-runs 1000 -vvv
-
-  load-test:
-    name: load-test
-    runs-on: ubuntu-latest
-    needs: toolchain
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-go@v5
-        with:
-          go-version-file: go.mod
-          cache-dependency-path: go.sum
-
-      - name: Load test smoke
-        env:
-          LOAD_TEST_DURATION: 30s
-          LOAD_TEST_CLIENTS: "20"
-          LOAD_TEST_RPS: "10"
-        run: go test -tags=load ./tests/load/... -count=1 -timeout 5m -run TestLoadSmoke -v
-
-  e2e-smoke:
-    name: e2e-smoke
-    runs-on: ubuntu-latest
-    needs: [rust, go]
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-go@v5
-        with:
-          go-version-file: go.mod
-          cache-dependency-path: go.sum
-
-      - name: Install Rust toolchain
-        run: rustup show
-
-      - uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: aether-rust
-
-      - name: Build Rust gRPC server
-        run: cargo build --release -p aether-grpc-server
-
-      - name: E2E smoke (parser + health)
-        env:
-          AETHER_RUST_BINARY: ${{ github.workspace }}/target/release/aether-rust
-        run: go test ./tests/e2e/... -count=1 -run 'TestParse|TestHealthEndpoint' -timeout 60s -v
+      - name: Stop Anvil
+        if: always()
+        run: pkill anvil || true

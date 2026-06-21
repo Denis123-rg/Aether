@@ -1,0 +1,101 @@
+# MetaMask Sepolia CI/CD — Comprehensive Testnet Testing Workflow
+#
+# Automatically performs end-to-end blockchain interaction testing on
+# the Ethereum Sepolia Testnet using an ethers.js wallet (MetaMask-compatible).
+#
+# Stages:
+#   1. Environment setup (Node.js, npm, ethers.js)
+#   2. Dependency installation
+#   3. MetaMask / wallet configuration (from secrets)
+#   4. Sepolia network connection verification
+#   5. Wallet initialization & balance check
+#   6. Smart contract interaction (read + write)
+#   7. Transaction execution & confirmation
+#   8. Gas usage analysis
+#   9. Balance verification
+#  10. Error detection & diagnostics
+#  11. Runtime statistics
+#  12. Financial statistics
+#  13. Performance metrics
+#  14. Final report generation (HTML + Markdown + JSON)
+#  15. Report artifact upload
+
+name: MetaMask Sepolia
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: Execution mode
+        required: true
+        default: quick
+        type: choice
+        options:
+          - quick
+          - extended
+  schedule:
+    - cron: "0 6 * * *"
+
+concurrency:
+  group: metamask-sepolia-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  NODE_VERSION: "22"
+  QUICK_MODE_TIMEOUT_MINUTES: 20
+  EXTENDED_MODE_TIMEOUT_MINUTES: 130
+
+jobs:
+  sepolia-tests:
+    name: Sepolia Testnet (${{ github.event.inputs.mode || 'quick' }})
+    runs-on: ubuntu-latest
+    timeout-minutes: ${{ github.event.inputs.mode == 'extended' && env.EXTENDED_MODE_TIMEOUT_MINUTES || env.QUICK_MODE_TIMEOUT_MINUTES }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: package.json
+
+      - name: Create package.json
+        run: |
+          cat > package.json << 'EOF'
+          {
+            "name": "metamask-sepolia-tests",
+            "private": true,
+            "type": "module",
+            "dependencies": {
+              "ethers": "^6.13.0"
+            }
+          }
+          EOF
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Verify ethers.js installation
+        run: node -e "import('ethers').then(m => console.log('ethers v' + m.version))"
+
+      - name: Run Sepolia tests (${{ github.event.inputs.mode || 'quick' }})
+        env:
+          TEST_MODE: ${{ github.event.inputs.mode || 'quick' }}
+          SEPOLIA_RPC_URL: ${{ secrets.SEPOLIA_RPC_URL }}
+          METAMASK_PRIVATE_KEY: ${{ secrets.METAMASK_PRIVATE_KEY }}
+          METAMASK_ADDRESS: ${{ secrets.METAMASK_ADDRESS }}
+          CONTRACT_ADDRESS: ${{ secrets.CONTRACT_ADDRESS || '' }}
+          REPORT_DIR: /tmp/sepolia-report
+        run: node scripts/sepolia_test_runner.mjs
+
+      - name: Upload reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sepolia-test-reports-${{ github.event.inputs.mode || 'quick' }}
+          path: |
+            /tmp/sepolia-report/report.html
+            /tmp/sepolia-report/report.md
+            /tmp/sepolia-report/report.json
+          retention-days: 30

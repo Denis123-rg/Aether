@@ -1,0 +1,318 @@
+# Prompt: Create a Production-Grade GitHub Actions CI/CD Workflow for MetaMask Sepolia Testing
+
+## Objective
+
+Create a **single production-ready GitHub Actions CI/CD workflow** that automatically performs comprehensive testing against the **Ethereum Sepolia Testnet** using **MetaMask**.
+
+The workflow must be reliable, modular, well-documented, and suitable for production environments.
+
+---
+
+# Workflow Documentation
+
+At the top of the YAML file, include a clear documentation block explaining exactly what the workflow performs.
+
+The documentation should list every stage, including:
+
+* Environment setup
+* Dependency installation
+* MetaMask configuration
+* Sepolia network connection
+* Wallet initialization
+* Smart contract interaction
+* Transaction execution
+* Transaction confirmation
+* Gas usage analysis
+* Balance verification
+* Error detection
+* Runtime statistics
+* Financial statistics
+* Performance metrics
+* Final report generation
+
+The workflow should be self-explanatory for anyone reading the YAML file.
+
+---
+
+# Environment Setup
+
+Automatically install and configure all required software, dependencies, SDKs, libraries, and tools.
+
+The workflow must automatically configure:
+
+* Node.js (latest LTS)
+* npm or pnpm
+* MetaMask testing environment
+* Ethereum Sepolia RPC connection
+* Browser automation framework (if required)
+* Test dependencies
+* Reporting dependencies
+
+The workflow must never assume any dependency is already installed.
+
+---
+
+# MetaMask Configuration
+
+Configure MetaMask automatically using GitHub Secrets.
+
+The workflow should securely load:
+
+* Wallet private key
+* Wallet address
+* Recovery phrase (if required)
+* Sepolia RPC URL
+* Chain ID
+* Explorer URL
+
+No sensitive information may be exposed in logs.
+
+---
+
+# Sepolia Testing
+
+Connect to the Ethereum Sepolia Testnet.
+
+Verify:
+
+* Successful network connection
+* Wallet accessibility
+* Account balance
+* RPC availability
+* Network health
+
+Stop immediately if the connection fails.
+
+---
+
+# Functional Testing
+
+Execute complete blockchain interaction tests, including:
+
+* Wallet connection
+* Account authentication
+* Smart contract interaction
+* Read operations
+* Write operations
+* Transaction signing
+* Transaction broadcasting
+* Transaction confirmation
+* Event verification
+* Balance updates
+* Gas estimation
+* Multiple transaction execution
+* Failure handling
+* Retry logic
+* Timeout validation
+
+Every failed operation should be logged with detailed diagnostic information.
+
+---
+
+# Execution Duration
+
+The workflow must support two execution modes that can be selected through a workflow input parameter (`workflow_dispatch`):
+
+## Quick Mode
+
+Runtime:
+
+**15 minutes**
+
+Designed for:
+
+* Smoke tests
+* Critical functionality validation
+* Fast health checks
+
+---
+
+## Extended Mode
+
+Runtime:
+
+**2 hours**
+
+Designed for:
+
+* Long-running testing
+* Continuous transaction execution
+* Stress testing
+* Stability verification
+* Performance analysis
+* Network reliability monitoring
+
+Users must be able to choose either mode before starting the workflow.
+
+---
+
+# Monitoring
+
+Throughout execution, continuously collect and display:
+
+* Current progress
+* Number of successful operations
+* Number of failed operations
+* Success rate
+* Failure rate
+* Execution time
+* RPC latency
+* Transaction latency
+* Confirmation time
+* Wallet balance changes
+* Gas usage
+* Estimated costs
+* Transaction throughput
+
+The workflow logs should remain clean and easy to read.
+
+---
+
+# Financial Statistics
+
+Collect and report detailed financial information, including:
+
+* Initial wallet balance
+* Final wallet balance
+* Total gas consumed
+* Gas used per transaction
+* Average gas usage
+* Maximum gas usage
+* Minimum gas usage
+* Total transaction cost
+* Estimated network fees
+* Number of completed transactions
+* Number of failed transactions
+
+---
+
+# Error Reporting
+
+Whenever an error occurs, the report must include:
+
+* Timestamp
+* Failed operation
+* Error message
+* Stack trace (if available)
+* Transaction hash (if applicable)
+* RPC response
+* Retry attempts
+* Suggested cause
+
+No failure should go undocumented.
+
+---
+
+# Final Report
+
+At the end of execution, automatically generate a comprehensive report.
+
+The report should include:
+
+## General Information
+
+* Workflow name
+* Execution mode (15 minutes or 2 hours)
+* Start time
+* Finish time
+* Total duration
+
+## Test Summary
+
+* Total tests executed
+* Successful tests
+* Failed tests
+* Success percentage
+* Failure percentage
+
+## Blockchain Statistics
+
+* Network status
+* Wallet address
+* Starting balance
+* Ending balance
+* Balance difference
+* Number of transactions
+* Confirmed transactions
+* Failed transactions
+
+## Financial Statistics
+
+* Total gas consumed
+* Average gas usage
+* Maximum gas usage
+* Minimum gas usage
+* Estimated transaction fees
+* Total network cost
+
+## Performance Metrics
+
+* Average RPC response time
+* Average transaction confirmation time
+* Peak execution time
+* Slowest transaction
+* Fastest transaction
+* Throughput (transactions per minute)
+
+## Error Summary
+
+* Complete list of failures
+* Error descriptions
+* Failure timestamps
+* Retry attempts
+* Diagnostic information
+
+## Overall Status
+
+Clearly display one of the following:
+
+* ✅ PASSED
+* ⚠ PASSED WITH WARNINGS
+* ❌ FAILED
+
+---
+
+# Report Output
+
+Automatically upload the final report as a GitHub Actions artifact.
+
+Generate reports in multiple formats whenever possible:
+
+* HTML
+* Markdown
+* JSON
+
+The reports should be easy to review after workflow completion.
+
+---
+
+# Final Validation
+
+Before considering the workflow complete, validate that:
+
+* The YAML syntax is correct.
+* All GitHub Actions steps are valid.
+* Required secrets are referenced correctly.
+* MetaMask configuration is secure.
+* Sepolia connectivity works correctly.
+* Reports are generated successfully.
+* Both execution modes (15 minutes and 2 hours) function correctly.
+* The workflow can run successfully in GitHub Actions without manual modification.
+
+Do not consider the task complete until the workflow has been fully validated, tested, and confirmed to be production-ready.
+
+---
+
+# Expected Result
+
+Produce a clean, maintainable, enterprise-grade GitHub Actions CI/CD workflow that:
+
+1. Configures the environment.
+2. Connects securely to MetaMask and the Sepolia Testnet.
+3. Executes comprehensive blockchain interaction tests.
+4. Supports selectable execution modes (15 minutes or 2 hours).
+5. Collects detailed operational, performance, and financial statistics.
+6. Detects and logs all failures with diagnostic details.
+7. Generates comprehensive reports in HTML, Markdown, and JSON.
+8. Uploads all reports as GitHub Actions artifacts.
+9. Completes with full validation and production-ready quality.
