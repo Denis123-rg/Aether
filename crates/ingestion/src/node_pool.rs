@@ -353,10 +353,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_healthy_count_with_failed_nodes() {
-        let configs = vec![
-            make_config("node1", 1),
-            make_config("node2", 2),
-        ];
+        let configs = vec![make_config("node1", 1), make_config("node2", 2)];
         let pool = NodePool::new(configs, 1);
 
         // Fail the second node
@@ -382,10 +379,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_is_not_operational_when_too_few_healthy() {
-        let configs = vec![
-            make_config("node1", 1),
-            make_config("node2", 2),
-        ];
+        let configs = vec![make_config("node1", 1), make_config("node2", 2)];
         let pool = NodePool::new(configs, 2);
 
         // Fail one node
@@ -414,10 +408,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_best_node_skips_unhealthy() {
-        let configs = vec![
-            make_config("primary", 1),
-            make_config("secondary", 2),
-        ];
+        let configs = vec![make_config("primary", 1), make_config("secondary", 2)];
         let pool = NodePool::new(configs, 1);
 
         // Fail the primary node
@@ -433,10 +424,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_best_node_returns_none_when_all_failed() {
-        let configs = vec![
-            make_config("node1", 1),
-            make_config("node2", 2),
-        ];
+        let configs = vec![make_config("node1", 1), make_config("node2", 2)];
         let pool = NodePool::new(configs, 1);
 
         for node in pool.all_nodes() {

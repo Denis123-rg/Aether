@@ -174,5 +174,3 @@ func TestRun_NilDeps(t *testing.T) {
 		t.Fatal("expected error for nil deps")
 	}
 }
-
-

@@ -72,7 +72,9 @@ fn balancer_get_amount_in_zero_output() {
 #[test]
 fn balancer_get_amount_in_unknown_token() {
     let pool = seeded_balancer();
-    assert!(pool.get_amount_in(Address::repeat_byte(0xab), U256::from(1000u64)).is_none());
+    assert!(pool
+        .get_amount_in(Address::repeat_byte(0xab), U256::from(1000u64))
+        .is_none());
 }
 
 #[test]
@@ -93,7 +95,9 @@ fn balancer_liquidity_depth() {
 fn balancer_get_amount_in_unequal_weight() {
     let mut pool = BalancerPool::new(Address::ZERO, tok_a(), tok_b(), 800_000, 200_000, 10);
     pool.update_state(large_reserve(), U256::from(10_000_000_000_000u64));
-    let out = pool.get_amount_out(tok_a(), U256::from(1_000_000_000_000_000_000u64)).unwrap();
+    let out = pool
+        .get_amount_out(tok_a(), U256::from(1_000_000_000_000_000_000u64))
+        .unwrap();
     let back = pool.get_amount_in(tok_b(), out);
     assert!(back.is_some());
 }
@@ -111,7 +115,10 @@ fn balancer_tokens_and_fee() {
 
 fn seeded_bancor() -> BancorPool {
     let mut pool = BancorPool::new(Address::ZERO, tok_a(), bnt(), 30);
-    pool.update_state(large_reserve(), U256::from(2_000_000_000_000_000_000_000u128));
+    pool.update_state(
+        large_reserve(),
+        U256::from(2_000_000_000_000_000_000_000u128),
+    );
     pool
 }
 
@@ -145,7 +152,9 @@ fn bancor_get_amount_in_zero_output() {
 #[test]
 fn bancor_get_amount_in_unknown_token() {
     let pool = seeded_bancor();
-    assert!(pool.get_amount_in(Address::repeat_byte(0xaa), U256::from(1000u64)).is_none());
+    assert!(pool
+        .get_amount_in(Address::repeat_byte(0xaa), U256::from(1000u64))
+        .is_none());
 }
 
 #[test]
@@ -205,7 +214,9 @@ fn curve_get_amount_in_zero_output() {
 #[test]
 fn curve_get_amount_in_unknown_token() {
     let pool = seeded_curve();
-    assert!(pool.get_amount_in(Address::repeat_byte(0xab), U256::from(1_000_000u64)).is_none());
+    assert!(pool
+        .get_amount_in(Address::repeat_byte(0xab), U256::from(1_000_000u64))
+        .is_none());
 }
 
 #[test]
@@ -265,12 +276,7 @@ fn curve_predict_post_state_three_token_pool() {
 
 #[test]
 fn curve_get_amount_out_tiny_input_large_reserves() {
-    let mut pool = CurvePool::new(
-        Address::ZERO,
-        vec![tok_a(), tok_b()],
-        100,
-        4,
-    );
+    let mut pool = CurvePool::new(Address::ZERO, vec![tok_a(), tok_b()], 100, 4);
     pool.update_state(
         U256::from(10_000_000_000_000_000_000_000_000_000u128),
         U256::from(10_000_000_000_000_000_000_000_000_000u128),
@@ -281,12 +287,7 @@ fn curve_get_amount_out_tiny_input_large_reserves() {
 
 #[test]
 fn curve_high_amplification_newton_overshoot() {
-    let mut pool = CurvePool::new(
-        Address::ZERO,
-        vec![tok_a(), tok_b()],
-        10_000,
-        4,
-    );
+    let mut pool = CurvePool::new(Address::ZERO, vec![tok_a(), tok_b()], 10_000, 4);
     pool.update_state(
         U256::from(10_000_000_000_000u64),
         U256::from(10_000_000_000_000u64),
@@ -297,12 +298,7 @@ fn curve_high_amplification_newton_overshoot() {
 
 #[test]
 fn curve_imbalanced_pool_get_amount_out() {
-    let mut pool = CurvePool::new(
-        Address::ZERO,
-        vec![tok_a(), tok_b()],
-        10_000,
-        4,
-    );
+    let mut pool = CurvePool::new(Address::ZERO, vec![tok_a(), tok_b()], 10_000, 4);
     pool.update_state(
         U256::from(1_000_000_000u64),
         U256::from(100_000_000_000_000_000u64),
@@ -313,12 +309,7 @@ fn curve_imbalanced_pool_get_amount_out() {
 
 #[test]
 fn curve_imbalanced_pool_reverse_get_amount_out() {
-    let mut pool = CurvePool::new(
-        Address::ZERO,
-        vec![tok_a(), tok_b()],
-        10_000,
-        4,
-    );
+    let mut pool = CurvePool::new(Address::ZERO, vec![tok_a(), tok_b()], 10_000, 4);
     pool.update_state(
         U256::from(1_000_000_000u64),
         U256::from(100_000_000_000_000_000u64),
@@ -329,12 +320,7 @@ fn curve_imbalanced_pool_reverse_get_amount_out() {
 
 #[test]
 fn curve_large_pool_predict_post_state_round_trip() {
-    let mut pool = CurvePool::new(
-        Address::ZERO,
-        vec![tok_a(), tok_b()],
-        10_000,
-        4,
-    );
+    let mut pool = CurvePool::new(Address::ZERO, vec![tok_a(), tok_b()], 10_000, 4);
     pool.update_state(
         U256::from(1_000_000_000_000u64),
         U256::from(1_000_000_000_000u64),
@@ -349,12 +335,7 @@ fn curve_large_pool_predict_post_state_round_trip() {
 
 #[test]
 fn curve_get_amount_in_round_trip_high_amp() {
-    let mut pool = CurvePool::new(
-        Address::ZERO,
-        vec![tok_a(), tok_b()],
-        10_000,
-        4,
-    );
+    let mut pool = CurvePool::new(Address::ZERO, vec![tok_a(), tok_b()], 10_000, 4);
     pool.update_state(
         U256::from(10_000_000_000_000u64),
         U256::from(10_000_000_000_000u64),
@@ -401,7 +382,11 @@ fn v3_encode_swap_token0() {
 #[test]
 fn v3_encode_swap_token1() {
     let pool = seeded_v3();
-    let cd = pool.encode_swap(tok_b(), U256::from(1_000_000_000_000_000_000u64), U256::ZERO);
+    let cd = pool.encode_swap(
+        tok_b(),
+        U256::from(1_000_000_000_000_000_000u64),
+        U256::ZERO,
+    );
     assert!(!cd.is_empty());
 }
 
@@ -414,7 +399,9 @@ fn v3_get_amount_in_zero_output() {
 #[test]
 fn v3_get_amount_in_unknown_token() {
     let pool = seeded_v3();
-    assert!(pool.get_amount_in(Address::repeat_byte(0xaa), U256::from(1000u64)).is_none());
+    assert!(pool
+        .get_amount_in(Address::repeat_byte(0xaa), U256::from(1000u64))
+        .is_none());
 }
 
 #[test]
@@ -444,9 +431,21 @@ fn v3_set_ticks_sorts() {
     use aether_pools::uniswap_v3::TickInfo;
     let mut pool = seeded_v3();
     let ticks = vec![
-        TickInfo { index: 60, liquidity_net: 100, liquidity_gross: 100 },
-        TickInfo { index: -60, liquidity_net: -100, liquidity_gross: 100 },
-        TickInfo { index: 0, liquidity_net: 0, liquidity_gross: 0 },
+        TickInfo {
+            index: 60,
+            liquidity_net: 100,
+            liquidity_gross: 100,
+        },
+        TickInfo {
+            index: -60,
+            liquidity_net: -100,
+            liquidity_gross: 100,
+        },
+        TickInfo {
+            index: 0,
+            liquidity_net: 0,
+            liquidity_gross: 0,
+        },
     ];
     pool.set_ticks(ticks);
     assert!(pool.ticks[0].index <= pool.ticks[1].index);
@@ -469,7 +468,9 @@ fn v3_liquidity_depth() {
 #[test]
 fn v3_get_amount_out_invalid_token() {
     let pool = seeded_v3();
-    assert!(pool.get_amount_out(Address::repeat_byte(0xbb), U256::from(1000u64)).is_none());
+    assert!(pool
+        .get_amount_out(Address::repeat_byte(0xbb), U256::from(1000u64))
+        .is_none());
 }
 
 #[test]
@@ -502,7 +503,10 @@ fn registry_get_existing_pool() {
     let mut registry = PoolRegistry::with_defaults();
     let addr = address!("B4e16d0168e52d35CaCD2c6185b44281Ec28C9Dc");
     registry.register(Box::new(make_v2(addr)), PoolTier::Hot);
-    let id = PoolId { address: addr, protocol: ProtocolType::UniswapV2 };
+    let id = PoolId {
+        address: addr,
+        protocol: ProtocolType::UniswapV2,
+    };
     let pool = registry.get(&id);
     assert!(pool.is_some());
 }
@@ -510,7 +514,10 @@ fn registry_get_existing_pool() {
 #[test]
 fn registry_get_nonexistent_pool() {
     let registry = PoolRegistry::with_defaults();
-    let id = PoolId { address: Address::repeat_byte(0xff), protocol: ProtocolType::UniswapV2 };
+    let id = PoolId {
+        address: Address::repeat_byte(0xff),
+        protocol: ProtocolType::UniswapV2,
+    };
     assert!(registry.get(&id).is_none());
 }
 
@@ -519,7 +526,10 @@ fn registry_get_mut_existing_pool() {
     let mut registry = PoolRegistry::with_defaults();
     let addr = address!("B4e16d0168e52d35CaCD2c6185b44281Ec28C9Dc");
     registry.register(Box::new(make_v2(addr)), PoolTier::Hot);
-    let id = PoolId { address: addr, protocol: ProtocolType::UniswapV2 };
+    let id = PoolId {
+        address: addr,
+        protocol: ProtocolType::UniswapV2,
+    };
     let pool = registry.get_mut(&id);
     assert!(pool.is_some());
 }
@@ -527,7 +537,10 @@ fn registry_get_mut_existing_pool() {
 #[test]
 fn registry_get_mut_nonexistent_pool() {
     let mut registry = PoolRegistry::with_defaults();
-    let id = PoolId { address: Address::repeat_byte(0xff), protocol: ProtocolType::UniswapV2 };
+    let id = PoolId {
+        address: Address::repeat_byte(0xff),
+        protocol: ProtocolType::UniswapV2,
+    };
     assert!(registry.get_mut(&id).is_none());
 }
 
@@ -536,14 +549,20 @@ fn registry_tier_existing() {
     let mut registry = PoolRegistry::with_defaults();
     let addr = address!("B4e16d0168e52d35CaCD2c6185b44281Ec28C9Dc");
     registry.register(Box::new(make_v2(addr)), PoolTier::Hot);
-    let id = PoolId { address: addr, protocol: ProtocolType::UniswapV2 };
+    let id = PoolId {
+        address: addr,
+        protocol: ProtocolType::UniswapV2,
+    };
     assert_eq!(registry.tier(&id), Some(PoolTier::Hot));
 }
 
 #[test]
 fn registry_tier_nonexistent() {
     let registry = PoolRegistry::with_defaults();
-    let id = PoolId { address: Address::repeat_byte(0xff), protocol: ProtocolType::UniswapV2 };
+    let id = PoolId {
+        address: Address::repeat_byte(0xff),
+        protocol: ProtocolType::UniswapV2,
+    };
     assert!(registry.tier(&id).is_none());
 }
 
@@ -579,7 +598,10 @@ fn registry_pools_for_pair_no_match() {
 #[test]
 fn registry_remove_nonexistent() {
     let mut registry = PoolRegistry::with_defaults();
-    let id = PoolId { address: Address::repeat_byte(0xff), protocol: ProtocolType::UniswapV2 };
+    let id = PoolId {
+        address: Address::repeat_byte(0xff),
+        protocol: ProtocolType::UniswapV2,
+    };
     assert!(registry.remove(&id).is_none());
 }
 
@@ -588,7 +610,10 @@ fn registry_remove_with_index_cleanup() {
     let mut registry = PoolRegistry::with_defaults();
     let addr = address!("B4e16d0168e52d35CaCD2c6185b44281Ec28C9Dc");
     registry.register(Box::new(make_v2(addr)), PoolTier::Hot);
-    let id = PoolId { address: addr, protocol: ProtocolType::UniswapV2 };
+    let id = PoolId {
+        address: addr,
+        protocol: ProtocolType::UniswapV2,
+    };
     assert!(registry.remove(&id).is_some());
     assert_eq!(registry.pool_count(), 0);
     assert!(registry.pools_for_pair(tok_a(), tok_b()).is_empty());
@@ -650,7 +675,11 @@ fn seeded_sushi() -> SushiSwapPool {
 #[test]
 fn sushi_encode_swap_token0() {
     let pool = seeded_sushi();
-    let cd = pool.encode_swap(tok_a(), U256::from(1_000_000_000_000_000_000u64), U256::from(1u64));
+    let cd = pool.encode_swap(
+        tok_a(),
+        U256::from(1_000_000_000_000_000_000u64),
+        U256::from(1u64),
+    );
     assert!(!cd.is_empty());
 }
 
@@ -670,17 +699,22 @@ fn sushi_get_amount_in_zero_output() {
 #[test]
 fn sushi_get_amount_in_unknown_token() {
     let pool = seeded_sushi();
-    assert!(pool.get_amount_in(Address::repeat_byte(0xcc), U256::from(1000u64)).is_none());
+    assert!(pool
+        .get_amount_in(Address::repeat_byte(0xcc), U256::from(1000u64))
+        .is_none());
 }
 
 #[test]
 fn sushi_liquidity_depth() {
     let pool = seeded_sushi();
     let depth = pool.liquidity_depth();
-    assert_eq!(depth, std::cmp::min(
-        U256::from(10_000_000_000_000u64),
-        U256::from(5_000_000_000_000_000_000_000u128)
-    ));
+    assert_eq!(
+        depth,
+        std::cmp::min(
+            U256::from(10_000_000_000_000u64),
+            U256::from(5_000_000_000_000_000_000_000u128)
+        )
+    );
 }
 
 #[test]
@@ -692,7 +726,9 @@ fn sushi_tokens() {
 #[test]
 fn sushi_get_amount_in_token0_direction() {
     let pool = seeded_sushi();
-    let out = pool.get_amount_out(tok_a(), U256::from(1_000_000_000_000_000_000u64)).unwrap();
+    let out = pool
+        .get_amount_out(tok_a(), U256::from(1_000_000_000_000_000_000u64))
+        .unwrap();
     let back = pool.get_amount_in(tok_b(), out).unwrap();
     assert!(back > U256::ZERO);
 }
@@ -717,7 +753,9 @@ fn seeded_balancer_v3() -> BalancerV3Pool {
 #[test]
 fn balancer_v3_get_amount_in_round_trip() {
     let pool = seeded_balancer_v3();
-    let out = pool.get_amount_out(tok_a(), U256::from(1_000_000_000_000_000u64)).unwrap();
+    let out = pool
+        .get_amount_out(tok_a(), U256::from(1_000_000_000_000_000u64))
+        .unwrap();
     let back = pool.get_amount_in(tok_b(), out);
     assert!(back.is_some());
 }
@@ -731,13 +769,17 @@ fn balancer_v3_get_amount_in_zero_output() {
 #[test]
 fn balancer_v3_get_amount_in_unknown_token() {
     let pool = seeded_balancer_v3();
-    assert!(pool.get_amount_in(Address::repeat_byte(0xcc), U256::from(1000u64)).is_none());
+    assert!(pool
+        .get_amount_in(Address::repeat_byte(0xcc), U256::from(1000u64))
+        .is_none());
 }
 
 #[test]
 fn balancer_v3_get_amount_out_unknown_token() {
     let pool = seeded_balancer_v3();
-    assert!(pool.get_amount_out(Address::repeat_byte(0xbb), U256::from(1000u64)).is_none());
+    assert!(pool
+        .get_amount_out(Address::repeat_byte(0xbb), U256::from(1000u64))
+        .is_none());
 }
 
 #[test]
@@ -774,7 +816,8 @@ fn unified_post_state_partial_eq_different_variants() {
     use aether_pools::balancer::BalancerPostState;
     use aether_pools::curve::CurvePostState;
     let curve = UnifiedPostState::Curve(CurvePostState {
-        i: 0, j: 1,
+        i: 0,
+        j: 1,
         new_balance_in: U256::from(1000u64),
         new_balance_out: U256::from(900u64),
         amount_out: U256::from(95u64),
@@ -816,9 +859,7 @@ fn fallback_v3_zero_liquidity_returns_none() {
     use aether_pools::predict_post_state_with_fallback;
     let v3 = UniswapV3Pool::new(Address::ZERO, tok_a(), tok_b(), 30, 60);
     let state = PoolState::UniswapV3(v3);
-    let result = predict_post_state_with_fallback(
-        &state, tok_a(), U256::from(100u64), |_| {},
-    );
+    let result = predict_post_state_with_fallback(&state, tok_a(), U256::from(100u64), |_| {});
     assert!(result.is_none());
 }
 
@@ -841,10 +882,16 @@ fn replay_curve_2coin_predict_analytical() {
         tok_a(),
         U256::from(1_000_000_000u64),
         |_| {},
-        |_| { replay_called.set(true); None },
+        |_| {
+            replay_called.set(true);
+            None
+        },
     );
     assert!(matches!(result, Some(UnifiedPostState::Curve(_))));
-    assert!(!replay_called.get(), "analytical path must succeed without replay");
+    assert!(
+        !replay_called.get(),
+        "analytical path must succeed without replay"
+    );
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -855,7 +902,10 @@ fn replay_curve_2coin_predict_analytical() {
 fn replay_bancor_unknown_token_returns_none_and_no_replay() {
     use aether_pools::predict_post_state_with_replay;
     let mut pool = BancorPool::new(Address::ZERO, tok_a(), bnt(), 30);
-    pool.update_state(large_reserve(), U256::from(2_000_000_000_000_000_000_000u128));
+    pool.update_state(
+        large_reserve(),
+        U256::from(2_000_000_000_000_000_000_000u128),
+    );
     let state = PoolState::Bancor(pool);
     let replay_called = std::cell::Cell::new(false);
     let result = predict_post_state_with_replay(
@@ -863,10 +913,16 @@ fn replay_bancor_unknown_token_returns_none_and_no_replay() {
         Address::repeat_byte(0xdd),
         U256::from(1_000_000_000_000_000_000u64),
         |_| {},
-        |_| { replay_called.set(true); None },
+        |_| {
+            replay_called.set(true);
+            None
+        },
     );
     assert!(result.is_none());
-    assert!(!replay_called.get(), "unknown token should short-circuit before replay");
+    assert!(
+        !replay_called.get(),
+        "unknown token should short-circuit before replay"
+    );
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -888,10 +944,16 @@ fn replay_v3_unknown_token_returns_none() {
         Address::repeat_byte(0xee),
         U256::from(100_000_000u64),
         |_| {},
-        |_| { replay_called.set(true); None },
+        |_| {
+            replay_called.set(true);
+            None
+        },
     );
     assert!(result.is_none());
-    assert!(!replay_called.get(), "unknown token should short-circuit before replay");
+    assert!(
+        !replay_called.get(),
+        "unknown token should short-circuit before replay"
+    );
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -905,7 +967,10 @@ fn fallback_balancer_v3_equal_weight_returns_balancer_variant() {
     b3.update_state(large_reserve(), U256::from(10_000_000_000_000u64));
     let state = PoolState::BalancerV3(b3);
     let result = predict_post_state_with_fallback(
-        &state, tok_a(), U256::from(1_000_000_000_000_000u64), |_| {},
+        &state,
+        tok_a(),
+        U256::from(1_000_000_000_000_000u64),
+        |_| {},
     );
     assert!(matches!(result, Some(UnifiedPostState::Balancer(_))));
 }
@@ -918,9 +983,15 @@ fn fallback_balancer_v3_equal_weight_returns_balancer_variant() {
 fn pool_state_cache_clear_empties_all() {
     use aether_pools::new_pool_state_cache;
     let cache = new_pool_state_cache();
-    cache.insert(Address::ZERO, Arc::new(PoolState::UniswapV2(
-        UniswapV2Pool::new(Address::ZERO, tok_a(), tok_b(), 30),
-    )));
+    cache.insert(
+        Address::ZERO,
+        Arc::new(PoolState::UniswapV2(UniswapV2Pool::new(
+            Address::ZERO,
+            tok_a(),
+            tok_b(),
+            30,
+        ))),
+    );
     assert_eq!(cache.len(), 1);
     cache.clear();
     assert_eq!(cache.len(), 0);

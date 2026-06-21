@@ -248,9 +248,8 @@ pub async fn fetch_reserves_at_block(
         .to(pair)
         .input(calldata.into());
 
-    let block_id = alloy::eips::BlockId::Number(
-        alloy::eips::BlockNumberOrTag::Number(block_number),
-    );
+    let block_id =
+        alloy::eips::BlockId::Number(alloy::eips::BlockNumberOrTag::Number(block_number));
 
     match provider.call(tx).block(block_id).await {
         Ok(output) => {
@@ -381,11 +380,7 @@ pub fn cycle_to_swap_route(
         let to_token = *token_index.get_address(to_vertex)?;
 
         // Find the pool definition and reserves for this edge
-        let (pool_def, pool_r0, pool_r1) = find_pool_reserves(
-            edge.pool_address,
-            pools,
-            reserves,
-        )?;
+        let (pool_def, pool_r0, pool_r1) = find_pool_reserves(edge.pool_address, pools, reserves)?;
 
         // Determine which reserve is "in" and which is "out"
         let (reserve_in, reserve_out, is_token0_out) = if from_token == pool_def.token0 {
@@ -498,9 +493,7 @@ pub async fn aave_flashloan_premium(provider: &impl Provider, aave_pool: Address
         .to(aave_pool)
         .input(calldata.into());
     match provider.call(tx).await {
-        Ok(output) if output.len() >= 32 => {
-            U256::from_be_slice(&output[0..32]).to::<u128>()
-        }
+        Ok(output) if output.len() >= 32 => U256::from_be_slice(&output[0..32]).to::<u128>(),
         _ => {
             eprintln!("WARNING: could not query Aave flashloan premium, defaulting to 5 bps");
             5

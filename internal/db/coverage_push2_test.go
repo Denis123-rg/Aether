@@ -158,4 +158,3 @@ func TestPgLedger_UpsertPnLDailyWithValues(t *testing.T) {
 	})
 	waitForLedgerWrite(t, ledger, 2*time.Second)
 }
-

@@ -87,9 +87,7 @@ impl BellmanFord {
                     // Negative cycle detected: vertex relaxed N times
                     if relaxation_count[v] >= n as u32 {
                         if !visited_cycle_nodes[v] {
-                            if let Some(cycle) =
-                                self.extract_cycle(v, &predecessor, graph, n)
-                            {
+                            if let Some(cycle) = self.extract_cycle(v, &predecessor, graph, n) {
                                 for &node in &cycle.path {
                                     visited_cycle_nodes[node] = true;
                                 }
@@ -258,9 +256,7 @@ impl BellmanFord {
 
                     if relaxation_count[v] >= n as u32 {
                         if !visited_cycle_nodes[v] {
-                            if let Some(cycle) =
-                                self.extract_cycle(v, &predecessor, graph, n)
-                            {
+                            if let Some(cycle) = self.extract_cycle(v, &predecessor, graph, n) {
                                 for &node in &cycle.path {
                                     visited_cycle_nodes[node] = true;
                                 }
@@ -316,9 +312,33 @@ mod tests {
         let p20 = make_pool_id(3, ProtocolType::Curve);
 
         // rates: 0.9, 0.9, 0.9 => product = 0.729 < 1 => positive cycle weight
-        g.add_edge(0, 1, 0.9, p01, Address::repeat_byte(1), ProtocolType::UniswapV2, U256::from(1000u64));
-        g.add_edge(1, 2, 0.9, p12, Address::repeat_byte(2), ProtocolType::SushiSwap, U256::from(1000u64));
-        g.add_edge(2, 0, 0.9, p20, Address::repeat_byte(3), ProtocolType::Curve, U256::from(1000u64));
+        g.add_edge(
+            0,
+            1,
+            0.9,
+            p01,
+            Address::repeat_byte(1),
+            ProtocolType::UniswapV2,
+            U256::from(1000u64),
+        );
+        g.add_edge(
+            1,
+            2,
+            0.9,
+            p12,
+            Address::repeat_byte(2),
+            ProtocolType::SushiSwap,
+            U256::from(1000u64),
+        );
+        g.add_edge(
+            2,
+            0,
+            0.9,
+            p20,
+            Address::repeat_byte(3),
+            ProtocolType::Curve,
+            U256::from(1000u64),
+        );
         g
     }
 
@@ -330,9 +350,33 @@ mod tests {
         let p20 = make_pool_id(3, ProtocolType::Curve);
 
         // rates: 1.1, 1.1, 1.1 => product = 1.331 > 1 => negative cycle
-        g.add_edge(0, 1, 1.1, p01, Address::repeat_byte(1), ProtocolType::UniswapV2, U256::from(1000u64));
-        g.add_edge(1, 2, 1.1, p12, Address::repeat_byte(2), ProtocolType::SushiSwap, U256::from(1000u64));
-        g.add_edge(2, 0, 1.1, p20, Address::repeat_byte(3), ProtocolType::Curve, U256::from(1000u64));
+        g.add_edge(
+            0,
+            1,
+            1.1,
+            p01,
+            Address::repeat_byte(1),
+            ProtocolType::UniswapV2,
+            U256::from(1000u64),
+        );
+        g.add_edge(
+            1,
+            2,
+            1.1,
+            p12,
+            Address::repeat_byte(2),
+            ProtocolType::SushiSwap,
+            U256::from(1000u64),
+        );
+        g.add_edge(
+            2,
+            0,
+            1.1,
+            p20,
+            Address::repeat_byte(3),
+            ProtocolType::Curve,
+            U256::from(1000u64),
+        );
         g
     }
 
@@ -343,7 +387,10 @@ mod tests {
         let graph = build_no_cycle_graph();
         let bf = BellmanFord::new(6, 1_000_000);
         let cycles = bf.detect_negative_cycles(&graph);
-        assert!(cycles.is_empty(), "should find no negative cycles in a graph with all rates < 1");
+        assert!(
+            cycles.is_empty(),
+            "should find no negative cycles in a graph with all rates < 1"
+        );
     }
 
     #[test]
@@ -419,10 +466,42 @@ mod tests {
         let p30 = make_pool_id(4, ProtocolType::Curve);
 
         // rates: 1.08 each => product = 1.08^4 ~ 1.3605 > 1
-        g.add_edge(0, 1, 1.08, p01, Address::repeat_byte(1), ProtocolType::UniswapV2, U256::from(1000u64));
-        g.add_edge(1, 2, 1.08, p12, Address::repeat_byte(2), ProtocolType::UniswapV3, U256::from(1000u64));
-        g.add_edge(2, 3, 1.08, p23, Address::repeat_byte(3), ProtocolType::SushiSwap, U256::from(1000u64));
-        g.add_edge(3, 0, 1.08, p30, Address::repeat_byte(4), ProtocolType::Curve, U256::from(1000u64));
+        g.add_edge(
+            0,
+            1,
+            1.08,
+            p01,
+            Address::repeat_byte(1),
+            ProtocolType::UniswapV2,
+            U256::from(1000u64),
+        );
+        g.add_edge(
+            1,
+            2,
+            1.08,
+            p12,
+            Address::repeat_byte(2),
+            ProtocolType::UniswapV3,
+            U256::from(1000u64),
+        );
+        g.add_edge(
+            2,
+            3,
+            1.08,
+            p23,
+            Address::repeat_byte(3),
+            ProtocolType::SushiSwap,
+            U256::from(1000u64),
+        );
+        g.add_edge(
+            3,
+            0,
+            1.08,
+            p30,
+            Address::repeat_byte(4),
+            ProtocolType::Curve,
+            U256::from(1000u64),
+        );
 
         let bf = BellmanFord::new(6, 1_000_000);
         let cycles = bf.detect_negative_cycles(&g);
@@ -442,10 +521,42 @@ mod tests {
         let p23 = make_pool_id(3, ProtocolType::SushiSwap);
         let p30 = make_pool_id(4, ProtocolType::Curve);
 
-        g.add_edge(0, 1, 1.08, p01, Address::repeat_byte(1), ProtocolType::UniswapV2, U256::from(1000u64));
-        g.add_edge(1, 2, 1.08, p12, Address::repeat_byte(2), ProtocolType::UniswapV3, U256::from(1000u64));
-        g.add_edge(2, 3, 1.08, p23, Address::repeat_byte(3), ProtocolType::SushiSwap, U256::from(1000u64));
-        g.add_edge(3, 0, 1.08, p30, Address::repeat_byte(4), ProtocolType::Curve, U256::from(1000u64));
+        g.add_edge(
+            0,
+            1,
+            1.08,
+            p01,
+            Address::repeat_byte(1),
+            ProtocolType::UniswapV2,
+            U256::from(1000u64),
+        );
+        g.add_edge(
+            1,
+            2,
+            1.08,
+            p12,
+            Address::repeat_byte(2),
+            ProtocolType::UniswapV3,
+            U256::from(1000u64),
+        );
+        g.add_edge(
+            2,
+            3,
+            1.08,
+            p23,
+            Address::repeat_byte(3),
+            ProtocolType::SushiSwap,
+            U256::from(1000u64),
+        );
+        g.add_edge(
+            3,
+            0,
+            1.08,
+            p30,
+            Address::repeat_byte(4),
+            ProtocolType::Curve,
+            U256::from(1000u64),
+        );
 
         let bf = BellmanFord::new(3, 1_000_000); // max 3 hops
         let cycles = bf.detect_negative_cycles(&g);
@@ -481,7 +592,10 @@ mod tests {
         let bf = BellmanFord::new(6, 1_000_000);
 
         let cycles = bf.detect_from_affected(&graph, &[]);
-        assert!(cycles.is_empty(), "empty affected set should yield no cycles");
+        assert!(
+            cycles.is_empty(),
+            "empty affected set should yield no cycles"
+        );
     }
 
     #[test]
@@ -548,15 +662,50 @@ mod tests {
         let p12 = make_pool_id(3, ProtocolType::Curve);
         let p20 = make_pool_id(4, ProtocolType::BalancerV2);
 
-        g.add_edge(0, 1, 0.5, pool_bad, Address::repeat_byte(1), ProtocolType::UniswapV2, U256::from(1000u64));
-        g.add_edge(0, 1, 2.0, pool_good, Address::repeat_byte(2), ProtocolType::SushiSwap, U256::from(1000u64));
-        g.add_edge(1, 2, 1.5, p12, Address::repeat_byte(3), ProtocolType::Curve, U256::from(1000u64));
-        g.add_edge(2, 0, 1.5, p20, Address::repeat_byte(4), ProtocolType::BalancerV2, U256::from(1000u64));
+        g.add_edge(
+            0,
+            1,
+            0.5,
+            pool_bad,
+            Address::repeat_byte(1),
+            ProtocolType::UniswapV2,
+            U256::from(1000u64),
+        );
+        g.add_edge(
+            0,
+            1,
+            2.0,
+            pool_good,
+            Address::repeat_byte(2),
+            ProtocolType::SushiSwap,
+            U256::from(1000u64),
+        );
+        g.add_edge(
+            1,
+            2,
+            1.5,
+            p12,
+            Address::repeat_byte(3),
+            ProtocolType::Curve,
+            U256::from(1000u64),
+        );
+        g.add_edge(
+            2,
+            0,
+            1.5,
+            p20,
+            Address::repeat_byte(4),
+            ProtocolType::BalancerV2,
+            U256::from(1000u64),
+        );
 
         // Product via good pool: 2.0 * 1.5 * 1.5 = 4.5 > 1 => negative cycle exists
         let bf = BellmanFord::new(6, 1_000_000);
         let cycles = bf.detect_negative_cycles(&g);
-        assert!(!cycles.is_empty(), "should find cycle using the better-rate parallel edge");
+        assert!(
+            !cycles.is_empty(),
+            "should find cycle using the better-rate parallel edge"
+        );
     }
 
     // --------------- Two-hop cycle ---------------
@@ -568,8 +717,24 @@ mod tests {
         let p10 = make_pool_id(2, ProtocolType::SushiSwap);
 
         // 0->1 rate 1.5, 1->0 rate 1.5 => product 2.25 > 1
-        g.add_edge(0, 1, 1.5, p01, Address::repeat_byte(1), ProtocolType::UniswapV2, U256::from(1000u64));
-        g.add_edge(1, 0, 1.5, p10, Address::repeat_byte(2), ProtocolType::SushiSwap, U256::from(1000u64));
+        g.add_edge(
+            0,
+            1,
+            1.5,
+            p01,
+            Address::repeat_byte(1),
+            ProtocolType::UniswapV2,
+            U256::from(1000u64),
+        );
+        g.add_edge(
+            1,
+            0,
+            1.5,
+            p10,
+            Address::repeat_byte(2),
+            ProtocolType::SushiSwap,
+            U256::from(1000u64),
+        );
 
         let bf = BellmanFord::new(6, 1_000_000);
         let cycles = bf.detect_negative_cycles(&g);
@@ -588,17 +753,65 @@ mod tests {
         let p01 = make_pool_id(1, ProtocolType::UniswapV2);
         let p12 = make_pool_id(2, ProtocolType::SushiSwap);
         let p20 = make_pool_id(3, ProtocolType::Curve);
-        g.add_edge(0, 1, 1.05, p01, Address::repeat_byte(1), ProtocolType::UniswapV2, U256::from(1000u64));
-        g.add_edge(1, 2, 1.05, p12, Address::repeat_byte(2), ProtocolType::SushiSwap, U256::from(1000u64));
-        g.add_edge(2, 0, 1.05, p20, Address::repeat_byte(3), ProtocolType::Curve, U256::from(1000u64));
+        g.add_edge(
+            0,
+            1,
+            1.05,
+            p01,
+            Address::repeat_byte(1),
+            ProtocolType::UniswapV2,
+            U256::from(1000u64),
+        );
+        g.add_edge(
+            1,
+            2,
+            1.05,
+            p12,
+            Address::repeat_byte(2),
+            ProtocolType::SushiSwap,
+            U256::from(1000u64),
+        );
+        g.add_edge(
+            2,
+            0,
+            1.05,
+            p20,
+            Address::repeat_byte(3),
+            ProtocolType::Curve,
+            U256::from(1000u64),
+        );
 
         // Cycle 2: 3->4->5->3 with higher profit (rate 1.2)
         let p34 = make_pool_id(4, ProtocolType::BalancerV2);
         let p45 = make_pool_id(5, ProtocolType::BancorV3);
         let p53 = make_pool_id(6, ProtocolType::UniswapV3);
-        g.add_edge(3, 4, 1.2, p34, Address::repeat_byte(4), ProtocolType::BalancerV2, U256::from(1000u64));
-        g.add_edge(4, 5, 1.2, p45, Address::repeat_byte(5), ProtocolType::BancorV3, U256::from(1000u64));
-        g.add_edge(5, 3, 1.2, p53, Address::repeat_byte(6), ProtocolType::UniswapV3, U256::from(1000u64));
+        g.add_edge(
+            3,
+            4,
+            1.2,
+            p34,
+            Address::repeat_byte(4),
+            ProtocolType::BalancerV2,
+            U256::from(1000u64),
+        );
+        g.add_edge(
+            4,
+            5,
+            1.2,
+            p45,
+            Address::repeat_byte(5),
+            ProtocolType::BancorV3,
+            U256::from(1000u64),
+        );
+        g.add_edge(
+            5,
+            3,
+            1.2,
+            p53,
+            Address::repeat_byte(6),
+            ProtocolType::UniswapV3,
+            U256::from(1000u64),
+        );
 
         let bf = BellmanFord::new(6, 1_000_000);
         let cycles = bf.detect_negative_cycles(&g);
@@ -643,9 +856,33 @@ mod tests {
         let build = |floor: f64| -> PriceGraph {
             let mut g = PriceGraph::new(3);
             // vertex 1 = WETH (18 decimals, like all others here).
-            g.add_edge(0, 1, 1.0, p01, Address::repeat_byte(1), ProtocolType::UniswapV2, U256::from(1u64));
-            g.add_edge(1, 2, 1.0, p12, Address::repeat_byte(2), ProtocolType::SushiSwap, U256::from(1u64));
-            g.add_edge(2, 0, 1.0, p20, Address::repeat_byte(3), ProtocolType::Curve, U256::from(1u64));
+            g.add_edge(
+                0,
+                1,
+                1.0,
+                p01,
+                Address::repeat_byte(1),
+                ProtocolType::UniswapV2,
+                U256::from(1u64),
+            );
+            g.add_edge(
+                1,
+                2,
+                1.0,
+                p12,
+                Address::repeat_byte(2),
+                ProtocolType::SushiSwap,
+                U256::from(1u64),
+            );
+            g.add_edge(
+                2,
+                0,
+                1.0,
+                p20,
+                Address::repeat_byte(3),
+                ProtocolType::Curve,
+                U256::from(1u64),
+            );
             g.set_weth_vertex(1);
             g.set_min_liquidity_weth(floor);
             // 0->1: WETH (vertex 1) is the output side, reserve below floor.
@@ -697,9 +934,33 @@ mod tests {
         let token_in_for_0to1 = weth_below_floor / 1.1;
 
         let mut g = PriceGraph::new(3);
-        g.add_edge(0, 1, 1.0, p01, Address::repeat_byte(1), ProtocolType::UniswapV2, U256::from(1u64));
-        g.add_edge(1, 2, 1.0, p12, Address::repeat_byte(2), ProtocolType::SushiSwap, U256::from(1u64));
-        g.add_edge(2, 0, 1.0, p20, Address::repeat_byte(3), ProtocolType::Curve, U256::from(1u64));
+        g.add_edge(
+            0,
+            1,
+            1.0,
+            p01,
+            Address::repeat_byte(1),
+            ProtocolType::UniswapV2,
+            U256::from(1u64),
+        );
+        g.add_edge(
+            1,
+            2,
+            1.0,
+            p12,
+            Address::repeat_byte(2),
+            ProtocolType::SushiSwap,
+            U256::from(1u64),
+        );
+        g.add_edge(
+            2,
+            0,
+            1.0,
+            p20,
+            Address::repeat_byte(3),
+            ProtocolType::Curve,
+            U256::from(1u64),
+        );
         g.set_weth_vertex(1);
         g.set_min_liquidity_weth(1.0);
         g.update_edge_from_reserves(0, 1, p01, token_in_for_0to1, weth_below_floor, 1.0);
@@ -724,22 +985,65 @@ mod tests {
         // Component 1: no cycle (0->1->2, no back edge)
         let p01 = make_pool_id(1, ProtocolType::UniswapV2);
         let p12 = make_pool_id(2, ProtocolType::SushiSwap);
-        g.add_edge(0, 1, 1.5, p01, Address::repeat_byte(1), ProtocolType::UniswapV2, U256::from(1000u64));
-        g.add_edge(1, 2, 1.5, p12, Address::repeat_byte(2), ProtocolType::SushiSwap, U256::from(1000u64));
+        g.add_edge(
+            0,
+            1,
+            1.5,
+            p01,
+            Address::repeat_byte(1),
+            ProtocolType::UniswapV2,
+            U256::from(1000u64),
+        );
+        g.add_edge(
+            1,
+            2,
+            1.5,
+            p12,
+            Address::repeat_byte(2),
+            ProtocolType::SushiSwap,
+            U256::from(1000u64),
+        );
 
         // Component 2: has a cycle (3->4->5->3)
         let p34 = make_pool_id(3, ProtocolType::Curve);
         let p45 = make_pool_id(4, ProtocolType::BalancerV2);
         let p53 = make_pool_id(5, ProtocolType::BancorV3);
-        g.add_edge(3, 4, 1.2, p34, Address::repeat_byte(3), ProtocolType::Curve, U256::from(1000u64));
-        g.add_edge(4, 5, 1.2, p45, Address::repeat_byte(4), ProtocolType::BalancerV2, U256::from(1000u64));
-        g.add_edge(5, 3, 1.2, p53, Address::repeat_byte(5), ProtocolType::BancorV3, U256::from(1000u64));
+        g.add_edge(
+            3,
+            4,
+            1.2,
+            p34,
+            Address::repeat_byte(3),
+            ProtocolType::Curve,
+            U256::from(1000u64),
+        );
+        g.add_edge(
+            4,
+            5,
+            1.2,
+            p45,
+            Address::repeat_byte(4),
+            ProtocolType::BalancerV2,
+            U256::from(1000u64),
+        );
+        g.add_edge(
+            5,
+            3,
+            1.2,
+            p53,
+            Address::repeat_byte(5),
+            ProtocolType::BancorV3,
+            U256::from(1000u64),
+        );
 
         let bf = BellmanFord::new(6, 1_000_000);
         let cycles = bf.detect_negative_cycles(&g);
 
         // Should find the cycle in component 2
-        assert!(!cycles.is_empty(), "should detect cycle in disconnected component");
+        assert!(
+            !cycles.is_empty(),
+            "should detect cycle in disconnected component"
+        );
         for cycle in &cycles {
             // All cycle vertices should be in component 2 (vertices 3, 4, 5)
             for &v in &cycle.path {

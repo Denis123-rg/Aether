@@ -1300,21 +1300,12 @@ mod tests {
     #[test]
     fn inc_pending_dex_tx_and_count() {
         let m = EngineMetrics::new();
-        assert_eq!(
-            m.pending_dex_tx_count("0xRouter", "uni_v2", true),
-            0
-        );
+        assert_eq!(m.pending_dex_tx_count("0xRouter", "uni_v2", true), 0);
         m.inc_pending_dex_tx("0xRouter", "uni_v2", true);
         m.inc_pending_dex_tx("0xRouter", "uni_v2", true);
         m.inc_pending_dex_tx("0xRouter", "unknown", false);
-        assert_eq!(
-            m.pending_dex_tx_count("0xRouter", "uni_v2", true),
-            2
-        );
-        assert_eq!(
-            m.pending_dex_tx_count("0xRouter", "unknown", false),
-            1
-        );
+        assert_eq!(m.pending_dex_tx_count("0xRouter", "uni_v2", true), 2);
+        assert_eq!(m.pending_dex_tx_count("0xRouter", "unknown", false), 1);
     }
 
     #[test]
@@ -1324,9 +1315,7 @@ mod tests {
         m.inc_pending_decode_errors("unknown_selector");
         m.inc_pending_decode_errors("too_short");
         let output = String::from_utf8(m.render()).unwrap();
-        assert!(
-            output.contains(r#"aether_pending_decode_errors_total{reason="too_short"} 2"#)
-        );
+        assert!(output.contains(r#"aether_pending_decode_errors_total{reason="too_short"} 2"#));
         assert!(
             output.contains(r#"aether_pending_decode_errors_total{reason="unknown_selector"} 1"#)
         );
@@ -1582,7 +1571,10 @@ mod tests {
             .expect("write request");
 
         let mut response = Vec::new();
-        stream.read_to_end(&mut response).await.expect("read response");
+        stream
+            .read_to_end(&mut response)
+            .await
+            .expect("read response");
         server.await.expect("server task");
 
         let body = String::from_utf8_lossy(&response);
@@ -1613,7 +1605,10 @@ mod tests {
             .expect("write request");
 
         let mut response = Vec::new();
-        stream.read_to_end(&mut response).await.expect("read response");
+        stream
+            .read_to_end(&mut response)
+            .await
+            .expect("read response");
         server.await.expect("server task");
 
         let body = String::from_utf8_lossy(&response);
@@ -1631,7 +1626,10 @@ mod tests {
         std::env::remove_var("RUST_METRICS_PORT");
         let addr = metrics_addr();
         assert_eq!(addr.port(), 9092);
-        assert_eq!(addr.ip(), std::net::IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED));
+        assert_eq!(
+            addr.ip(),
+            std::net::IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED)
+        );
     }
 
     #[serial]
@@ -1653,7 +1651,10 @@ mod tests {
         std::env::remove_var("RUST_METRICS_PORT");
         let addr = metrics_addr();
         assert_eq!(addr.port(), 9999);
-        assert_eq!(addr.ip(), std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST));
+        assert_eq!(
+            addr.ip(),
+            std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST)
+        );
         std::env::remove_var("RUST_METRICS_ADDR");
     }
 
@@ -1794,7 +1795,10 @@ mod tests {
             .expect("write request");
 
         let mut response = Vec::new();
-        stream.read_to_end(&mut response).await.expect("read response");
+        stream
+            .read_to_end(&mut response)
+            .await
+            .expect("read response");
         server.await.expect("server task");
 
         let body = String::from_utf8_lossy(&response);
@@ -1829,7 +1833,10 @@ mod tests {
             .expect("write request");
 
         let mut response = Vec::new();
-        stream.read_to_end(&mut response).await.expect("read response");
+        stream
+            .read_to_end(&mut response)
+            .await
+            .expect("read response");
         server.await.expect("server task");
 
         let body = String::from_utf8_lossy(&response);

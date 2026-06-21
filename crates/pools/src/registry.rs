@@ -1,6 +1,6 @@
-use alloy::primitives::Address;
-use aether_common::types::{PoolId, PoolTier};
 use crate::Pool;
+use aether_common::types::{PoolId, PoolTier};
+use alloy::primitives::Address;
 use std::collections::HashMap;
 
 /// Qualification criteria for pool admission into the registry.
@@ -167,9 +167,9 @@ impl PoolRegistry {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use aether_common::types::ProtocolType;
     use crate::sushiswap::SushiSwapPool;
     use crate::uniswap_v2::UniswapV2Pool;
+    use aether_common::types::ProtocolType;
     use alloy::primitives::{address, U256};
 
     fn usdc() -> Address {

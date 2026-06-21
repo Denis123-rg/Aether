@@ -28,9 +28,7 @@ use std::time::Instant;
 use alloy::primitives::{Address, B256, U256};
 use bigdecimal::BigDecimal;
 use chrono::{DateTime, Utc};
-use prometheus::{
-    HistogramOpts, HistogramVec, IntCounterVec, IntGauge, Opts, Registry,
-};
+use prometheus::{HistogramOpts, HistogramVec, IntCounterVec, IntGauge, Opts, Registry};
 use serde::{Deserialize, Serialize};
 use sqlx::postgres::{PgPool, PgPoolOptions};
 use tokio::sync::{mpsc, Semaphore};
@@ -175,7 +173,9 @@ impl LedgerMetrics {
                 "aether_ledger_write_latency_ms",
                 "Per-op latency of trade-ledger writes from dequeue to query completion",
             )
-            .buckets(vec![0.5, 1.0, 2.0, 5.0, 10.0, 25.0, 50.0, 100.0, 250.0, 500.0]),
+            .buckets(vec![
+                0.5, 1.0, 2.0, 5.0, 10.0, 25.0, 50.0, 100.0, 250.0, 500.0,
+            ]),
             &["op"],
         )
         .expect("aether_ledger_write_latency_ms histogram vec");
@@ -303,10 +303,7 @@ impl PgLedger {
                 self.metrics.queue_depth.inc();
             }
             Err(mpsc::error::TrySendError::Full(_)) => {
-                self.metrics
-                    .drops_total
-                    .with_label_values(&[label])
-                    .inc();
+                self.metrics.drops_total.with_label_values(&[label]).inc();
                 tracing::warn!(
                     target: "aether::ledger",
                     op = label,
@@ -360,11 +357,7 @@ impl Ledger for PgLedger {
 /// [`LEDGER_MAX_INFLIGHT`] writes execute concurrently across the sqlx pool's
 /// connections. Sequential await on the writer side previously left every
 /// connection but one idle; the semaphore matches concurrency to the pool.
-fn spawn_writer(
-    pool: PgPool,
-    mut rx: mpsc::Receiver<LedgerOp>,
-    metrics: Arc<LedgerMetrics>,
-) {
+fn spawn_writer(pool: PgPool, mut rx: mpsc::Receiver<LedgerOp>, metrics: Arc<LedgerMetrics>) {
     let semaphore = Arc::new(Semaphore::new(LEDGER_MAX_INFLIGHT));
     tokio::spawn(async move {
         while let Some(op) = rx.recv().await {
@@ -394,10 +387,7 @@ fn spawn_writer(
                     .observe(elapsed_ms);
                 match result {
                     Ok(()) => {
-                        metrics
-                            .writes_total
-                            .with_label_values(&[label, "ok"])
-                            .inc();
+                        metrics.writes_total.with_label_values(&[label, "ok"]).inc();
                     }
                     Err(e) => {
                         metrics
@@ -508,10 +498,7 @@ async fn insert_pool_inner(pool: &PgPool, np: &NewPool) -> Result<(), sqlx::Erro
     Ok(())
 }
 
-async fn update_inclusion_inner(
-    pool: &PgPool,
-    u: &InclusionUpdate,
-) -> Result<(), sqlx::Error> {
+async fn update_inclusion_inner(pool: &PgPool, u: &InclusionUpdate) -> Result<(), sqlx::Error> {
     let included_block = u
         .included_block
         .map(|v| i64::try_from(v).unwrap_or(i64::MAX));
@@ -578,8 +565,7 @@ pub async fn ledger_from_env(metrics: Arc<LedgerMetrics>) -> Arc<dyn Ledger> {
 /// silent zero that quietly corrupts every arb's economics.
 fn u256_to_decimal(v: U256) -> BigDecimal {
     let s = v.to_string();
-    BigDecimal::from_str(&s)
-        .expect("U256::to_string is always a valid base-10 BigDecimal input")
+    BigDecimal::from_str(&s).expect("U256::to_string is always a valid base-10 BigDecimal input")
 }
 
 /// Stable on-disk name for a [`ProtocolType`]. Matches the serde enum tag so
@@ -663,10 +649,7 @@ mod tests {
     #[test]
     fn u256_to_decimal_zero_and_one() {
         assert_eq!(u256_to_decimal(U256::ZERO).to_string(), "0");
-        assert_eq!(
-            u256_to_decimal(U256::from(1u64)).to_string(),
-            "1"
-        );
+        assert_eq!(u256_to_decimal(U256::from(1u64)).to_string(), "1");
     }
 
     #[test]
@@ -735,10 +718,7 @@ mod tests {
         ledger.insert_arb(&NewArb::default());
         ledger.insert_arb(&NewArb::default());
 
-        let drops = metrics
-            .drops_total
-            .with_label_values(&["insert_arb"])
-            .get();
+        let drops = metrics.drops_total.with_label_values(&["insert_arb"]).get();
         assert_eq!(drops, 1, "second enqueue must drop and bump metric");
     }
 
@@ -746,8 +726,12 @@ mod tests {
     fn ledger_metrics_register_round_trips() {
         let registry = Registry::new();
         let m = LedgerMetrics::register(&registry);
-        m.writes_total.with_label_values(&["insert_arb", "ok"]).inc();
-        m.writes_total.with_label_values(&["insert_pool", "err"]).inc();
+        m.writes_total
+            .with_label_values(&["insert_arb", "ok"])
+            .inc();
+        m.writes_total
+            .with_label_values(&["insert_pool", "err"])
+            .inc();
         m.drops_total.with_label_values(&["update_inclusion"]).inc();
         m.queue_depth.set(7);
         m.write_latency_ms
@@ -871,7 +855,10 @@ mod tests {
     async fn ledger_from_env_invalid_url_falls_back_to_noop() {
         let registry = Registry::new();
         let metrics = LedgerMetrics::register(&registry);
-        std::env::set_var("DATABASE_URL", "postgres://invalid:invalid@127.0.0.1:1/nope");
+        std::env::set_var(
+            "DATABASE_URL",
+            "postgres://invalid:invalid@127.0.0.1:1/nope",
+        );
         let ledger = ledger_from_env(metrics).await;
         ledger.insert_arb(&NewArb::default());
         std::env::remove_var("DATABASE_URL");
@@ -893,7 +880,10 @@ mod tests {
             0
         );
         assert_eq!(
-            metrics.drops_total.with_label_values(&["insert_pool"]).get(),
+            metrics
+                .drops_total
+                .with_label_values(&["insert_pool"])
+                .get(),
             1
         );
         assert_eq!(

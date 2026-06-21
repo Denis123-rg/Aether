@@ -155,7 +155,9 @@ fn prewarm_bytecode_different_hashes_updates_cache() {
         cache
             .put(addr, alloy::primitives::keccak256(&code1), &code1)
             .unwrap();
-        cache.put(addr, alloy::primitives::keccak256(&code2), &code2).unwrap();
+        cache
+            .put(addr, alloy::primitives::keccak256(&code2), &code2)
+            .unwrap();
         let (h, _) = cache.get(addr).unwrap();
         assert_eq!(h, alloy::primitives::keccak256(&code2));
     });
@@ -169,9 +171,7 @@ fn mem_len_tracks_prewarmed_entries() {
         let cache = BytecodeCache::open(tmp.path()).unwrap();
         assert_eq!(cache.mem_len(), 0);
         let addr = Address::from([0x13; 20]);
-        cache
-            .put(addr, B256::ZERO, &sample_bytecode())
-            .unwrap();
+        cache.put(addr, B256::ZERO, &sample_bytecode()).unwrap();
         assert_eq!(cache.mem_len(), 1);
     });
 }
@@ -269,7 +269,9 @@ fn parallel_prewarm_does_not_block_on_rpc_failure() {
             let cache = Arc::clone(&cache);
             let provider = provider.clone();
             handles.push(tokio::spawn(async move {
-                cache.prewarm_bytecode(Address::from([b; 20]), &provider).await;
+                cache
+                    .prewarm_bytecode(Address::from([b; 20]), &provider)
+                    .await;
             }));
         }
         for h in handles {
@@ -337,12 +339,8 @@ fn prewarm_two_distinct_pools_both_cached() {
         let provider = unreachable_provider().await;
         let a = Address::from([0x19; 20]);
         let b = Address::from([0x1A; 20]);
-        cache
-            .put(a, B256::ZERO, &sample_bytecode())
-            .unwrap();
-        cache
-            .put(b, B256::ZERO, &[0x60, 0x02])
-            .unwrap();
+        cache.put(a, B256::ZERO, &sample_bytecode()).unwrap();
+        cache.put(b, B256::ZERO, &[0x60, 0x02]).unwrap();
         cache.prewarm_bytecode(a, &provider).await;
         cache.prewarm_bytecode(b, &provider).await;
         assert_eq!(cache.mem_len(), 2);

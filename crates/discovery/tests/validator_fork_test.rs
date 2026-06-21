@@ -70,9 +70,16 @@ fn spawn_anvil_fork() -> (Child, String) {
 fn latest_block_minus(rpc_url: &str, delta: u64) -> Option<u64> {
     let output = std::process::Command::new("curl")
         .args([
-            "-s", "-X", "POST", "-H", "Content-Type: application/json",
-            "--data", r#"{"jsonrpc":"2.0","method":"eth_blockNumber","params":[],"id":1}"#,
-            "-m", "10", rpc_url,
+            "-s",
+            "-X",
+            "POST",
+            "-H",
+            "Content-Type: application/json",
+            "--data",
+            r#"{"jsonrpc":"2.0","method":"eth_blockNumber","params":[],"id":1}"#,
+            "-m",
+            "10",
+            rpc_url,
         ])
         .output()
         .ok()?;
@@ -106,12 +113,12 @@ async fn wait_for_anvil(url: &str) -> bool {
 
 async fn provider_from_url(url: &str) -> alloy::providers::DynProvider<alloy::network::Ethereum> {
     let parsed: url::Url = url.parse().expect("url");
-    ProviderBuilder::new()
-        .connect_http(parsed)
-        .erased()
+    ProviderBuilder::new().connect_http(parsed).erased()
 }
 
-async fn fork_state_usable(provider: &alloy::providers::DynProvider<alloy::network::Ethereum>) -> bool {
+async fn fork_state_usable(
+    provider: &alloy::providers::DynProvider<alloy::network::Ethereum>,
+) -> bool {
     // WETH contract must have non-empty code on the fork.
     let code_ok = match provider.get_code_at(WETH).await {
         Ok(code) => !code.is_empty(),
@@ -161,7 +168,9 @@ async fn revm_validates_univ2_weth_usdc_on_fork() {
     .await;
     if let ValidationResult::Invalid(ref msg) = result {
         if msg.contains("revm") && fork_state_usable(&provider).await {
-            eprintln!("skip validator_fork_test: simulation failed against public RPC fork ({msg})");
+            eprintln!(
+                "skip validator_fork_test: simulation failed against public RPC fork ({msg})"
+            );
             let _ = anvil.kill();
             return;
         }
@@ -196,7 +205,9 @@ async fn revm_validates_univ3_weth_usdc_on_fork() {
     .await;
     if let ValidationResult::Invalid(ref msg) = result {
         if msg.contains("revm") {
-            eprintln!("skip validator_fork_test: simulation failed against public RPC fork ({msg})");
+            eprintln!(
+                "skip validator_fork_test: simulation failed against public RPC fork ({msg})"
+            );
             let _ = anvil.kill();
             return;
         }
@@ -259,7 +270,9 @@ async fn validate_pool_revm_unified_entry_v3() {
     let result = validate_pool_revm(&provider, &pool, 0.001, "both", None).await;
     if let ValidationResult::Invalid(ref msg) = result {
         if msg.contains("revm") {
-            eprintln!("skip validator_fork_test: simulation failed against public RPC fork ({msg})");
+            eprintln!(
+                "skip validator_fork_test: simulation failed against public RPC fork ({msg})"
+            );
             let _ = anvil.kill();
             return;
         }
@@ -272,9 +285,7 @@ async fn validate_pool_revm_unified_entry_v3() {
 async fn rpc_failure_returns_invalid_not_panic() {
     let dead_url = "http://127.0.0.1:59999";
     let parsed: url::Url = dead_url.parse().unwrap();
-    let provider = ProviderBuilder::new()
-        .connect_http(parsed)
-        .erased();
+    let provider = ProviderBuilder::new().connect_http(parsed).erased();
 
     let result = validate_v2_pool_revm(
         &provider,

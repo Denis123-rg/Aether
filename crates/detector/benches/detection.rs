@@ -65,28 +65,22 @@ fn bench_detect_negative_cycles(c: &mut Criterion) {
     for &n in &[50, 100, 500] {
         // Ring with profitable cycle (rate > 1)
         let graph = build_ring_graph(n, 1.01);
-        group.bench_with_input(
-            BenchmarkId::new("ring_profitable", n),
-            &graph,
-            |b, g| b.iter(|| bf.detect_negative_cycles(black_box(g))),
-        );
+        group.bench_with_input(BenchmarkId::new("ring_profitable", n), &graph, |b, g| {
+            b.iter(|| bf.detect_negative_cycles(black_box(g)))
+        });
 
         // Ring with no cycle (rate < 1)
         let graph = build_ring_graph(n, 0.99);
-        group.bench_with_input(
-            BenchmarkId::new("ring_no_cycle", n),
-            &graph,
-            |b, g| b.iter(|| bf.detect_negative_cycles(black_box(g))),
-        );
+        group.bench_with_input(BenchmarkId::new("ring_no_cycle", n), &graph, |b, g| {
+            b.iter(|| bf.detect_negative_cycles(black_box(g)))
+        });
     }
 
     for &n in &[50, 100, 500] {
         let graph = build_mesh_graph(n, 1.02);
-        group.bench_with_input(
-            BenchmarkId::new("mesh_profitable", n),
-            &graph,
-            |b, g| b.iter(|| bf.detect_negative_cycles(black_box(g))),
-        );
+        group.bench_with_input(BenchmarkId::new("mesh_profitable", n), &graph, |b, g| {
+            b.iter(|| bf.detect_negative_cycles(black_box(g)))
+        });
     }
 
     group.finish();
@@ -100,19 +94,15 @@ fn bench_detect_from_affected(c: &mut Criterion) {
         let graph = build_ring_graph(n, 1.01);
 
         // Seed from a single affected vertex
-        group.bench_with_input(
-            BenchmarkId::new("single_affected", n),
-            &graph,
-            |b, g| b.iter(|| bf.detect_from_affected(black_box(g), &[0])),
-        );
+        group.bench_with_input(BenchmarkId::new("single_affected", n), &graph, |b, g| {
+            b.iter(|| bf.detect_from_affected(black_box(g), &[0]))
+        });
 
         // Seed from 5% of vertices
         let affected: Vec<usize> = (0..n).step_by(20).collect();
-        group.bench_with_input(
-            BenchmarkId::new("5pct_affected", n),
-            &graph,
-            |b, g| b.iter(|| bf.detect_from_affected(black_box(g), &affected)),
-        );
+        group.bench_with_input(BenchmarkId::new("5pct_affected", n), &graph, |b, g| {
+            b.iter(|| bf.detect_from_affected(black_box(g), &affected))
+        });
     }
 
     group.finish();
@@ -125,11 +115,9 @@ fn bench_time_budget(c: &mut Criterion) {
 
     for &budget_us in &[100, 1000, 3000] {
         let bf = BellmanFord::new(6, budget_us);
-        group.bench_with_input(
-            BenchmarkId::new("mesh_500", budget_us),
-            &graph,
-            |b, g| b.iter(|| bf.detect_negative_cycles(black_box(g))),
-        );
+        group.bench_with_input(BenchmarkId::new("mesh_500", budget_us), &graph, |b, g| {
+            b.iter(|| bf.detect_negative_cycles(black_box(g)))
+        });
     }
 
     group.finish();

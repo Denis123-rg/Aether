@@ -23,11 +23,11 @@ type MempoolReconciliationMetrics struct {
 	// Reconciliation writes the bounded channel rejected because it was
 	// full. Single-labelled (no `op`) because this writer only does one
 	// kind of insert.
-	DropsTotal      prometheus.Counter
-	QueueDepth      prometheus.Gauge
+	DropsTotal prometheus.Counter
+	QueueDepth prometheus.Gauge
 	// Per-write latency from dequeue to query completion. `result` =
 	// "ok"|"err" so an alert can fire on a sudden `err` spike.
-	WriteLatencyMs  *prometheus.HistogramVec
+	WriteLatencyMs *prometheus.HistogramVec
 }
 
 // NewMempoolReconciliationMetrics constructs the families and registers

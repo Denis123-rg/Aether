@@ -15,11 +15,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/alicebob/miniredis/v2"
 	"github.com/aether-arb/aether/internal/events"
 	aethergrpc "github.com/aether-arb/aether/internal/grpc"
 	pb "github.com/aether-arb/aether/internal/pb"
 	"github.com/aether-arb/aether/internal/testutil"
+	"github.com/alicebob/miniredis/v2"
 )
 
 type scenario struct {
@@ -94,7 +94,6 @@ func generateScenarios() []scenario {
 			})
 		}
 	}
-
 
 	base := out
 	out = make([]scenario, 0, len(base)*3)

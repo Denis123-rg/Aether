@@ -83,16 +83,16 @@ type PendingPrediction struct {
 // public constants so callers can switch on a stable identifier instead of
 // re-typing the literal each time.
 type NewReconciliation struct {
-	PredictionID       uuid.UUID
-	ResolutionTs       time.Time
-	Outcome            string
-	ActualTargetBlock  *uint64
-	ActualTxIndex      *int
-	BlockDelta         *int
-	OrderingCorrect    *bool
-	PoolPathCorrect    *bool
-	ReplacedByTxHash   *[32]byte
-	FailureReason      *string
+	PredictionID      uuid.UUID
+	ResolutionTs      time.Time
+	Outcome           string
+	ActualTargetBlock *uint64
+	ActualTxIndex     *int
+	BlockDelta        *int
+	OrderingCorrect   *bool
+	PoolPathCorrect   *bool
+	ReplacedByTxHash  *[32]byte
+	FailureReason     *string
 }
 
 const (
@@ -202,9 +202,9 @@ func (r *PgMempoolReconciliation) LookupPredictionByTxHash(
 	`, txHash[:])
 
 	var (
-		pred       PendingPrediction
-		poolBytes  []byte
-		targetBlk  int64
+		pred      PendingPrediction
+		poolBytes []byte
+		targetBlk int64
 	)
 	if err := row.Scan(&pred.PredictionID, &pred.Protocol, &poolBytes, &targetBlk); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {

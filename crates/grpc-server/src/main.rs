@@ -194,8 +194,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             // DB writes, behaviour identical to today. Distinct from the
             // trade ledger's DATABASE_URL so an operator can enable mempool
             // observability without provisioning the executor schema.
-            let writer_metrics =
-                mempool_writer::MempoolWriterMetrics::register(metrics.registry());
+            let writer_metrics = mempool_writer::MempoolWriterMetrics::register(metrics.registry());
             let prediction_sink = mempool_writer::mempool_writer_from_env(writer_metrics).await;
             let engine_git_sha = std::env::var("AETHER_GIT_SHA").ok();
             let mut sim_ctx_inner = mempool_pipeline::SimContext::new(
@@ -235,9 +234,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     );
                 }
             } else {
-                info!(
-                    "AETHER_EXECUTOR_ADDRESS not set — mempool-backrun revm validator disabled"
-                );
+                info!("AETHER_EXECUTOR_ADDRESS not set — mempool-backrun revm validator disabled");
             }
             // Post-state replay fallback for V3 swaps the analytical
             // predictor cannot settle. Opt-in via env so the dormant
@@ -255,13 +252,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             // Plumb the engine's bytecode cache (when configured via
             // `AETHER_BYTECODE_CACHE_PATH`) into the mempool prewarm path so
             // address-keyed `eth_getCode` hits skip the RPC round-trip.
-            sim_ctx_inner =
-                sim_ctx_inner.with_bytecode_cache(engine.bytecode_cache().cloned());
+            sim_ctx_inner = sim_ctx_inner.with_bytecode_cache(engine.bytecode_cache().cloned());
             // Plumb the engine's WS-fed V2 reserves cache so the mempool
             // prewarm path can synthesise slot 8 for warm pools instead of
             // round-tripping `eth_getStorageAt`.
-            sim_ctx_inner =
-                sim_ctx_inner.with_v2_reserves_cache(Some(engine.v2_reserves_cache()));
+            sim_ctx_inner = sim_ctx_inner.with_v2_reserves_cache(Some(engine.v2_reserves_cache()));
             let sim_ctx = Arc::new(sim_ctx_inner);
             let pipeline_handle = mempool_pipeline::spawn_mempool_pipeline(
                 Arc::clone(engine.event_channels()),
@@ -303,18 +298,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             // candidates or reject real ones. Re-running the same fetch
             // logic on an interval keeps the cache aligned with chain state.
             // Default 300s = 5 min; tuning trades quota for freshness.
-            let pool_states_interval_secs =
-                std::env::var("AETHER_POOL_STATES_REFRESH_SECS")
-                    .ok()
-                    .and_then(|v| v.parse::<u64>().ok())
-                    .unwrap_or(300);
+            let pool_states_interval_secs = std::env::var("AETHER_POOL_STATES_REFRESH_SECS")
+                .ok()
+                .and_then(|v| v.parse::<u64>().ok())
+                .unwrap_or(300);
             if pool_states_interval_secs > 0 {
                 let engine_refresh = Arc::clone(&engine);
                 let mut shutdown_refresh = shutdown_rx.clone();
                 tokio::spawn(async move {
-                    let mut ticker = tokio::time::interval(
-                        std::time::Duration::from_secs(pool_states_interval_secs),
-                    );
+                    let mut ticker = tokio::time::interval(std::time::Duration::from_secs(
+                        pool_states_interval_secs,
+                    ));
                     // Skip the immediate tick — boot already fetched reserves once.
                     ticker.tick().await;
                     loop {
@@ -346,11 +340,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             // listens on the same broadcast channels, never publishes
             // anything outward. Spawned alongside the mempool pipeline so
             // its lifecycle matches `MEMPOOL_TRACKING=1`.
-            let first_seen_handle = aether_grpc_server::first_seen_tracker::spawn_first_seen_tracker(
-                Arc::clone(engine.event_channels()),
-                Arc::clone(&metrics),
-                shutdown_rx.clone(),
-            );
+            let first_seen_handle =
+                aether_grpc_server::first_seen_tracker::spawn_first_seen_tracker(
+                    Arc::clone(engine.event_channels()),
+                    Arc::clone(&metrics),
+                    shutdown_rx.clone(),
+                );
             Some((source_handle, pipeline_handle, first_seen_handle))
         }
     } else {
@@ -610,20 +605,19 @@ fn splice_immutable_aave_pool(
             .as_array()
             .ok_or("immutableReferences entry is not an array")?;
         for loc in locations {
-            let start = loc
-                .get("start")
-                .and_then(serde_json::Value::as_u64)
-                .ok_or("immutableReference missing numeric start")? as usize;
-            let length = loc
-                .get("length")
-                .and_then(serde_json::Value::as_u64)
-                .ok_or("immutableReference missing numeric length")? as usize;
+            let start =
+                loc.get("start")
+                    .and_then(serde_json::Value::as_u64)
+                    .ok_or("immutableReference missing numeric start")? as usize;
+            let length =
+                loc.get("length")
+                    .and_then(serde_json::Value::as_u64)
+                    .ok_or("immutableReference missing numeric length")? as usize;
 
             if length != 32 {
-                return Err(format!(
-                    "unexpected immutable reference length {length}; expected 32"
-                )
-                .into());
+                return Err(
+                    format!("unexpected immutable reference length {length}; expected 32").into(),
+                );
             }
 
             let end = start
@@ -646,8 +640,8 @@ fn splice_immutable_aave_pool(
 
 #[cfg(test)]
 mod tests {
-    use serial_test::serial;
     use super::*;
+    use serial_test::serial;
 
     /// The loader must splice the real Aave V3 Pool address into every
     /// `aavePool` immutable placeholder. Loads the real forge artifact; if it
@@ -817,8 +811,8 @@ mod tests {
             }
         });
 
-        let bytecode = load_executor_runtime_bytecode(&artifact.to_string())
-            .expect("should succeed");
+        let bytecode =
+            load_executor_runtime_bytecode(&artifact.to_string()).expect("should succeed");
         assert_eq!(
             bytecode.as_ref(),
             &alloy::hex::decode("00112233445566778899aabbccddeeff").unwrap()[..]
@@ -961,7 +955,10 @@ mod tests {
     #[serial]
     #[test]
     fn build_backrun_validator_config_returns_some_with_env() {
-        std::env::set_var("AETHER_EXECUTOR_ADDRESS", "0x1111111111111111111111111111111111111111");
+        std::env::set_var(
+            "AETHER_EXECUTOR_ADDRESS",
+            "0x1111111111111111111111111111111111111111",
+        );
         let result = build_backrun_validator_config(None);
         assert!(result.is_some());
         std::env::remove_var("AETHER_EXECUTOR_ADDRESS");
@@ -970,7 +967,10 @@ mod tests {
     #[serial]
     #[test]
     fn build_backrun_validator_config_default_values() {
-        std::env::set_var("AETHER_EXECUTOR_ADDRESS", "0x1111111111111111111111111111111111111111");
+        std::env::set_var(
+            "AETHER_EXECUTOR_ADDRESS",
+            "0x1111111111111111111111111111111111111111",
+        );
         std::env::remove_var("AETHER_SEARCHER_CALLER");
         std::env::remove_var("AETHER_PROFIT_TOKEN");
         std::env::remove_var("AETHER_PROFIT_TOKEN_BALANCE_SLOT");
@@ -982,11 +982,16 @@ mod tests {
         std::env::remove_var("AETHER_EXECUTOR_BYTECODE_PATH");
 
         let config = build_backrun_validator_config(None).unwrap();
-        let executor_addr: alloy::primitives::Address = "0x1111111111111111111111111111111111111111".parse().unwrap();
+        let executor_addr: alloy::primitives::Address =
+            "0x1111111111111111111111111111111111111111"
+                .parse()
+                .unwrap();
         assert_eq!(config.executor_address, executor_addr);
         assert_eq!(config.searcher_caller, executor_addr);
         // Default profit token is WETH
-        let weth: alloy::primitives::Address = "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2".parse().unwrap();
+        let weth: alloy::primitives::Address = "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2"
+            .parse()
+            .unwrap();
         assert_eq!(config.profit_token, weth);
         assert_eq!(config.balance_slot, alloy::primitives::U256::from(3u64));
         assert_eq!(config.chain_id, 1);
@@ -997,9 +1002,18 @@ mod tests {
     #[serial]
     #[test]
     fn build_backrun_validator_config_custom_values() {
-        std::env::set_var("AETHER_EXECUTOR_ADDRESS", "0x2222222222222222222222222222222222222222");
-        std::env::set_var("AETHER_SEARCHER_CALLER", "0x3333333333333333333333333333333333333333");
-        std::env::set_var("AETHER_PROFIT_TOKEN", "0x4444444444444444444444444444444444444444");
+        std::env::set_var(
+            "AETHER_EXECUTOR_ADDRESS",
+            "0x2222222222222222222222222222222222222222",
+        );
+        std::env::set_var(
+            "AETHER_SEARCHER_CALLER",
+            "0x3333333333333333333333333333333333333333",
+        );
+        std::env::set_var(
+            "AETHER_PROFIT_TOKEN",
+            "0x4444444444444444444444444444444444444444",
+        );
         std::env::set_var("AETHER_PROFIT_TOKEN_BALANCE_SLOT", "9");
         std::env::set_var("AETHER_CHAIN_ID", "137");
         std::env::set_var("AETHER_MEMPOOL_SIM_CONCURRENCY", "16");
@@ -1009,9 +1023,15 @@ mod tests {
         std::env::remove_var("AETHER_EXECUTOR_BYTECODE_PATH");
 
         let config = build_backrun_validator_config(None).unwrap();
-        let executor: alloy::primitives::Address = "0x2222222222222222222222222222222222222222".parse().unwrap();
-        let caller: alloy::primitives::Address = "0x3333333333333333333333333333333333333333".parse().unwrap();
-        let profit: alloy::primitives::Address = "0x4444444444444444444444444444444444444444".parse().unwrap();
+        let executor: alloy::primitives::Address = "0x2222222222222222222222222222222222222222"
+            .parse()
+            .unwrap();
+        let caller: alloy::primitives::Address = "0x3333333333333333333333333333333333333333"
+            .parse()
+            .unwrap();
+        let profit: alloy::primitives::Address = "0x4444444444444444444444444444444444444444"
+            .parse()
+            .unwrap();
         assert_eq!(config.executor_address, executor);
         assert_eq!(config.searcher_caller, caller);
         assert_eq!(config.profit_token, profit);
@@ -1036,8 +1056,8 @@ mod tests {
             }
         });
 
-        let bytecode = load_executor_runtime_bytecode(&artifact.to_string())
-            .expect("should succeed");
+        let bytecode =
+            load_executor_runtime_bytecode(&artifact.to_string()).expect("should succeed");
         assert_eq!(bytecode.len(), 32);
     }
 
@@ -1089,7 +1109,10 @@ mod tests {
     #[serial]
     #[test]
     fn build_backrun_validator_config_invalid_gas_price() {
-        std::env::set_var("AETHER_EXECUTOR_ADDRESS", "0x1111111111111111111111111111111111111111");
+        std::env::set_var(
+            "AETHER_EXECUTOR_ADDRESS",
+            "0x1111111111111111111111111111111111111111",
+        );
         std::env::set_var("AETHER_MEMPOOL_GAS_PRICE_GWEI", "not_a_number");
         let config = build_backrun_validator_config(None).unwrap();
         // Should use default 20.0
@@ -1101,7 +1124,10 @@ mod tests {
     #[serial]
     #[test]
     fn build_backrun_validator_config_negative_gas_price() {
-        std::env::set_var("AETHER_EXECUTOR_ADDRESS", "0x1111111111111111111111111111111111111111");
+        std::env::set_var(
+            "AETHER_EXECUTOR_ADDRESS",
+            "0x1111111111111111111111111111111111111111",
+        );
         std::env::set_var("AETHER_MEMPOOL_GAS_PRICE_GWEI", "-5.0");
         let config = build_backrun_validator_config(None).unwrap();
         // Should use default 20.0 since negative is filtered out
@@ -1113,7 +1139,10 @@ mod tests {
     #[serial]
     #[test]
     fn build_backrun_validator_config_nan_gas_price() {
-        std::env::set_var("AETHER_EXECUTOR_ADDRESS", "0x1111111111111111111111111111111111111111");
+        std::env::set_var(
+            "AETHER_EXECUTOR_ADDRESS",
+            "0x1111111111111111111111111111111111111111",
+        );
         std::env::set_var("AETHER_MEMPOOL_GAS_PRICE_GWEI", "NaN");
         std::env::remove_var("AETHER_EXECUTOR_BYTECODE_PATH");
         let config = build_backrun_validator_config(None).unwrap();
@@ -1125,7 +1154,10 @@ mod tests {
     #[serial]
     #[test]
     fn build_backrun_validator_config_infinity_gas_price() {
-        std::env::set_var("AETHER_EXECUTOR_ADDRESS", "0x1111111111111111111111111111111111111111");
+        std::env::set_var(
+            "AETHER_EXECUTOR_ADDRESS",
+            "0x1111111111111111111111111111111111111111",
+        );
         std::env::set_var("AETHER_MEMPOOL_GAS_PRICE_GWEI", "inf");
         std::env::remove_var("AETHER_EXECUTOR_BYTECODE_PATH");
         let config = build_backrun_validator_config(None).unwrap();
@@ -1137,7 +1169,10 @@ mod tests {
     #[serial]
     #[test]
     fn build_backrun_validator_config_zero_gas_price() {
-        std::env::set_var("AETHER_EXECUTOR_ADDRESS", "0x1111111111111111111111111111111111111111");
+        std::env::set_var(
+            "AETHER_EXECUTOR_ADDRESS",
+            "0x1111111111111111111111111111111111111111",
+        );
         std::env::set_var("AETHER_MEMPOOL_GAS_PRICE_GWEI", "0.0");
         std::env::remove_var("AETHER_EXECUTOR_BYTECODE_PATH");
         let config = build_backrun_validator_config(None).unwrap();
@@ -1149,7 +1184,10 @@ mod tests {
     #[serial]
     #[test]
     fn build_backrun_validator_config_custom_min_profit_wei() {
-        std::env::set_var("AETHER_EXECUTOR_ADDRESS", "0x1111111111111111111111111111111111111111");
+        std::env::set_var(
+            "AETHER_EXECUTOR_ADDRESS",
+            "0x1111111111111111111111111111111111111111",
+        );
         std::env::set_var("AETHER_MEMPOOL_MIN_PROFIT_WEI", "999999999999999999");
         std::env::remove_var("AETHER_EXECUTOR_BYTECODE_PATH");
         std::env::remove_var("AETHER_MEMPOOL_INPUT_AMOUNT_WEI");
@@ -1166,7 +1204,10 @@ mod tests {
     #[serial]
     #[test]
     fn build_backrun_validator_config_custom_input_amount_wei() {
-        std::env::set_var("AETHER_EXECUTOR_ADDRESS", "0x1111111111111111111111111111111111111111");
+        std::env::set_var(
+            "AETHER_EXECUTOR_ADDRESS",
+            "0x1111111111111111111111111111111111111111",
+        );
         std::env::set_var("AETHER_MEMPOOL_INPUT_AMOUNT_WEI", "50000000000000000");
         std::env::remove_var("AETHER_EXECUTOR_BYTECODE_PATH");
         std::env::remove_var("AETHER_MEMPOOL_MIN_PROFIT_WEI");
@@ -1182,12 +1223,17 @@ mod tests {
     #[serial]
     #[test]
     fn build_backrun_validator_config_invalid_searcher_caller_falls_back() {
-        std::env::set_var("AETHER_EXECUTOR_ADDRESS", "0x1111111111111111111111111111111111111111");
+        std::env::set_var(
+            "AETHER_EXECUTOR_ADDRESS",
+            "0x1111111111111111111111111111111111111111",
+        );
         std::env::set_var("AETHER_SEARCHER_CALLER", "not_valid");
         std::env::remove_var("AETHER_EXECUTOR_BYTECODE_PATH");
         let config = build_backrun_validator_config(None).unwrap();
         let executor_addr: alloy::primitives::Address =
-            "0x1111111111111111111111111111111111111111".parse().unwrap();
+            "0x1111111111111111111111111111111111111111"
+                .parse()
+                .unwrap();
         assert_eq!(config.searcher_caller, executor_addr);
         std::env::remove_var("AETHER_EXECUTOR_ADDRESS");
         std::env::remove_var("AETHER_SEARCHER_CALLER");
@@ -1196,12 +1242,16 @@ mod tests {
     #[serial]
     #[test]
     fn build_backrun_validator_config_invalid_profit_token_falls_back() {
-        std::env::set_var("AETHER_EXECUTOR_ADDRESS", "0x1111111111111111111111111111111111111111");
+        std::env::set_var(
+            "AETHER_EXECUTOR_ADDRESS",
+            "0x1111111111111111111111111111111111111111",
+        );
         std::env::set_var("AETHER_PROFIT_TOKEN", "not_valid");
         std::env::remove_var("AETHER_EXECUTOR_BYTECODE_PATH");
         let config = build_backrun_validator_config(None).unwrap();
-        let weth: alloy::primitives::Address =
-            "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2".parse().unwrap();
+        let weth: alloy::primitives::Address = "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2"
+            .parse()
+            .unwrap();
         assert_eq!(config.profit_token, weth);
         std::env::remove_var("AETHER_EXECUTOR_ADDRESS");
         std::env::remove_var("AETHER_PROFIT_TOKEN");
@@ -1210,7 +1260,10 @@ mod tests {
     #[serial]
     #[test]
     fn build_backrun_validator_config_invalid_balance_slot_falls_back() {
-        std::env::set_var("AETHER_EXECUTOR_ADDRESS", "0x1111111111111111111111111111111111111111");
+        std::env::set_var(
+            "AETHER_EXECUTOR_ADDRESS",
+            "0x1111111111111111111111111111111111111111",
+        );
         std::env::set_var("AETHER_PROFIT_TOKEN_BALANCE_SLOT", "not_a_number");
         std::env::remove_var("AETHER_EXECUTOR_BYTECODE_PATH");
         let config = build_backrun_validator_config(None).unwrap();
@@ -1222,7 +1275,10 @@ mod tests {
     #[serial]
     #[test]
     fn build_backrun_validator_config_invalid_chain_id_falls_back() {
-        std::env::set_var("AETHER_EXECUTOR_ADDRESS", "0x1111111111111111111111111111111111111111");
+        std::env::set_var(
+            "AETHER_EXECUTOR_ADDRESS",
+            "0x1111111111111111111111111111111111111111",
+        );
         std::env::set_var("AETHER_CHAIN_ID", "not_a_number");
         std::env::remove_var("AETHER_EXECUTOR_BYTECODE_PATH");
         let config = build_backrun_validator_config(None).unwrap();
@@ -1234,7 +1290,10 @@ mod tests {
     #[serial]
     #[test]
     fn build_backrun_validator_config_invalid_min_profit_wei_falls_back() {
-        std::env::set_var("AETHER_EXECUTOR_ADDRESS", "0x1111111111111111111111111111111111111111");
+        std::env::set_var(
+            "AETHER_EXECUTOR_ADDRESS",
+            "0x1111111111111111111111111111111111111111",
+        );
         std::env::set_var("AETHER_MEMPOOL_MIN_PROFIT_WEI", "not_a_number");
         std::env::remove_var("AETHER_EXECUTOR_BYTECODE_PATH");
         let config = build_backrun_validator_config(None).unwrap();
@@ -1249,7 +1308,10 @@ mod tests {
     #[serial]
     #[test]
     fn build_backrun_validator_config_invalid_input_amount_wei_falls_back() {
-        std::env::set_var("AETHER_EXECUTOR_ADDRESS", "0x1111111111111111111111111111111111111111");
+        std::env::set_var(
+            "AETHER_EXECUTOR_ADDRESS",
+            "0x1111111111111111111111111111111111111111",
+        );
         std::env::set_var("AETHER_MEMPOOL_INPUT_AMOUNT_WEI", "not_a_number");
         std::env::remove_var("AETHER_EXECUTOR_BYTECODE_PATH");
         let config = build_backrun_validator_config(None).unwrap();
@@ -1264,7 +1326,10 @@ mod tests {
     #[serial]
     #[test]
     fn build_backrun_validator_config_invalid_sim_concurrency_falls_back() {
-        std::env::set_var("AETHER_EXECUTOR_ADDRESS", "0x1111111111111111111111111111111111111111");
+        std::env::set_var(
+            "AETHER_EXECUTOR_ADDRESS",
+            "0x1111111111111111111111111111111111111111",
+        );
         std::env::set_var("AETHER_MEMPOOL_SIM_CONCURRENCY", "not_a_number");
         std::env::remove_var("AETHER_EXECUTOR_BYTECODE_PATH");
         let config = build_backrun_validator_config(None).unwrap();
@@ -1333,7 +1398,10 @@ mod tests {
         });
         let result = splice_immutable_aave_pool(&mut bytes, &artifact);
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("missing numeric start"));
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("missing numeric start"));
     }
 
     #[test]
@@ -1348,14 +1416,16 @@ mod tests {
         });
         let result = splice_immutable_aave_pool(&mut bytes, &artifact);
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("missing numeric length"));
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("missing numeric length"));
     }
 
     #[test]
     fn splice_immutable_offset_overflow() {
         let mut bytes = vec![0x00u8; 64];
-        let artifact_str =
-            r#"{"deployedBytecode":{"immutableReferences":{"4878":[{"start":18446744073709551615,"length":32}]}}}"#;
+        let artifact_str = r#"{"deployedBytecode":{"immutableReferences":{"4878":[{"start":18446744073709551615,"length":32}]}}}"#;
         let artifact: serde_json::Value = serde_json::from_str(artifact_str).unwrap();
         let result = splice_immutable_aave_pool(&mut bytes, &artifact);
         assert!(result.is_err());
@@ -1438,16 +1508,20 @@ mod tests {
     fn build_backrun_validator_config_with_provider() {
         use alloy::providers::{Provider, ProviderBuilder};
         use alloy_node_bindings::Anvil;
-        std::env::set_var("AETHER_EXECUTOR_ADDRESS", "0x1111111111111111111111111111111111111111");
+        std::env::set_var(
+            "AETHER_EXECUTOR_ADDRESS",
+            "0x1111111111111111111111111111111111111111",
+        );
         std::env::remove_var("AETHER_SEARCHER_CALLER");
         std::env::remove_var("AETHER_PROFIT_TOKEN");
         std::env::remove_var("AETHER_EXECUTOR_BYTECODE_PATH");
         let rt = tokio::runtime::Runtime::new().unwrap();
-        let provider: alloy::providers::DynProvider<alloy::network::Ethereum> =
-            rt.block_on(async {
+        let provider: alloy::providers::DynProvider<alloy::network::Ethereum> = rt
+            .block_on(async {
                 let anvil = Anvil::new().spawn();
                 ProviderBuilder::new().connect_http(anvil.endpoint_url())
-            }).erased();
+            })
+            .erased();
         let config = build_backrun_validator_config(Some(provider));
         assert!(config.is_some());
         std::env::remove_var("AETHER_EXECUTOR_ADDRESS");
@@ -1484,7 +1558,10 @@ mod tests {
     #[serial]
     #[test]
     fn build_backrun_validator_config_trimmed_executor_address() {
-        std::env::set_var("AETHER_EXECUTOR_ADDRESS", "  0x1111111111111111111111111111111111111111  ");
+        std::env::set_var(
+            "AETHER_EXECUTOR_ADDRESS",
+            "  0x1111111111111111111111111111111111111111  ",
+        );
         std::env::remove_var("AETHER_SEARCHER_CALLER");
         std::env::remove_var("AETHER_PROFIT_TOKEN");
         std::env::remove_var("AETHER_EXECUTOR_BYTECODE_PATH");
@@ -1496,12 +1573,20 @@ mod tests {
     #[serial]
     #[test]
     fn build_backrun_validator_config_trimmed_searcher_caller() {
-        std::env::set_var("AETHER_EXECUTOR_ADDRESS", "0x1111111111111111111111111111111111111111");
-        std::env::set_var("AETHER_SEARCHER_CALLER", "  0x2222222222222222222222222222222222222222  ");
+        std::env::set_var(
+            "AETHER_EXECUTOR_ADDRESS",
+            "0x1111111111111111111111111111111111111111",
+        );
+        std::env::set_var(
+            "AETHER_SEARCHER_CALLER",
+            "  0x2222222222222222222222222222222222222222  ",
+        );
         std::env::remove_var("AETHER_PROFIT_TOKEN");
         std::env::remove_var("AETHER_EXECUTOR_BYTECODE_PATH");
         let config = build_backrun_validator_config(None).unwrap();
-        let expected: alloy::primitives::Address = "0x2222222222222222222222222222222222222222".parse().unwrap();
+        let expected: alloy::primitives::Address = "0x2222222222222222222222222222222222222222"
+            .parse()
+            .unwrap();
         assert_eq!(config.searcher_caller, expected);
         std::env::remove_var("AETHER_EXECUTOR_ADDRESS");
         std::env::remove_var("AETHER_SEARCHER_CALLER");
@@ -1534,12 +1619,20 @@ mod tests {
     #[serial]
     #[test]
     fn build_backrun_validator_config_trimmed_profit_token() {
-        std::env::set_var("AETHER_EXECUTOR_ADDRESS", "0x1111111111111111111111111111111111111111");
+        std::env::set_var(
+            "AETHER_EXECUTOR_ADDRESS",
+            "0x1111111111111111111111111111111111111111",
+        );
         std::env::remove_var("AETHER_SEARCHER_CALLER");
-        std::env::set_var("AETHER_PROFIT_TOKEN", "  0x4444444444444444444444444444444444444444  ");
+        std::env::set_var(
+            "AETHER_PROFIT_TOKEN",
+            "  0x4444444444444444444444444444444444444444  ",
+        );
         std::env::remove_var("AETHER_EXECUTOR_BYTECODE_PATH");
         let config = build_backrun_validator_config(None).unwrap();
-        let expected: alloy::primitives::Address = "0x4444444444444444444444444444444444444444".parse().unwrap();
+        let expected: alloy::primitives::Address = "0x4444444444444444444444444444444444444444"
+            .parse()
+            .unwrap();
         assert_eq!(config.profit_token, expected);
         std::env::remove_var("AETHER_EXECUTOR_ADDRESS");
         std::env::remove_var("AETHER_PROFIT_TOKEN");

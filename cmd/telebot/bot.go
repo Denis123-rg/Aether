@@ -24,19 +24,19 @@ type BotAPI interface {
 
 // TeleBot is the Telegram dashboard bot.
 type TeleBot struct {
-	api            BotAPI
-	metricsClient  *MetricsClient
-	adminClient    *AdminClient
-	adminChatIDs   map[int64]struct{}
-	pollInterval   time.Duration
-	redisState     *events.DashboardState
-	redisSub       *events.Subscriber
-	redisActive    bool
+	api           BotAPI
+	metricsClient *MetricsClient
+	adminClient   *AdminClient
+	adminChatIDs  map[int64]struct{}
+	pollInterval  time.Duration
+	redisState    *events.DashboardState
+	redisSub      *events.Subscriber
+	redisActive   bool
 
-	mu              sync.Mutex
-	dashboardMsgID  map[int64]int // chatID → messageID for edit-in-place
-	refreshCh       chan struct{}
-	resetPending    map[int64]bool
+	mu             sync.Mutex
+	dashboardMsgID map[int64]int // chatID → messageID for edit-in-place
+	refreshCh      chan struct{}
+	resetPending   map[int64]bool
 }
 
 // NewTeleBot creates a configured telebot instance.
@@ -57,15 +57,15 @@ func NewTeleBot(
 
 	state := &events.DashboardState{DashboardData: events.DashboardData{SignerHealthy: true}}
 	bot := &TeleBot{
-		api:           api,
-		metricsClient: NewMetricsClient(metricsURL),
-		adminClient:   NewAdminClient(metricsURL),
-		adminChatIDs:  admins,
-		pollInterval:  pollInterval,
-		redisState:    state,
+		api:            api,
+		metricsClient:  NewMetricsClient(metricsURL),
+		adminClient:    NewAdminClient(metricsURL),
+		adminChatIDs:   admins,
+		pollInterval:   pollInterval,
+		redisState:     state,
 		dashboardMsgID: make(map[int64]int),
-		refreshCh:     make(chan struct{}, 1),
-		resetPending:  make(map[int64]bool),
+		refreshCh:      make(chan struct{}, 1),
+		resetPending:   make(map[int64]bool),
 	}
 
 	sub := events.NewSubscriber(redisURL, state, bot.triggerRefresh)

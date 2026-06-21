@@ -174,7 +174,10 @@ fn curve_pool_score_positive_with_volume() {
         fee_bps: 4,
         slippage_estimate: 0.002,
     };
-    let raw = raw_score(&inputs, &aether_discovery::config::ScoringSettings::default());
+    let raw = raw_score(
+        &inputs,
+        &aether_discovery::config::ScoringSettings::default(),
+    );
     assert!(raw > 0.0);
     assert_eq!(normalise_score(raw, raw), 1.0);
 }

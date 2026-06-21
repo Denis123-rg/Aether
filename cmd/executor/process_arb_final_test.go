@@ -11,9 +11,9 @@ import (
 	"github.com/alicebob/miniredis/v2"
 	"github.com/google/uuid"
 
-	aethergrpc "github.com/aether-arb/aether/internal/grpc"
 	"github.com/aether-arb/aether/internal/db"
 	"github.com/aether-arb/aether/internal/events"
+	aethergrpc "github.com/aether-arb/aether/internal/grpc"
 	pb "github.com/aether-arb/aether/internal/pb"
 	"github.com/aether-arb/aether/internal/risk"
 )

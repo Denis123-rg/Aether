@@ -1,7 +1,7 @@
+use aether_simulator::fork::ForkedState;
 use aether_simulator::mempool_backrun::{
     decode_revert_reason, validate_backrun_cache, ArbTx, RejectReason, ValidatorParams, VictimTx,
 };
-use aether_simulator::fork::ForkedState;
 use alloy::primitives::{address, Address, Bytes, U256};
 
 const WETH: Address = address!("c02aaa39b223fe8d0a0e5c4f27ead9083c756cc2");
@@ -69,12 +69,7 @@ fn build_mock_weth_bytecode(storage_key: U256, profit_value: U256) -> Vec<u8> {
 
 fn build_arb_call_bytecode(target: Address) -> Vec<u8> {
     let mut code = vec![
-        0x60, 0x00,
-        0x60, 0x00,
-        0x60, 0x00,
-        0x60, 0x00,
-        0x60, 0x00,
-        0x73,
+        0x60, 0x00, 0x60, 0x00, 0x60, 0x00, 0x60, 0x00, 0x60, 0x00, 0x73,
     ];
     code.extend_from_slice(target.as_slice());
     code.push(0x61);
@@ -89,8 +84,13 @@ fn build_arb_call_bytecode(target: Address) -> Vec<u8> {
 #[test]
 fn victim_revert_returns_victim_reverted() {
     let mut state = ForkedState::new_empty(18_000_000, 1_700_000_000, 0);
-    state.insert_account(VICTIM_TO, U256::ZERO, vec![0x60, 0x00, 0x60, 0x00, 0xfd].into());
-    let result = validate_backrun_cache(state, &default_victim(), &default_arb(), &default_params());
+    state.insert_account(
+        VICTIM_TO,
+        U256::ZERO,
+        vec![0x60, 0x00, 0x60, 0x00, 0xfd].into(),
+    );
+    let result =
+        validate_backrun_cache(state, &default_victim(), &default_arb(), &default_params());
     assert!(!result.accepted);
     assert_eq!(result.reject, Some(RejectReason::VictimReverted));
     assert_eq!(result.arb_gas_used, 0);
@@ -102,15 +102,11 @@ fn victim_revert_returns_victim_reverted() {
 fn victim_revert_with_error_string_data() {
     let mut state = ForkedState::new_empty(18_000_000, 1_700_000_000, 0);
     let revert_bytecode: Vec<u8> = vec![
-        0x63, 0x08, 0xc3, 0x79, 0xa0,
-        0x60, 0x00,
-        0x52,
-        0x60, 0x04,
-        0x60, 0x1c,
-        0xfd,
+        0x63, 0x08, 0xc3, 0x79, 0xa0, 0x60, 0x00, 0x52, 0x60, 0x04, 0x60, 0x1c, 0xfd,
     ];
     state.insert_account(VICTIM_TO, U256::ZERO, revert_bytecode.into());
-    let result = validate_backrun_cache(state, &default_victim(), &default_arb(), &default_params());
+    let result =
+        validate_backrun_cache(state, &default_victim(), &default_arb(), &default_params());
     assert!(!result.accepted);
     assert_eq!(result.reject, Some(RejectReason::VictimReverted));
     let sel = result.revert_selector.unwrap();
@@ -140,7 +136,11 @@ fn arb_accepted_with_positive_profit() {
         gas_limit: 21_000,
     };
     let result = validate_backrun_cache(state, &victim, &default_arb(), &params);
-    assert!(result.accepted, "arb should be accepted with profit, got: {:?}", result.reject);
+    assert!(
+        result.accepted,
+        "arb should be accepted with profit, got: {:?}",
+        result.reject
+    );
     assert!(result.gross_profit_wei > U256::ZERO);
     assert!(result.arb_gas_used > 0);
     assert!(result.reject.is_none());
@@ -151,15 +151,11 @@ fn arb_accepted_with_positive_profit() {
 fn arb_revert_with_error_data_sets_revert_selector() {
     let mut state = ForkedState::new_empty(18_000_000, 1_700_000_000, 0);
     let revert_bytecode: Vec<u8> = vec![
-        0x63, 0x08, 0xc3, 0x79, 0xa0,
-        0x60, 0x00,
-        0x52,
-        0x60, 0x04,
-        0x60, 0x1c,
-        0xfd,
+        0x63, 0x08, 0xc3, 0x79, 0xa0, 0x60, 0x00, 0x52, 0x60, 0x04, 0x60, 0x1c, 0xfd,
     ];
     state.insert_account(ARB_TO, U256::ZERO, revert_bytecode.into());
-    let result = validate_backrun_cache(state, &default_victim(), &default_arb(), &default_params());
+    let result =
+        validate_backrun_cache(state, &default_victim(), &default_arb(), &default_params());
     assert!(!result.accepted);
     assert_eq!(result.reject, Some(RejectReason::ArbReverted));
     assert_eq!(result.revert_selector, Some([0x08, 0xc3, 0x79, 0xa0]));
@@ -170,7 +166,8 @@ fn arb_revert_with_error_data_sets_revert_selector() {
 fn arb_halt_returns_arb_halted() {
     let mut state = ForkedState::new_empty(18_000_000, 1_700_000_000, 0);
     state.insert_account(ARB_TO, U256::ZERO, vec![0xfe].into());
-    let result = validate_backrun_cache(state, &default_victim(), &default_arb(), &default_params());
+    let result =
+        validate_backrun_cache(state, &default_victim(), &default_arb(), &default_params());
     assert!(!result.accepted);
     assert_eq!(result.reject, Some(RejectReason::ArbHalted));
 }
@@ -242,7 +239,11 @@ fn victim_value_transfer_with_balance() {
 #[test]
 fn victim_data_with_revert_contract() {
     let mut state = ForkedState::new_empty(18_000_000, 1_700_000_000, 0);
-    state.insert_account(VICTIM_TO, U256::ZERO, vec![0x60, 0x00, 0x60, 0x00, 0xfd].into());
+    state.insert_account(
+        VICTIM_TO,
+        U256::ZERO,
+        vec![0x60, 0x00, 0x60, 0x00, 0xfd].into(),
+    );
     let victim = VictimTx {
         from: VICTIM_FROM,
         to: VICTIM_TO,
@@ -259,7 +260,11 @@ fn victim_data_with_revert_contract() {
 #[test]
 fn arb_data_with_revert_contract() {
     let mut state = ForkedState::new_empty(18_000_000, 1_700_000_000, 0);
-    state.insert_account(ARB_TO, U256::ZERO, vec![0x60, 0x00, 0x60, 0x00, 0xfd].into());
+    state.insert_account(
+        ARB_TO,
+        U256::ZERO,
+        vec![0x60, 0x00, 0x60, 0x00, 0xfd].into(),
+    );
     let arb = ArbTx {
         caller: ARB_CALLER,
         to: ARB_TO,
@@ -275,7 +280,8 @@ fn arb_data_with_revert_contract() {
 fn victim_halt_with_stack_underflow() {
     let mut state = ForkedState::new_empty(18_000_000, 1_700_000_000, 0);
     state.insert_account(VICTIM_TO, U256::ZERO, vec![0xfd].into());
-    let result = validate_backrun_cache(state, &default_victim(), &default_arb(), &default_params());
+    let result =
+        validate_backrun_cache(state, &default_victim(), &default_arb(), &default_params());
     assert!(!result.accepted);
     assert_eq!(result.reject, Some(RejectReason::VictimHalted));
 }
@@ -297,7 +303,11 @@ fn arb_halt_with_stop_opcode() {
 #[test]
 fn zero_base_fee_arb_revert() {
     let mut state = ForkedState::new_empty(18_000_000, 1_700_000_000, 0);
-    state.insert_account(ARB_TO, U256::ZERO, vec![0x60, 0x00, 0x60, 0x00, 0xfd].into());
+    state.insert_account(
+        ARB_TO,
+        U256::ZERO,
+        vec![0x60, 0x00, 0x60, 0x00, 0xfd].into(),
+    );
     let mut params = default_params();
     params.base_fee = 0;
     let result = validate_backrun_cache(state, &default_victim(), &default_arb(), &params);
@@ -352,7 +362,10 @@ fn reject_reason_as_str_all_variants() {
     assert_eq!(RejectReason::VictimHalted.as_str(), "victim_halted");
     assert_eq!(RejectReason::ArbReverted.as_str(), "arb_reverted");
     assert_eq!(RejectReason::ArbHalted.as_str(), "arb_halted");
-    assert_eq!(RejectReason::NegativeAfterGas.as_str(), "negative_after_gas");
+    assert_eq!(
+        RejectReason::NegativeAfterGas.as_str(),
+        "negative_after_gas"
+    );
     assert_eq!(RejectReason::SimError.as_str(), "sim_error");
     assert_eq!(RejectReason::RpcTransport.as_str(), "rpc_transport");
     assert_eq!(RejectReason::SimTimeout.as_str(), "sim_timeout");
@@ -395,7 +408,8 @@ fn validator_params_clone_debug() {
 #[test]
 fn victim_eoa_succeeds_arb_eoa_succeeds_zero_profit() {
     let state = ForkedState::new_empty(18_000_000, 1_700_000_000, 0);
-    let result = validate_backrun_cache(state, &default_victim(), &default_arb(), &default_params());
+    let result =
+        validate_backrun_cache(state, &default_victim(), &default_arb(), &default_params());
     assert!(!result.accepted);
     assert_eq!(result.reject, Some(RejectReason::NegativeAfterGas));
     assert_eq!(result.gross_profit_wei, U256::ZERO);
@@ -436,18 +450,31 @@ fn large_victim_value_transfer() {
 fn victim_halt_short_circuits_no_arb_execution() {
     let mut state = ForkedState::new_empty(18_000_000, 1_700_000_000, 0);
     state.insert_account(VICTIM_TO, U256::ZERO, vec![0xfe].into());
-    state.insert_account(ARB_TO, U256::ZERO, vec![0x60, 0x00, 0x60, 0x00, 0xfd].into());
-    let result = validate_backrun_cache(state, &default_victim(), &default_arb(), &default_params());
+    state.insert_account(
+        ARB_TO,
+        U256::ZERO,
+        vec![0x60, 0x00, 0x60, 0x00, 0xfd].into(),
+    );
+    let result =
+        validate_backrun_cache(state, &default_victim(), &default_arb(), &default_params());
     assert!(!result.accepted);
     assert_eq!(result.reject, Some(RejectReason::VictimHalted));
-    assert_eq!(result.arb_gas_used, 0, "arb must not execute when victim halts");
+    assert_eq!(
+        result.arb_gas_used, 0,
+        "arb must not execute when victim halts"
+    );
 }
 
 #[test]
 fn arb_revert_after_clean_victim() {
     let mut state = ForkedState::new_empty(18_000_000, 1_700_000_000, 0);
-    state.insert_account(ARB_TO, U256::ZERO, vec![0x60, 0x00, 0x60, 0x00, 0xfd].into());
-    let result = validate_backrun_cache(state, &default_victim(), &default_arb(), &default_params());
+    state.insert_account(
+        ARB_TO,
+        U256::ZERO,
+        vec![0x60, 0x00, 0x60, 0x00, 0xfd].into(),
+    );
+    let result =
+        validate_backrun_cache(state, &default_victim(), &default_arb(), &default_params());
     assert!(!result.accepted);
     assert_eq!(result.reject, Some(RejectReason::ArbReverted));
     assert!(result.victim_gas_used > 0);
@@ -458,7 +485,8 @@ fn arb_revert_after_clean_victim() {
 fn arb_gas_used_reported_on_halt() {
     let mut state = ForkedState::new_empty(18_000_000, 1_700_000_000, 0);
     state.insert_account(ARB_TO, U256::ZERO, vec![0xfe].into());
-    let result = validate_backrun_cache(state, &default_victim(), &default_arb(), &default_params());
+    let result =
+        validate_backrun_cache(state, &default_victim(), &default_arb(), &default_params());
     assert!(!result.accepted);
     assert_eq!(result.reject, Some(RejectReason::ArbHalted));
     assert!(result.arb_gas_used > 0);
@@ -467,9 +495,17 @@ fn arb_gas_used_reported_on_halt() {
 #[test]
 fn victim_gas_always_reported() {
     let mut state = ForkedState::new_empty(18_000_000, 1_700_000_000, 0);
-    state.insert_account(ARB_TO, U256::ZERO, vec![0x60, 0x00, 0x60, 0x00, 0xfd].into());
-    let result = validate_backrun_cache(state, &default_victim(), &default_arb(), &default_params());
-    assert!(result.victim_gas_used > 0, "victim gas should always be reported for EOA victim");
+    state.insert_account(
+        ARB_TO,
+        U256::ZERO,
+        vec![0x60, 0x00, 0x60, 0x00, 0xfd].into(),
+    );
+    let result =
+        validate_backrun_cache(state, &default_victim(), &default_arb(), &default_params());
+    assert!(
+        result.victim_gas_used > 0,
+        "victim gas should always be reported for EOA victim"
+    );
 }
 
 #[test]
@@ -480,5 +516,8 @@ fn executor_bytecode_owner_storage_seeded() {
     let result = validate_backrun_cache(state, &default_victim(), &default_arb(), &params);
     assert!(!result.accepted);
     assert_eq!(result.reject, Some(RejectReason::ArbReverted));
-    assert!(result.arb_gas_used > 100, "injected bytecode should consume gas proving storage was seeded");
+    assert!(
+        result.arb_gas_used > 100,
+        "injected bytecode should consume gas proving storage was seeded"
+    );
 }

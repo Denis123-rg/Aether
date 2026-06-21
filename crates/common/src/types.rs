@@ -189,16 +189,13 @@ pub mod addresses {
     pub const AAVE_V3_POOL: Address = address!("87870Bca3F3fD6335C3F4ce8392D69350B4fA4E2");
 
     /// Uniswap V2 Factory
-    pub const UNISWAP_V2_FACTORY: Address =
-        address!("5C69bEe701ef814a2B6a3EDD4B1652CB9cc5aA6f");
+    pub const UNISWAP_V2_FACTORY: Address = address!("5C69bEe701ef814a2B6a3EDD4B1652CB9cc5aA6f");
 
     /// Uniswap V3 Factory
-    pub const UNISWAP_V3_FACTORY: Address =
-        address!("1F98431c8aD98523631AE4a59f267346ea31F984");
+    pub const UNISWAP_V3_FACTORY: Address = address!("1F98431c8aD98523631AE4a59f267346ea31F984");
 
     /// SushiSwap Factory
-    pub const SUSHISWAP_FACTORY: Address =
-        address!("C0AEe478e3658e2610c5F7A4A2E1777cE9e4f2Ac");
+    pub const SUSHISWAP_FACTORY: Address = address!("C0AEe478e3658e2610c5F7A4A2E1777cE9e4f2Ac");
 }
 
 /// Gas constants
@@ -246,8 +243,9 @@ mod tests {
     fn test_known_token_decimals_case_insensitive() {
         // Address equality is over the raw 20 bytes, so checksum casing of the
         // input does not matter — a lowercased USDC must still resolve to 6.
-        let usdc_lower: Address =
-            "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48".parse().expect("valid addr");
+        let usdc_lower: Address = "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48"
+            .parse()
+            .expect("valid addr");
         assert_eq!(known_token_decimals(&usdc_lower), Some(6));
     }
 
@@ -354,7 +352,7 @@ mod tests {
             token_in: addresses::WETH,
             token_out: addresses::USDC,
             amount_in: U256::from(1_000_000_000_000_000_000u64), // 1 ETH
-            expected_out: U256::from(2_000_000_000u64),           // 2000 USDC
+            expected_out: U256::from(2_000_000_000u64),          // 2000 USDC
             estimated_gas: 60_000,
         };
         assert_eq!(hop.protocol, ProtocolType::UniswapV2);
@@ -434,10 +432,7 @@ mod tests {
             revert_reason: Some("Insufficient output amount".to_string()),
         };
         assert!(!result.success);
-        assert_eq!(
-            result.revert_reason.unwrap(),
-            "Insufficient output amount"
-        );
+        assert_eq!(result.revert_reason.unwrap(), "Insufficient output amount");
     }
 
     #[test]

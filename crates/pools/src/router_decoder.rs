@@ -57,8 +57,7 @@ use alloy::sol_types::SolCall;
 /// errors against them otherwise drown out genuine decoder gaps in
 /// other protocols. Marking them up-front lets the caller bump a dedicated
 /// `curve_unsupported` reason instead of `unknown_selector`.
-const CURVE_ROUTERS: &[Address] =
-    &[address!("99a58482BD75cbab83b27EC03CA68fF489b5788f")];
+const CURVE_ROUTERS: &[Address] = &[address!("99a58482BD75cbab83b27EC03CA68fF489b5788f")];
 
 /// Returns `true` when `router` is a known Curve router that the decoder
 /// cannot parse. Caller should short-circuit with a dedicated metric.
@@ -77,8 +76,7 @@ pub fn is_unsupported_curve_router(router: Address) -> bool {
 /// Update this list when adding a new Sushi-flavoured router (e.g. SushiX,
 /// Sushi RouteProcessor) — adding the address here is the only change
 /// required for correct protocol attribution downstream.
-const SUSHISWAP_ROUTERS: &[Address] =
-    &[address!("d9e1cE17f2641f24aE83637ab66a2cca9C378B9F")];
+const SUSHISWAP_ROUTERS: &[Address] = &[address!("d9e1cE17f2641f24aE83637ab66a2cca9C378B9F")];
 
 fn router_to_v2_protocol(router: Address) -> Protocol {
     if SUSHISWAP_ROUTERS.contains(&router) {
@@ -501,18 +499,15 @@ sol! {
 /// 1inch v6 AggregationRouter address on Ethereum Mainnet. Pinned here so
 /// the decoder and the default filter list agree on a single source of
 /// truth — adding a chain or moving routers means editing one constant.
-pub const ONE_INCH_V6_ROUTER: Address =
-    address!("111111125421cA6dc452d289314280a0f8842A65");
+pub const ONE_INCH_V6_ROUTER: Address = address!("111111125421cA6dc452d289314280a0f8842A65");
 
 /// Uniswap Universal Router (V2, deployed April 2024) on Ethereum Mainnet.
-pub const UNIVERSAL_ROUTER_V2: Address =
-    address!("66a9893cC07D91D95644AEDD05D03f95e1dBA8Af");
+pub const UNIVERSAL_ROUTER_V2: Address = address!("66a9893cC07D91D95644AEDD05D03f95e1dBA8Af");
 
 /// Uniswap Universal Router (V1.2, predecessor) on Ethereum Mainnet. Still
 /// receives traffic from integrators that haven't migrated to V2 — keep
 /// it in the recognised router set so we can decode both side-by-side.
-pub const UNIVERSAL_ROUTER_V12: Address =
-    address!("3fC91A3afd70395Cd496C647d5a6CC9D4B2b7FAD");
+pub const UNIVERSAL_ROUTER_V12: Address = address!("3fC91A3afd70395Cd496C647d5a6CC9D4B2b7FAD");
 
 /// Universal Router command bytes (a subset — only those the decoder
 /// actually inspects). The full opcode table lives in Uniswap's
@@ -635,10 +630,7 @@ pub fn decode_pending(to: Address, calldata: &[u8]) -> Result<DecodedSwap, Decod
 ///
 /// Returns a non-empty `Vec` on `Ok`. Empty vec is never produced; callers
 /// can safely index `[0]` without bounds checks.
-pub fn decode_pending_many(
-    to: Address,
-    calldata: &[u8],
-) -> Result<Vec<DecodedSwap>, DecodeError> {
+pub fn decode_pending_many(to: Address, calldata: &[u8]) -> Result<Vec<DecodedSwap>, DecodeError> {
     if calldata.len() < 4 {
         return Err(DecodeError::TooShort);
     }
@@ -1079,7 +1071,8 @@ fn try_uni_v3_family(
         // them in encoding order, so for the predictor's `(token_in,
         // token_out)` semantics we flip the first two.
         let (path_first, path_second, fee, extras) = parse_v3_path(&c.params.path)?;
-        let (token_in, token_out) = swap_path_first_hop_for_exact_output(path_first, path_second, &extras);
+        let (token_in, token_out) =
+            swap_path_first_hop_for_exact_output(path_first, path_second, &extras);
         return Ok(Some(DecodedSwap {
             protocol: Protocol::UniswapV3,
             router,
@@ -1099,7 +1092,8 @@ fn try_uni_v3_family(
         let c = exactOutput_1Call::abi_decode(calldata)
             .map_err(|e| DecodeError::AbiDecode(e.to_string()))?;
         let (path_first, path_second, fee, extras) = parse_v3_path(&c.params.path)?;
-        let (token_in, token_out) = swap_path_first_hop_for_exact_output(path_first, path_second, &extras);
+        let (token_in, token_out) =
+            swap_path_first_hop_for_exact_output(path_first, path_second, &extras);
         return Ok(Some(DecodedSwap {
             protocol: Protocol::UniswapV3,
             router,
@@ -1156,9 +1150,8 @@ fn parse_v3_path(path: &[u8]) -> Result<(Address, Address, u32, Vec<Address>), D
 
     let token_in = Address::from_slice(&path[0..ADDR_LEN]);
     let fee_bytes = &path[ADDR_LEN..ADDR_LEN + FEE_LEN];
-    let fee = (u32::from(fee_bytes[0]) << 16)
-        | (u32::from(fee_bytes[1]) << 8)
-        | u32::from(fee_bytes[2]);
+    let fee =
+        (u32::from(fee_bytes[0]) << 16) | (u32::from(fee_bytes[1]) << 8) | u32::from(fee_bytes[2]);
 
     let mut tokens: Vec<Address> = Vec::new();
     let mut cursor = ADDR_LEN + FEE_LEN;
@@ -1184,8 +1177,8 @@ fn try_balancer(
 ) -> Result<Option<DecodedSwap>, DecodeError> {
     use IBalancerVault::*;
     if selector == swapCall::SELECTOR {
-        let c = swapCall::abi_decode(calldata)
-            .map_err(|e| DecodeError::AbiDecode(e.to_string()))?;
+        let c =
+            swapCall::abi_decode(calldata).map_err(|e| DecodeError::AbiDecode(e.to_string()))?;
         return Ok(Some(DecodedSwap {
             protocol: Protocol::BalancerV2,
             router,
@@ -1316,7 +1309,9 @@ fn try_bancor(
 fn curve_indices_from_int128(i: i128, j: i128) -> Result<(u8, u8), DecodeError> {
     let to_u8 = |v: i128| -> Result<u8, DecodeError> {
         if v < 0 || v > u8::MAX as i128 {
-            return Err(DecodeError::AbiDecode(format!("curve index out of u8 range: {v}")));
+            return Err(DecodeError::AbiDecode(format!(
+                "curve index out of u8 range: {v}"
+            )));
         }
         Ok(v as u8)
     };
@@ -1329,7 +1324,9 @@ fn curve_indices_from_int128(i: i128, j: i128) -> Result<(u8, u8), DecodeError> 
 fn curve_indices_from_uint256(i: U256, j: U256) -> Result<(u8, u8), DecodeError> {
     let to_u8 = |v: U256| -> Result<u8, DecodeError> {
         if v > U256::from(u8::MAX) {
-            return Err(DecodeError::AbiDecode(format!("curve index out of u8 range: {v}")));
+            return Err(DecodeError::AbiDecode(format!(
+                "curve index out of u8 range: {v}"
+            )));
         }
         Ok(v.to::<u64>() as u8)
     };
@@ -1391,8 +1388,8 @@ fn try_one_inch_v6(
 
     // ── swap(executor, SwapDescription, data) — opaque executor ──
     if selector == swapCall::SELECTOR {
-        let c = swapCall::abi_decode(calldata)
-            .map_err(|e| DecodeError::AbiDecode(e.to_string()))?;
+        let c =
+            swapCall::abi_decode(calldata).map_err(|e| DecodeError::AbiDecode(e.to_string()))?;
         return Ok(Some(vec![one_inch_unresolved_swap(
             router,
             c.desc.srcToken,
@@ -1405,11 +1402,16 @@ fn try_one_inch_v6(
 
     // ── unoswap family (token committed in calldata) ──
     if selector == unoswapCall::SELECTOR {
-        let c = unoswapCall::abi_decode(calldata)
-            .map_err(|e| DecodeError::AbiDecode(e.to_string()))?;
+        let c =
+            unoswapCall::abi_decode(calldata).map_err(|e| DecodeError::AbiDecode(e.to_string()))?;
         let token_in = u256_low_address(c.token);
         return Ok(Some(one_inch_chain(
-            router, token_in, c.amount, c.minReturn, &[c.dex], Address::ZERO,
+            router,
+            token_in,
+            c.amount,
+            c.minReturn,
+            &[c.dex],
+            Address::ZERO,
         )));
     }
     if selector == unoswapToCall::SELECTOR {
@@ -1418,7 +1420,12 @@ fn try_one_inch_v6(
         let token_in = u256_low_address(c.token);
         let recipient = u256_low_address(c.to);
         return Ok(Some(one_inch_chain(
-            router, token_in, c.amount, c.minReturn, &[c.dex], recipient,
+            router,
+            token_in,
+            c.amount,
+            c.minReturn,
+            &[c.dex],
+            recipient,
         )));
     }
     if selector == unoswap2Call::SELECTOR {
@@ -1426,7 +1433,12 @@ fn try_one_inch_v6(
             .map_err(|e| DecodeError::AbiDecode(e.to_string()))?;
         let token_in = u256_low_address(c.token);
         return Ok(Some(one_inch_chain(
-            router, token_in, c.amount, c.minReturn, &[c.dex, c.dex2], Address::ZERO,
+            router,
+            token_in,
+            c.amount,
+            c.minReturn,
+            &[c.dex, c.dex2],
+            Address::ZERO,
         )));
     }
     if selector == unoswap2ToCall::SELECTOR {
@@ -1435,7 +1447,12 @@ fn try_one_inch_v6(
         let token_in = u256_low_address(c.token);
         let recipient = u256_low_address(c.to);
         return Ok(Some(one_inch_chain(
-            router, token_in, c.amount, c.minReturn, &[c.dex, c.dex2], recipient,
+            router,
+            token_in,
+            c.amount,
+            c.minReturn,
+            &[c.dex, c.dex2],
+            recipient,
         )));
     }
     if selector == unoswap3Call::SELECTOR {
@@ -1443,7 +1460,12 @@ fn try_one_inch_v6(
             .map_err(|e| DecodeError::AbiDecode(e.to_string()))?;
         let token_in = u256_low_address(c.token);
         return Ok(Some(one_inch_chain(
-            router, token_in, c.amount, c.minReturn, &[c.dex, c.dex2, c.dex3], Address::ZERO,
+            router,
+            token_in,
+            c.amount,
+            c.minReturn,
+            &[c.dex, c.dex2, c.dex3],
+            Address::ZERO,
         )));
     }
     if selector == unoswap3ToCall::SELECTOR {
@@ -1452,7 +1474,12 @@ fn try_one_inch_v6(
         let token_in = u256_low_address(c.token);
         let recipient = u256_low_address(c.to);
         return Ok(Some(one_inch_chain(
-            router, token_in, c.amount, c.minReturn, &[c.dex, c.dex2, c.dex3], recipient,
+            router,
+            token_in,
+            c.amount,
+            c.minReturn,
+            &[c.dex, c.dex2, c.dex3],
+            recipient,
         )));
     }
 
@@ -1461,7 +1488,12 @@ fn try_one_inch_v6(
         let c = ethUnoswapCall::abi_decode(calldata)
             .map_err(|e| DecodeError::AbiDecode(e.to_string()))?;
         return Ok(Some(one_inch_chain(
-            router, WETH_ADDRESS, U256::ZERO, c.minReturn, &[c.dex], Address::ZERO,
+            router,
+            WETH_ADDRESS,
+            U256::ZERO,
+            c.minReturn,
+            &[c.dex],
+            Address::ZERO,
         )));
     }
     if selector == ethUnoswapToCall::SELECTOR {
@@ -1469,14 +1501,24 @@ fn try_one_inch_v6(
             .map_err(|e| DecodeError::AbiDecode(e.to_string()))?;
         let recipient = u256_low_address(c.to);
         return Ok(Some(one_inch_chain(
-            router, WETH_ADDRESS, U256::ZERO, c.minReturn, &[c.dex], recipient,
+            router,
+            WETH_ADDRESS,
+            U256::ZERO,
+            c.minReturn,
+            &[c.dex],
+            recipient,
         )));
     }
     if selector == ethUnoswap2Call::SELECTOR {
         let c = ethUnoswap2Call::abi_decode(calldata)
             .map_err(|e| DecodeError::AbiDecode(e.to_string()))?;
         return Ok(Some(one_inch_chain(
-            router, WETH_ADDRESS, U256::ZERO, c.minReturn, &[c.dex, c.dex2], Address::ZERO,
+            router,
+            WETH_ADDRESS,
+            U256::ZERO,
+            c.minReturn,
+            &[c.dex, c.dex2],
+            Address::ZERO,
         )));
     }
     if selector == ethUnoswap2ToCall::SELECTOR {
@@ -1484,14 +1526,24 @@ fn try_one_inch_v6(
             .map_err(|e| DecodeError::AbiDecode(e.to_string()))?;
         let recipient = u256_low_address(c.to);
         return Ok(Some(one_inch_chain(
-            router, WETH_ADDRESS, U256::ZERO, c.minReturn, &[c.dex, c.dex2], recipient,
+            router,
+            WETH_ADDRESS,
+            U256::ZERO,
+            c.minReturn,
+            &[c.dex, c.dex2],
+            recipient,
         )));
     }
     if selector == ethUnoswap3Call::SELECTOR {
         let c = ethUnoswap3Call::abi_decode(calldata)
             .map_err(|e| DecodeError::AbiDecode(e.to_string()))?;
         return Ok(Some(one_inch_chain(
-            router, WETH_ADDRESS, U256::ZERO, c.minReturn, &[c.dex, c.dex2, c.dex3], Address::ZERO,
+            router,
+            WETH_ADDRESS,
+            U256::ZERO,
+            c.minReturn,
+            &[c.dex, c.dex2, c.dex3],
+            Address::ZERO,
         )));
     }
     if selector == ethUnoswap3ToCall::SELECTOR {
@@ -1499,7 +1551,12 @@ fn try_one_inch_v6(
             .map_err(|e| DecodeError::AbiDecode(e.to_string()))?;
         let recipient = u256_low_address(c.to);
         return Ok(Some(one_inch_chain(
-            router, WETH_ADDRESS, U256::ZERO, c.minReturn, &[c.dex, c.dex2, c.dex3], recipient,
+            router,
+            WETH_ADDRESS,
+            U256::ZERO,
+            c.minReturn,
+            &[c.dex, c.dex2, c.dex3],
+            recipient,
         )));
     }
 
@@ -1511,7 +1568,12 @@ fn try_one_inch_v6(
             return Err(DecodeError::EmptyPath);
         }
         return Ok(Some(one_inch_chain(
-            router, Address::ZERO, c.amount, c.minReturn, &c.pools, Address::ZERO,
+            router,
+            Address::ZERO,
+            c.amount,
+            c.minReturn,
+            &c.pools,
+            Address::ZERO,
         )));
     }
     if selector == uniswapV3SwapToCall::SELECTOR {
@@ -1521,7 +1583,12 @@ fn try_one_inch_v6(
             return Err(DecodeError::EmptyPath);
         }
         return Ok(Some(one_inch_chain(
-            router, Address::ZERO, c.amount, c.minReturn, &c.pools, c.recipient,
+            router,
+            Address::ZERO,
+            c.amount,
+            c.minReturn,
+            &c.pools,
+            c.recipient,
         )));
     }
 
@@ -1605,7 +1672,7 @@ fn decode_ur_opcode(
     input: &[u8],
     router: Address,
 ) -> Result<Option<DecodedSwap>, DecodeError> {
-    use alloy::sol_types::{SolType, sol_data};
+    use alloy::sol_types::{sol_data, SolType};
     type V3Tuple = (
         sol_data::Address,
         sol_data::Uint<256>,
@@ -1819,7 +1886,11 @@ fn one_inch_chain(
                 // when the calldata names it — uniswapV3Swap leaves
                 // `token_in_first` ZERO and the pipeline resolves from
                 // the pool's tokens + zeroForOne).
-                token_in: if is_first { token_in_first } else { Address::ZERO },
+                token_in: if is_first {
+                    token_in_first
+                } else {
+                    Address::ZERO
+                },
                 token_out: Address::ZERO,
                 // Only the first hop carries the user-committed amount;
                 // intermediate amounts depend on each pool's runtime
@@ -1921,7 +1992,7 @@ mod tests {
     fn decode_uniswap_v3_swap_router_v2_exact_input_single() {
         // V2 = no deadline field. End-to-end decode must succeed for the
         // canonical 0x04e45aaf calldata observed in production traffic.
-        use IUniswapV3Router::{ExactInputSingleParams02, exactInputSingle_1Call};
+        use IUniswapV3Router::{exactInputSingle_1Call, ExactInputSingleParams02};
         let weth = address!("C02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2");
         let usdc = address!("A0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48");
         let params = ExactInputSingleParams02 {
@@ -1937,10 +2008,7 @@ mod tests {
         let univ3_swap_router02 = address!("68b3465833fb72A70ecDF485E0e4C7bD8665Fc45");
         let decoded = decode_pending(univ3_swap_router02, &calldata).expect("decode");
         assert_eq!(decoded.protocol, Protocol::UniswapV3);
-        assert_eq!(
-            decoded.amount_in,
-            U256::from(1_000_000_000_000_000_000u128)
-        );
+        assert_eq!(decoded.amount_in, U256::from(1_000_000_000_000_000_000u128));
     }
 
     /// 1inch v6 limit-order admin selectors observed in mainnet traffic.
@@ -1969,8 +2037,8 @@ mod tests {
         // the last shadow run. It's a maker-side state flip on the limit
         // order surface, not a swap — the dispatcher must drop it instead
         // of bubbling UnknownSelector.
-        use IOneInchV6Router::cancelOrderCall;
         use alloy::primitives::FixedBytes;
+        use IOneInchV6Router::cancelOrderCall;
         let calldata = cancelOrderCall {
             makerTraits: U256::ZERO,
             orderHash: FixedBytes::<32>::ZERO,
@@ -2024,7 +2092,7 @@ mod tests {
         path: &[u8],
         payer_is_user: bool,
     ) -> Vec<u8> {
-        use alloy::sol_types::{SolType, sol_data};
+        use alloy::sol_types::{sol_data, SolType};
         type Tup = (
             sol_data::Address,
             sol_data::Uint<256>,
@@ -2047,8 +2115,8 @@ mod tests {
         // a Universal-Router-backed front-end would emit. Decoder must
         // surface one `Protocol::UniswapV3` swap with the path's
         // (token_in, token_out, fee) intact.
-        use IUniversalRouter::execute_0Call;
         use alloy::primitives::Bytes;
+        use IUniversalRouter::execute_0Call;
         let weth = address!("C02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2");
         let usdc = address!("A0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48");
         let path = pack_v3_path(weth, 3000, usdc);
@@ -2056,7 +2124,9 @@ mod tests {
         let amount_in = U256::from(1_000_000_000_000_000_000u128);
         let amount_out_min = U256::from(2_500_000_000u128);
         let inputs: Vec<Bytes> =
-            vec![encode_v3_exact_in_input(recipient, amount_in, amount_out_min, &path, true).into()];
+            vec![
+                encode_v3_exact_in_input(recipient, amount_in, amount_out_min, &path, true).into(),
+            ];
         let commands = Bytes::from(vec![0x00]); // V3_SWAP_EXACT_IN
         let calldata = execute_0Call { commands, inputs }.abi_encode();
         let ur = address!("66a9893cC07D91D95644AEDD05D03f95e1dBA8Af");
@@ -2079,8 +2149,8 @@ mod tests {
         // dispatcher must drop it without erroring so a UR call that
         // mixes V4_SWAP with a recognised V2/V3 opcode still surfaces
         // the recognised swap.
-        use IUniversalRouter::execute_0Call;
         use alloy::primitives::Bytes;
+        use IUniversalRouter::execute_0Call;
         let weth = address!("C02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2");
         let usdc = address!("A0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48");
         let path = pack_v3_path(weth, 3000, usdc);
@@ -2110,21 +2180,15 @@ mod tests {
         // before and `UNWRAP_WETH` after. Those must be dropped silently
         // — the decoder is only interested in opcodes that move pool
         // state.
-        use IUniversalRouter::execute_0Call;
         use alloy::primitives::Bytes;
+        use IUniversalRouter::execute_0Call;
         let weth = address!("C02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2");
         let usdc = address!("A0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48");
         let path = pack_v3_path(weth, 500, usdc);
         let inputs: Vec<Bytes> = vec![
             vec![0u8; 32].into(), // WRAP_ETH placeholder input (opaque to us)
-            encode_v3_exact_in_input(
-                Address::ZERO,
-                U256::from(1u64),
-                U256::ZERO,
-                &path,
-                true,
-            )
-            .into(),
+            encode_v3_exact_in_input(Address::ZERO, U256::from(1u64), U256::ZERO, &path, true)
+                .into(),
             vec![0u8; 32].into(), // UNWRAP_WETH placeholder input
         ];
         let commands = Bytes::from(vec![0x0b, 0x00, 0x0c]); // WRAP_ETH, V3_SWAP_EXACT_IN, UNWRAP_WETH
@@ -2143,8 +2207,8 @@ mod tests {
     fn decode_universal_router_mismatched_commands_inputs_rejected() {
         // Commands length must equal inputs length. A mismatch indicates
         // a malformed payload that we shouldn't half-process.
-        use IUniversalRouter::execute_0Call;
         use alloy::primitives::Bytes;
+        use IUniversalRouter::execute_0Call;
         let calldata = execute_0Call {
             commands: Bytes::from(vec![0x00, 0x00]),
             inputs: vec![vec![0u8; 32].into()], // 1 input but 2 commands
@@ -2163,15 +2227,19 @@ mod tests {
     fn decode_universal_router_with_deadline_overload() {
         // The deadline-bearing `execute_1` is the most common entry point
         // for wallet-issued UR calls; cover it alongside `execute_0`.
-        use IUniversalRouter::execute_1Call;
         use alloy::primitives::Bytes;
+        use IUniversalRouter::execute_1Call;
         let weth = address!("C02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2");
         let usdc = address!("A0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48");
         let path = pack_v3_path(weth, 10000, usdc);
-        let inputs: Vec<Bytes> = vec![
-            encode_v3_exact_in_input(Address::ZERO, U256::from(42u64), U256::ZERO, &path, true)
-                .into(),
-        ];
+        let inputs: Vec<Bytes> = vec![encode_v3_exact_in_input(
+            Address::ZERO,
+            U256::from(42u64),
+            U256::ZERO,
+            &path,
+            true,
+        )
+        .into()];
         let commands = Bytes::from(vec![0x00]);
         let calldata = execute_1Call {
             commands,
@@ -2207,7 +2275,7 @@ mod tests {
         path: Vec<Address>,
         payer_is_user: bool,
     ) -> Vec<u8> {
-        use alloy::sol_types::{SolType, sol_data};
+        use alloy::sol_types::{sol_data, SolType};
         type V2Tuple = (
             sol_data::Address,
             sol_data::Uint<256>,
@@ -2224,22 +2292,19 @@ mod tests {
         // decoder must surface `(token_in, token_out)` in canonical
         // pool-pair order so registry lookups land on the same edge as
         // the equivalent exact-in swap would.
-        use IUniversalRouter::execute_0Call;
         use alloy::primitives::Bytes;
+        use IUniversalRouter::execute_0Call;
         let weth = address!("C02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2");
         let usdc = address!("A0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48");
         // Encoded order: token_out (USDC) | fee | token_in (WETH).
         let path = pack_v3_path(usdc, 3000, weth);
         let amount_out = U256::from(2_500_000_000u128);
         let amount_in_max = U256::from(2_000_000_000_000_000_000u128);
-        let inputs: Vec<Bytes> = vec![encode_v3_exact_out_input(
-            Address::ZERO,
-            amount_out,
-            amount_in_max,
-            &path,
-            true,
-        )
-        .into()];
+        let inputs: Vec<Bytes> =
+            vec![
+                encode_v3_exact_out_input(Address::ZERO, amount_out, amount_in_max, &path, true)
+                    .into(),
+            ];
         let commands = Bytes::from(vec![ur_commands::V3_SWAP_EXACT_OUT]);
         let calldata = execute_0Call { commands, inputs }.abi_encode();
         let ur = address!("66a9893cC07D91D95644AEDD05D03f95e1dBA8Af");
@@ -2258,8 +2323,8 @@ mod tests {
 
     #[test]
     fn decode_universal_router_v2_swap_exact_in() {
-        use IUniversalRouter::execute_0Call;
         use alloy::primitives::Bytes;
+        use IUniversalRouter::execute_0Call;
         let weth = address!("C02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2");
         let usdc = address!("A0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48");
         let dai = address!("6B175474E89094C44Da98b954EedeAC495271d0F");
@@ -2289,8 +2354,8 @@ mod tests {
 
     #[test]
     fn decode_universal_router_v2_swap_exact_out() {
-        use IUniversalRouter::execute_0Call;
         use alloy::primitives::Bytes;
+        use IUniversalRouter::execute_0Call;
         let weth = address!("C02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2");
         let usdc = address!("A0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48");
         let amount_out = U256::from(2_500_000_000u128);
@@ -2317,8 +2382,8 @@ mod tests {
 
     #[test]
     fn decode_universal_router_v2_swap_rejects_empty_path() {
-        use IUniversalRouter::execute_0Call;
         use alloy::primitives::Bytes;
+        use IUniversalRouter::execute_0Call;
         let inputs: Vec<Bytes> = vec![encode_v2_input(
             Address::ZERO,
             U256::from(1u64),
@@ -2338,8 +2403,8 @@ mod tests {
     fn decode_universal_router_mixed_v2_and_v3_swap_chain() {
         // Realistic UR payload — V2 hop into WETH, V3 hop out of WETH —
         // must produce two swap records, one per protocol, in order.
-        use IUniversalRouter::execute_0Call;
         use alloy::primitives::Bytes;
+        use IUniversalRouter::execute_0Call;
         let weth = address!("C02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2");
         let usdc = address!("A0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48");
         let dai = address!("6B175474E89094C44Da98b954EedeAC495271d0F");
@@ -2723,14 +2788,18 @@ mod tests {
         let calldata = ICurvePoolInt128::exchangeCall {
             i: 0,
             j: 1,
-            dx: U256::from(1_000_000u64),    // 1 USDC
+            dx: U256::from(1_000_000u64), // 1 USDC
             min_dy: U256::from(990_000u64),
         }
         .abi_encode();
         let decoded = decode_pending(pool, &calldata).expect("should decode");
         assert_eq!(decoded.protocol, Protocol::Curve);
         assert_eq!(decoded.router, pool);
-        assert_eq!(decoded.token_in, Address::ZERO, "Curve must leave token addrs unresolved");
+        assert_eq!(
+            decoded.token_in,
+            Address::ZERO,
+            "Curve must leave token addrs unresolved"
+        );
         assert_eq!(decoded.token_out, Address::ZERO);
         assert_eq!(decoded.amount_in, U256::from(1_000_000u64));
         assert_eq!(decoded.curve_indices, Some((0, 1)));
@@ -2780,8 +2849,10 @@ mod tests {
         }
         .abi_encode();
         let err = decode_pending(pool, &calldata).unwrap_err();
-        assert!(matches!(err, DecodeError::AbiDecode(_)),
-            "negative index should reject as AbiDecode, got {err:?}");
+        assert!(
+            matches!(err, DecodeError::AbiDecode(_)),
+            "negative index should reject as AbiDecode, got {err:?}"
+        );
     }
 
     #[test]
@@ -2796,8 +2867,10 @@ mod tests {
         }
         .abi_encode();
         let err = decode_pending(pool, &calldata).unwrap_err();
-        assert!(matches!(err, DecodeError::AbiDecode(_)),
-            "index above u8::MAX should reject as AbiDecode, got {err:?}");
+        assert!(
+            matches!(err, DecodeError::AbiDecode(_)),
+            "index above u8::MAX should reject as AbiDecode, got {err:?}"
+        );
     }
 
     // ── Bancor V3 BancorNetwork decoder ──
@@ -2812,7 +2885,7 @@ mod tests {
             sourceToken: weth,
             targetToken: bnt,
             sourceAmount: U256::from(1_000_000_000_000_000_000u128), // 1 WETH
-            minReturnAmount: U256::from(2_500u64) * U256::from(1_000_000_000_000_000_000u128),    // 2500 BNT
+            minReturnAmount: U256::from(2_500u64) * U256::from(1_000_000_000_000_000_000u128), // 2500 BNT
             deadline: U256::from(99_999_999_999u64),
             beneficiary,
         }
@@ -2823,7 +2896,10 @@ mod tests {
         assert_eq!(decoded.token_in, weth);
         assert_eq!(decoded.token_out, bnt);
         assert_eq!(decoded.amount_in, U256::from(1_000_000_000_000_000_000u128));
-        assert_eq!(decoded.amount_out_min, U256::from(2_500u64) * U256::from(1_000_000_000_000_000_000u128));
+        assert_eq!(
+            decoded.amount_out_min,
+            U256::from(2_500u64) * U256::from(1_000_000_000_000_000_000u128)
+        );
         assert_eq!(decoded.recipient, beneficiary);
         assert_eq!(decoded.fee_bps, 0);
         assert!(decoded.path_extra.is_empty());
@@ -2888,7 +2964,11 @@ mod tests {
         .abi_encode();
 
         let swaps = decode_pending_many(univ3_router(), &calldata).expect("multicall decodes");
-        assert_eq!(swaps.len(), 2, "two exactInputSingle calls = two DecodedSwap records");
+        assert_eq!(
+            swaps.len(),
+            2,
+            "two exactInputSingle calls = two DecodedSwap records"
+        );
         assert_eq!(swaps[0].protocol, Protocol::UniswapV3);
         assert_eq!(swaps[0].token_in, weth);
         assert_eq!(swaps[0].token_out, usdc);
@@ -2929,7 +3009,11 @@ mod tests {
         }
         .abi_encode();
         let swaps = decode_pending_many(univ3_router(), &calldata).expect("decode");
-        assert_eq!(swaps.len(), 1, "unwrapWETH9 is ignored, only the swap remains");
+        assert_eq!(
+            swaps.len(),
+            1,
+            "unwrapWETH9 is ignored, only the swap remains"
+        );
         assert_eq!(swaps[0].protocol, Protocol::UniswapV3);
     }
 
@@ -2989,9 +3073,18 @@ mod tests {
         let weth = address!("C02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2");
         let usdc = address!("A0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48");
         let leaf = build_exact_input_single(weth, usdc, U256::from(1u64), Address::ZERO);
-        let l1 = IUniswapV3Multicall::multicallCall { data: vec![leaf.into()] }.abi_encode();
-        let l2 = IUniswapV3Multicall::multicallCall { data: vec![l1.into()] }.abi_encode();
-        let l3 = IUniswapV3Multicall::multicallCall { data: vec![l2.into()] }.abi_encode();
+        let l1 = IUniswapV3Multicall::multicallCall {
+            data: vec![leaf.into()],
+        }
+        .abi_encode();
+        let l2 = IUniswapV3Multicall::multicallCall {
+            data: vec![l1.into()],
+        }
+        .abi_encode();
+        let l3 = IUniswapV3Multicall::multicallCall {
+            data: vec![l2.into()],
+        }
+        .abi_encode();
         let swaps = decode_pending_many(univ3_router(), &l3).expect("decode");
         assert!(
             swaps.is_empty(),
@@ -3233,7 +3326,8 @@ mod tests {
         assert_eq!(r.pool_address, Some(p));
         assert_eq!(r.one_inch_zero_for_one, Some(true));
         assert_eq!(
-            r.token_in, Address::ZERO,
+            r.token_in,
+            Address::ZERO,
             "uniswapV3Swap has no calldata src token — pipeline resolves from pool + zeroForOne"
         );
         assert_eq!(r.amount_in, amount);
@@ -3668,7 +3762,10 @@ mod tests {
         let swap = decode_pending(univ3_router(), &calldata).expect("decode");
         assert_eq!(swap.protocol, Protocol::UniswapV3);
         assert_eq!(swap.amount_in, U256::from(5_000u64));
-        assert_eq!(swap.amount_out_min, U256::from(3_000_000_000_000_000_000u64));
+        assert_eq!(
+            swap.amount_out_min,
+            U256::from(3_000_000_000_000_000_000u64)
+        );
         assert_eq!(swap.fee_bps, 10000);
     }
 
@@ -4070,8 +4167,14 @@ mod tests {
     fn decode_1inch_fill_contract_order_skipped() {
         use IOneInchV6Router::fillContractOrderCall;
         let order = (
-            U256::ZERO, U256::ZERO, U256::ZERO, U256::ZERO,
-            U256::ZERO, U256::ZERO, U256::ZERO, U256::ZERO,
+            U256::ZERO,
+            U256::ZERO,
+            U256::ZERO,
+            U256::ZERO,
+            U256::ZERO,
+            U256::ZERO,
+            U256::ZERO,
+            U256::ZERO,
         );
         let calldata = fillContractOrderCall {
             order,
@@ -4108,7 +4211,7 @@ mod tests {
 
     #[test]
     fn decode_balancer_v2_swap() {
-        use IBalancerVault::{swapCall, SingleSwap, FundManagement};
+        use IBalancerVault::{swapCall, FundManagement, SingleSwap};
         let vault = address!("BA12222222228d8Ba445958a75a0704d566BF2C8");
         let pool_id = alloy::primitives::B256::from([0x01u8; 32]);
         let calldata = swapCall {
@@ -4263,7 +4366,12 @@ mod tests {
         use IUniversalRouter::execute_0Call;
         let calldata = execute_0Call {
             commands: Bytes::from(vec![0x0b, 0x0c, 0x0d, 0x0e]),
-            inputs: vec![vec![0u8; 32].into(), vec![0u8; 32].into(), vec![0u8; 32].into(), vec![0u8; 32].into()],
+            inputs: vec![
+                vec![0u8; 32].into(),
+                vec![0u8; 32].into(),
+                vec![0u8; 32].into(),
+                vec![0u8; 32].into(),
+            ],
         }
         .abi_encode();
         let swaps = decode_pending_many(UNIVERSAL_ROUTER_V2, &calldata).expect("decode");
@@ -4284,7 +4392,7 @@ mod tests {
 
     #[test]
     fn decode_ur_v2_exact_out_empty_path() {
-        use alloy::sol_types::{SolType, sol_data};
+        use alloy::sol_types::{sol_data, SolType};
         type V2Tuple = (
             sol_data::Address,
             sol_data::Uint<256>,
@@ -4292,7 +4400,13 @@ mod tests {
             sol_data::Array<sol_data::Address>,
             sol_data::Bool,
         );
-        let input = V2Tuple::abi_encode_params(&(Address::ZERO, U256::from(1u64), U256::ZERO, Vec::<Address>::new(), true));
+        let input = V2Tuple::abi_encode_params(&(
+            Address::ZERO,
+            U256::from(1u64),
+            U256::ZERO,
+            Vec::<Address>::new(),
+            true,
+        ));
         use IUniversalRouter::execute_0Call;
         let calldata = execute_0Call {
             commands: Bytes::from(vec![0x09]),
@@ -4305,7 +4419,7 @@ mod tests {
 
     #[test]
     fn decode_ur_v2_single_element_path() {
-        use alloy::sol_types::{SolType, sol_data};
+        use alloy::sol_types::{sol_data, SolType};
         type V2Tuple = (
             sol_data::Address,
             sol_data::Uint<256>,
@@ -4313,7 +4427,13 @@ mod tests {
             sol_data::Array<sol_data::Address>,
             sol_data::Bool,
         );
-        let input = V2Tuple::abi_encode_params(&(Address::ZERO, U256::from(1u64), U256::ZERO, vec![weth()], true));
+        let input = V2Tuple::abi_encode_params(&(
+            Address::ZERO,
+            U256::from(1u64),
+            U256::ZERO,
+            vec![weth()],
+            true,
+        ));
         use IUniversalRouter::execute_0Call;
         let calldata = execute_0Call {
             commands: Bytes::from(vec![0x08]),
@@ -4354,7 +4474,9 @@ mod tests {
         let e1 = DecodeError::TooShort;
         assert!(format!("{e1}").contains("too short"));
 
-        let e2 = DecodeError::UnknownSelector { selector: [0xab, 0xcd, 0xef, 0x01] };
+        let e2 = DecodeError::UnknownSelector {
+            selector: [0xab, 0xcd, 0xef, 0x01],
+        };
         assert!(format!("{e2}").contains("unknown selector"));
 
         let e3 = DecodeError::AbiDecode("test error".into());
@@ -4369,10 +4491,14 @@ mod tests {
 
     #[test]
     fn decode_error_clone() {
-        let e = DecodeError::UnknownSelector { selector: [0xaa, 0xbb, 0xcc, 0xdd] };
+        let e = DecodeError::UnknownSelector {
+            selector: [0xaa, 0xbb, 0xcc, 0xdd],
+        };
         let e2 = e.clone();
         match e2 {
-            DecodeError::UnknownSelector { selector } => assert_eq!(selector, [0xaa, 0xbb, 0xcc, 0xdd]),
+            DecodeError::UnknownSelector { selector } => {
+                assert_eq!(selector, [0xaa, 0xbb, 0xcc, 0xdd])
+            }
             _ => panic!("expected UnknownSelector"),
         }
     }

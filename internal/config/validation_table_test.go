@@ -264,4 +264,3 @@ admin_chat_ids = [1]
 		t.Fatalf("port = %d", cfg.Executor.Port)
 	}
 }
-

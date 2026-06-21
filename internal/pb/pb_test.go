@@ -180,8 +180,12 @@ func TestEnumMethods(t *testing.T) {
 }
 
 type mockArbServer struct{ UnimplementedArbServiceServer }
-type mockHealthServer struct{ UnimplementedHealthServiceServer }
-type mockControlServer struct{ UnimplementedControlServiceServer }
+type mockHealthServer struct {
+	UnimplementedHealthServiceServer
+}
+type mockControlServer struct {
+	UnimplementedControlServiceServer
+}
 
 func (s *mockArbServer) SubmitArb(_ context.Context, arb *ValidatedArb) (*SubmitArbResponse, error) {
 	return &SubmitArbResponse{Accepted: true, BundleHash: arb.Id}, nil

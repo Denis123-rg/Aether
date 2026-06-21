@@ -8,10 +8,10 @@
 use alloy::primitives::{Address, U256};
 use bytes::Bytes;
 
+use crate::service::aether_proto;
 use aether_common::types::{
     ArbHop, ArbOpportunity, ProtocolType, SimulationResult, SwapStep, ValidatedArb,
 };
-use crate::service::aether_proto;
 
 // ---------------------------------------------------------------------------
 // Address / U256 serialization helpers
@@ -353,10 +353,7 @@ mod tests {
         assert_eq!(proto.calldata, Bytes::from_static(&[0xDE, 0xAD]));
 
         // Verify flashloan token address.
-        assert_eq!(
-            Address::from_slice(&proto.flashloan_token),
-            addresses::WETH
-        );
+        assert_eq!(Address::from_slice(&proto.flashloan_token), addresses::WETH);
     }
 
     // ---- build_validated_arb ----

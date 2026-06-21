@@ -456,7 +456,8 @@ mod tests {
         let metrics = Arc::new(fresh_metrics());
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
 
-        let handle = spawn_first_seen_tracker(Arc::clone(&channels), Arc::clone(&metrics), shutdown_rx);
+        let handle =
+            spawn_first_seen_tracker(Arc::clone(&channels), Arc::clone(&metrics), shutdown_rx);
 
         let first_seen = 1_700_000_000_000_000_000u64;
         let tx_hash = hashn(42);
@@ -494,7 +495,8 @@ mod tests {
         let channels = Arc::new(EventChannels::new());
         let (_shutdown_tx, shutdown_rx) = watch::channel(false);
 
-        let handle = spawn_first_seen_tracker(Arc::clone(&channels), Arc::clone(&metrics), shutdown_rx);
+        let handle =
+            spawn_first_seen_tracker(Arc::clone(&channels), Arc::clone(&metrics), shutdown_rx);
 
         drop(channels);
         handle.await.expect("tracker task should not panic");
@@ -506,7 +508,8 @@ mod tests {
         let channels = Arc::new(EventChannels::new());
         let (_shutdown_tx, shutdown_rx) = watch::channel(false);
 
-        let handle = spawn_first_seen_tracker(Arc::clone(&channels), Arc::clone(&metrics), shutdown_rx);
+        let handle =
+            spawn_first_seen_tracker(Arc::clone(&channels), Arc::clone(&metrics), shutdown_rx);
 
         drop(channels);
         handle.await.expect("tracker task should not panic");
@@ -518,7 +521,8 @@ mod tests {
         let metrics = Arc::new(fresh_metrics());
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
 
-        let handle = spawn_first_seen_tracker(Arc::clone(&channels), Arc::clone(&metrics), shutdown_rx);
+        let handle =
+            spawn_first_seen_tracker(Arc::clone(&channels), Arc::clone(&metrics), shutdown_rx);
 
         tokio::time::sleep(Duration::from_millis(20)).await;
 
@@ -532,7 +536,8 @@ mod tests {
         let metrics = Arc::new(fresh_metrics());
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
 
-        let handle = spawn_first_seen_tracker(Arc::clone(&channels), Arc::clone(&metrics), shutdown_rx);
+        let handle =
+            spawn_first_seen_tracker(Arc::clone(&channels), Arc::clone(&metrics), shutdown_rx);
 
         let _ = shutdown_tx.send(false);
         tokio::time::sleep(Duration::from_millis(20)).await;
@@ -547,7 +552,8 @@ mod tests {
         let metrics = Arc::new(fresh_metrics());
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
 
-        let handle = spawn_first_seen_tracker(Arc::clone(&channels), Arc::clone(&metrics), shutdown_rx);
+        let handle =
+            spawn_first_seen_tracker(Arc::clone(&channels), Arc::clone(&metrics), shutdown_rx);
 
         tokio::time::sleep(Duration::from_millis(20)).await;
 
@@ -571,7 +577,8 @@ mod tests {
         let metrics = Arc::new(fresh_metrics());
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
 
-        let handle = spawn_first_seen_tracker(Arc::clone(&channels), Arc::clone(&metrics), shutdown_rx);
+        let handle =
+            spawn_first_seen_tracker(Arc::clone(&channels), Arc::clone(&metrics), shutdown_rx);
 
         tokio::time::sleep(Duration::from_millis(20)).await;
 
@@ -587,7 +594,11 @@ mod tests {
         tracker.record(hashn(1), now, &metrics);
         assert_eq!(tracker.len(), 1);
         tracker.record(hashn(2), now + 1, &metrics);
-        assert_eq!(tracker.len(), 1, "capacity-1 tracker should still hold 1 entry");
+        assert_eq!(
+            tracker.len(),
+            1,
+            "capacity-1 tracker should still hold 1 entry"
+        );
         // hash(1) was evicted; observing it should be unmatched
         tracker.observe_block(&[hashn(1)], now + 100, &metrics);
         assert_eq!(tracker.len(), 1, "hash(2) should still be present");
@@ -614,7 +625,11 @@ mod tests {
     fn observe_block_with_no_tracked_entries() {
         let metrics = fresh_metrics();
         let tracker = MempoolFirstSeenTracker::with_capacity(10);
-        tracker.observe_block(&[hashn(1), hashn(2), hashn(3)], 1_700_000_000_000_000_000, &metrics);
+        tracker.observe_block(
+            &[hashn(1), hashn(2), hashn(3)],
+            1_700_000_000_000_000_000,
+            &metrics,
+        );
         assert_eq!(tracker.len(), 0);
     }
 

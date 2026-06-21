@@ -34,7 +34,10 @@ fn gate_post_sim_passes_when_profits_align() {
     let metrics = EngineMetrics::new();
     let config = GatingConfig::default();
     let verdict = gate_post_sim(1_000_000, 950_000, &config, &metrics);
-    assert!(matches!(verdict, aether_grpc_server::cycle_gating::PostSimGateVerdict::Pass));
+    assert!(matches!(
+        verdict,
+        aether_grpc_server::cycle_gating::PostSimGateVerdict::Pass
+    ));
 }
 
 #[test]
@@ -63,19 +66,33 @@ fn gate_post_sim_drops_negative_actual_as_zero() {
 #[test]
 fn gate_post_sim_passes_at_threshold_boundary() {
     let metrics = EngineMetrics::new();
-    let config = GatingConfig { revm_profit_mismatch_threshold: 0.5, ..GatingConfig::default() };
+    let config = GatingConfig {
+        revm_profit_mismatch_threshold: 0.5,
+        ..GatingConfig::default()
+    };
     let expected = 1_000_000u128;
     let actual = 500_000u128;
     let verdict = gate_post_sim(expected, actual, &config, &metrics);
-    assert!(matches!(verdict, aether_grpc_server::cycle_gating::PostSimGateVerdict::Pass));
+    assert!(matches!(
+        verdict,
+        aether_grpc_server::cycle_gating::PostSimGateVerdict::Pass
+    ));
 }
 
 #[test]
 fn gate_post_sim_positive_actual_passes_for_weth_flashloan_path() {
     let metrics = EngineMetrics::new();
     let config = GatingConfig::default();
-    let verdict = gate_post_sim(100_000_000_000_000_000, 99_000_000_000_000_000, &config, &metrics);
-    assert!(matches!(verdict, aether_grpc_server::cycle_gating::PostSimGateVerdict::Pass));
+    let verdict = gate_post_sim(
+        100_000_000_000_000_000,
+        99_000_000_000_000_000,
+        &config,
+        &metrics,
+    );
+    assert!(matches!(
+        verdict,
+        aether_grpc_server::cycle_gating::PostSimGateVerdict::Pass
+    ));
 }
 
 #[test]
@@ -83,7 +100,10 @@ fn gate_post_sim_zero_expected_always_passes() {
     let metrics = EngineMetrics::new();
     let config = GatingConfig::default();
     let verdict = gate_post_sim(0, 0, &config, &metrics);
-    assert!(matches!(verdict, aether_grpc_server::cycle_gating::PostSimGateVerdict::Pass));
+    assert!(matches!(
+        verdict,
+        aether_grpc_server::cycle_gating::PostSimGateVerdict::Pass
+    ));
 }
 
 #[test]

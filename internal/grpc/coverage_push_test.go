@@ -52,4 +52,3 @@ func TestDial_UnixTarget(t *testing.T) {
 		t.Fatal("nil health service")
 	}
 }
-

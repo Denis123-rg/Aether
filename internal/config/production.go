@@ -21,8 +21,8 @@ type ProductionConfig struct {
 
 // MonitorConfig holds monitor service HTTP settings.
 type MonitorConfig struct {
-	Port      int             `toml:"port"`
-	Alerting  MonitorAlerting `toml:"alerting"`
+	Port     int             `toml:"port"`
+	Alerting MonitorAlerting `toml:"alerting"`
 }
 
 // MonitorAlerting holds optional native alert channel credentials.
@@ -36,10 +36,10 @@ type MonitorAlerting struct {
 
 // TelegramConfig holds telebot settings.
 type TelegramConfig struct {
-	BotToken                  string  `toml:"bot_token"`
-	AdminChatIDs              []int64 `toml:"admin_chat_ids"`
-	DashboardUpdateIntervalSecs int `toml:"dashboard_update_interval_secs"`
-	ExecutorMetricsURL        string  `toml:"executor_metrics_url"`
+	BotToken                    string  `toml:"bot_token"`
+	AdminChatIDs                []int64 `toml:"admin_chat_ids"`
+	DashboardUpdateIntervalSecs int     `toml:"dashboard_update_interval_secs"`
+	ExecutorMetricsURL          string  `toml:"executor_metrics_url"`
 }
 
 // RedisConfig holds optional Redis pub/sub settings.

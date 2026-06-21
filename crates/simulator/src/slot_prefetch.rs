@@ -411,7 +411,8 @@ mod tests {
                     b.extend_from_slice(&(one * U256::from(2u8)).to_be_bytes::<32>());
                     b.extend_from_slice(&U256::ZERO.to_be_bytes::<32>());
                     b
-                }.into(),
+                }
+                .into(),
             },
             IMulticall3::Result {
                 success: false,
@@ -429,7 +430,8 @@ mod tests {
                     b.extend_from_slice(&U256::from(600u64).to_be_bytes::<32>());
                     b.extend_from_slice(&U256::ZERO.to_be_bytes::<32>());
                     b
-                }.into(),
+                }
+                .into(),
             },
         ];
         let mut out = Vec::new();
@@ -469,14 +471,18 @@ mod tests {
                 allowFailure: true,
                 callData: vec![].into(),
             }],
-        }.abi_encode();
+        }
+        .abi_encode();
         assert_eq!(calldata[0..4], [0x82, 0xad, 0x56, 0xcb]);
     }
 
     #[test]
     fn aggregate3_decode_returns_rejects_truncated_data() {
         let result = IMulticall3::aggregate3Call::abi_decode_returns(&[0x00u8; 4]);
-        assert!(result.is_err(), "truncated return data must produce a decode error");
+        assert!(
+            result.is_err(),
+            "truncated return data must produce a decode error"
+        );
     }
 
     #[test]
@@ -510,7 +516,8 @@ mod tests {
                 b.extend_from_slice(&(one * U256::from(3u8)).to_be_bytes::<32>());
                 b.extend_from_slice(&U256::ZERO.to_be_bytes::<32>());
                 b
-            }.into(),
+            }
+            .into(),
         }];
         let mut out = Vec::new();
         for (pool, res) in pools.iter().zip(synth.into_iter()) {
@@ -554,8 +561,14 @@ mod tests {
         ];
         let one = U256::from(100u64);
         let synth = vec![
-            IMulticall3::Result { success: false, returnData: vec![].into() },
-            IMulticall3::Result { success: true, returnData: vec![0u8; 32].into() },
+            IMulticall3::Result {
+                success: false,
+                returnData: vec![].into(),
+            },
+            IMulticall3::Result {
+                success: true,
+                returnData: vec![0u8; 32].into(),
+            },
             IMulticall3::Result {
                 success: true,
                 returnData: {
@@ -564,7 +577,8 @@ mod tests {
                     b.extend_from_slice(&(one * U256::from(2u8)).to_be_bytes::<32>());
                     b.extend_from_slice(&U256::ZERO.to_be_bytes::<32>());
                     b
-                }.into(),
+                }
+                .into(),
             },
         ];
         let mut out = Vec::new();
@@ -577,7 +591,11 @@ mod tests {
             if r0 == U256::ZERO && r1 == U256::ZERO {
                 continue;
             }
-            out.push(V2ReservesResult { pool: *pool, reserve0: r0, reserve1: r1 });
+            out.push(V2ReservesResult {
+                pool: *pool,
+                reserve0: r0,
+                reserve1: r1,
+            });
         }
         assert_eq!(out.len(), 1);
         assert_eq!(out[0].pool, pools[2]);
@@ -598,7 +616,8 @@ mod tests {
                     b.extend_from_slice(&U256::from(1u64).to_be_bytes::<32>());
                     b.extend_from_slice(&U256::ZERO.to_be_bytes::<32>());
                     b
-                }.into(),
+                }
+                .into(),
             },
             IMulticall3::Result {
                 success: true,
@@ -608,7 +627,8 @@ mod tests {
                     b.extend_from_slice(&U256::ZERO.to_be_bytes::<32>());
                     b.extend_from_slice(&U256::ZERO.to_be_bytes::<32>());
                     b
-                }.into(),
+                }
+                .into(),
             },
         ];
         let mut out = Vec::new();
@@ -621,7 +641,11 @@ mod tests {
             if r0 == U256::ZERO && r1 == U256::ZERO {
                 continue;
             }
-            out.push(V2ReservesResult { pool: *pool, reserve0: r0, reserve1: r1 });
+            out.push(V2ReservesResult {
+                pool: *pool,
+                reserve0: r0,
+                reserve1: r1,
+            });
         }
         assert_eq!(out.len(), 2);
     }
@@ -662,15 +686,24 @@ mod tests {
                 b.extend_from_slice(&U256::ZERO.to_be_bytes::<32>());
                 b.extend_from_slice(&U256::ZERO.to_be_bytes::<32>());
                 b
-            }.into(),
+            }
+            .into(),
         }];
         let mut out = Vec::new();
         for (pool, res) in pools.iter().zip(synth.into_iter()) {
-            if !res.success || res.returnData.len() < 96 { continue; }
+            if !res.success || res.returnData.len() < 96 {
+                continue;
+            }
             let r0 = U256::from_be_slice(&res.returnData[0..32]);
             let r1 = U256::from_be_slice(&res.returnData[32..64]);
-            if r0 == U256::ZERO && r1 == U256::ZERO { continue; }
-            out.push(V2ReservesResult { pool: *pool, reserve0: r0, reserve1: r1 });
+            if r0 == U256::ZERO && r1 == U256::ZERO {
+                continue;
+            }
+            out.push(V2ReservesResult {
+                pool: *pool,
+                reserve0: r0,
+                reserve1: r1,
+            });
         }
         assert!(out.is_empty());
     }
@@ -684,26 +717,45 @@ mod tests {
             address!("0000000000000000000000000000000000000004"),
         ];
         let synth = vec![
-            IMulticall3::Result { success: false, returnData: vec![].into() },
-            IMulticall3::Result { success: true, returnData: vec![0u8; 32].into() },
             IMulticall3::Result {
-                success: true, returnData: {
+                success: false,
+                returnData: vec![].into(),
+            },
+            IMulticall3::Result {
+                success: true,
+                returnData: vec![0u8; 32].into(),
+            },
+            IMulticall3::Result {
+                success: true,
+                returnData: {
                     let mut b = Vec::with_capacity(96);
                     b.extend_from_slice(&U256::ZERO.to_be_bytes::<32>());
                     b.extend_from_slice(&U256::ZERO.to_be_bytes::<32>());
                     b.extend_from_slice(&U256::ZERO.to_be_bytes::<32>());
                     b
-                }.into(),
+                }
+                .into(),
             },
-            IMulticall3::Result { success: false, returnData: vec![0u8; 10].into() },
+            IMulticall3::Result {
+                success: false,
+                returnData: vec![0u8; 10].into(),
+            },
         ];
         let mut out = Vec::new();
         for (pool, res) in pools.iter().zip(synth.into_iter()) {
-            if !res.success || res.returnData.len() < 96 { continue; }
+            if !res.success || res.returnData.len() < 96 {
+                continue;
+            }
             let r0 = U256::from_be_slice(&res.returnData[0..32]);
             let r1 = U256::from_be_slice(&res.returnData[32..64]);
-            if r0 == U256::ZERO && r1 == U256::ZERO { continue; }
-            out.push(V2ReservesResult { pool: *pool, reserve0: r0, reserve1: r1 });
+            if r0 == U256::ZERO && r1 == U256::ZERO {
+                continue;
+            }
+            out.push(V2ReservesResult {
+                pool: *pool,
+                reserve0: r0,
+                reserve1: r1,
+            });
         }
         assert!(out.is_empty(), "all pools should be filtered out");
     }
@@ -757,9 +809,9 @@ mod tests {
         ];
         let result = batch_v2_reserves(&provider, 42, &pools).await;
         assert!(result.is_err());
-        assert!(
-            result.unwrap_err().contains("returned 1 results for 2 sub-calls")
-        );
+        assert!(result
+            .unwrap_err()
+            .contains("returned 1 results for 2 sub-calls"));
     }
 
     /// Failed sub-calls are dropped; surviving pools are returned.

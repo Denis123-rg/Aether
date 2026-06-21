@@ -253,7 +253,10 @@ mod tests {
         let r3 = rx3.recv().await.expect("rx3 should receive");
 
         for received in [r1, r2, r3] {
-            let PoolEvent::V3Update { tick, liquidity, .. } = received else {
+            let PoolEvent::V3Update {
+                tick, liquidity, ..
+            } = received
+            else {
                 panic!("dispatch returned unexpected variant: {received:?}");
             };
             assert_eq!(tick, -50);

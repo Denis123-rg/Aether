@@ -543,11 +543,11 @@ func (c *fakeClientConn) NewStream(_ context.Context, _ *grpc.StreamDesc, _ stri
 type sendFailStream struct{}
 
 func (sendFailStream) Header() (metadata.MD, error) { return nil, nil }
-func (sendFailStream) Trailer() metadata.MD          { return nil }
-func (sendFailStream) CloseSend() error              { return errDecFail }
-func (sendFailStream) Context() context.Context      { return context.Background() }
-func (sendFailStream) SendMsg(_ interface{}) error    { return errDecFail }
-func (sendFailStream) RecvMsg(_ interface{}) error    { return errDecFail }
+func (sendFailStream) Trailer() metadata.MD         { return nil }
+func (sendFailStream) CloseSend() error             { return errDecFail }
+func (sendFailStream) Context() context.Context     { return context.Background() }
+func (sendFailStream) SendMsg(_ interface{}) error  { return errDecFail }
+func (sendFailStream) RecvMsg(_ interface{}) error  { return errDecFail }
 
 func TestStreamArbsClientSendMsgError(t *testing.T) {
 	cc := &fakeClientConn{stream: &sendFailStream{}}
@@ -561,11 +561,11 @@ func TestStreamArbsClientSendMsgError(t *testing.T) {
 type closeSendFailStream struct{}
 
 func (closeSendFailStream) Header() (metadata.MD, error) { return nil, nil }
-func (closeSendFailStream) Trailer() metadata.MD          { return nil }
-func (closeSendFailStream) CloseSend() error              { return errDecFail }
-func (closeSendFailStream) Context() context.Context      { return context.Background() }
-func (closeSendFailStream) SendMsg(_ interface{}) error    { return nil }
-func (closeSendFailStream) RecvMsg(_ interface{}) error    { return errDecFail }
+func (closeSendFailStream) Trailer() metadata.MD         { return nil }
+func (closeSendFailStream) CloseSend() error             { return errDecFail }
+func (closeSendFailStream) Context() context.Context     { return context.Background() }
+func (closeSendFailStream) SendMsg(_ interface{}) error  { return nil }
+func (closeSendFailStream) RecvMsg(_ interface{}) error  { return errDecFail }
 
 func TestStreamArbsClientCloseSendError(t *testing.T) {
 	cc := &fakeClientConn{stream: &closeSendFailStream{}}

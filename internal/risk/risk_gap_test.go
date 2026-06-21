@@ -6,8 +6,8 @@ import (
 )
 
 type testMetricsObserver struct {
-	stateChangeCalled     int
-	circuitBreakerCalled  int
+	stateChangeCalled    int
+	circuitBreakerCalled int
 }
 
 func (o *testMetricsObserver) OnStateChange(state SystemState) {
@@ -27,13 +27,13 @@ func TestResetFromHalted_WithObserver(t *testing.T) {
 	rm := NewRiskManager(DefaultRiskConfig())
 	obs := &testMetricsObserver{}
 	rm.SetMetricsObserver(obs)
-	
+
 	// Should fail if not halted
 	err := rm.ResetFromHalted("test")
 	if err == nil {
 		t.Fatal("expected error when not halted")
 	}
-	
+
 	// Set to halted and reset
 	rm.ForceStateForTest(StateHalted)
 	err = rm.ResetFromHalted("operator")
@@ -53,7 +53,7 @@ func TestResume_WithObserver(t *testing.T) {
 	rm := NewRiskManager(DefaultRiskConfig())
 	obs := &testMetricsObserver{}
 	rm.SetMetricsObserver(obs)
-	
+
 	// Pause first, then resume
 	_ = rm.Pause("test")
 	err := rm.Resume()
@@ -70,7 +70,7 @@ func TestPause_WithObserver(t *testing.T) {
 	rm := NewRiskManager(DefaultRiskConfig())
 	obs := &testMetricsObserver{}
 	rm.SetMetricsObserver(obs)
-	
+
 	// Pause from running
 	err := rm.Pause("test1")
 	if err != nil {
@@ -79,7 +79,7 @@ func TestPause_WithObserver(t *testing.T) {
 	if rm.State() != StatePaused {
 		t.Fatalf("expected Paused, got %s", rm.State())
 	}
-	
+
 	// Pause again should still work (no-op but observer notified)
 	err = rm.Pause("test2")
 	if err == nil {
@@ -90,7 +90,7 @@ func TestPause_WithObserver(t *testing.T) {
 // Test Pause without observer
 func TestPause_WithoutObserver(t *testing.T) {
 	rm := NewRiskManager(DefaultRiskConfig())
-	
+
 	err := rm.Pause("test")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -103,7 +103,7 @@ func TestPause_WithoutObserver(t *testing.T) {
 // Test RecordRevert with competitive vs bug reverts
 func TestRecordRevert_CompetitiveVsBug(t *testing.T) {
 	rm := NewRiskManager(DefaultRiskConfig())
-	
+
 	// Record several competitive reverts
 	for i := 0; i < 5; i++ {
 		rm.RecordRevert(RevertCompetitive)
@@ -111,7 +111,7 @@ func TestRecordRevert_CompetitiveVsBug(t *testing.T) {
 	if rm.CompRevertTotal.Load() != 5 {
 		t.Fatalf("expected 5 comp reverts, got %d", rm.CompRevertTotal.Load())
 	}
-	
+
 	// Record bug reverts
 	for i := 0; i < 3; i++ {
 		rm.RecordRevert(RevertBug)
@@ -130,13 +130,13 @@ func TestPreflightCheck_EdgeCases(t *testing.T) {
 	if result.Approved {
 		t.Log("nil profit approval result depends on other factors")
 	}
-	
+
 	// Test with very low balance
 	result = rm.PreflightCheck(big.NewInt(1e18), big.NewInt(1e18), 10.0, 60.0, 0.01)
 	if result.Approved {
 		t.Log("low balance approval result depends on config")
 	}
-	
+
 	// Test with very high gas
 	result = rm.PreflightCheck(big.NewInt(1e18), big.NewInt(1e18), 400.0, 60.0, 1.0)
 	if result.Approved {
@@ -147,12 +147,12 @@ func TestPreflightCheck_EdgeCases(t *testing.T) {
 // Test WinRate with full window
 func TestWinRate_FullWindow(t *testing.T) {
 	rm := NewRiskManager(DefaultRiskConfig())
-	
+
 	// Fill the window with results
 	for i := 0; i < 100; i++ {
 		rm.RecordBundleResult(i%2 == 0) // 50% win rate
 	}
-	
+
 	wr := rm.WinRate()
 	if wr != 50.0 {
 		t.Fatalf("expected 50%% win rate, got %f", wr)

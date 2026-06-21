@@ -44,7 +44,9 @@ impl DiscoveryMetrics {
                 "aether_discovery_validation_latency_ms",
                 "Pool validation latency in milliseconds",
             )
-            .buckets(vec![1.0, 5.0, 10.0, 25.0, 50.0, 100.0, 250.0, 500.0, 1000.0]),
+            .buckets(vec![
+                1.0, 5.0, 10.0, 25.0, 50.0, 100.0, 250.0, 500.0, 1000.0,
+            ]),
         )
         .expect("discovery_validation_latency_ms");
         let revm_validations = CounterVec::new(
@@ -105,7 +107,9 @@ impl DiscoveryMetrics {
     /// Record one validation outcome for a DEX. `dex` and `result` must be
     /// stable, low-cardinality label values (see [`DiscoveryMetrics`]).
     pub fn record_validation(&self, dex: &str, result: &str) {
-        self.revm_validations.with_label_values(&[dex, result]).inc();
+        self.revm_validations
+            .with_label_values(&[dex, result])
+            .inc();
     }
 
     /// No-op metrics for unit tests.

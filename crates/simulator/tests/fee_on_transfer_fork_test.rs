@@ -21,7 +21,13 @@ fn fork_available() -> Option<String> {
     if url.trim().is_empty() {
         return None;
     }
-    if Command::new("anvil").arg("--version").output().ok()?.status.success() {
+    if Command::new("anvil")
+        .arg("--version")
+        .output()
+        .ok()?
+        .status
+        .success()
+    {
         Some(url)
     } else {
         None
@@ -33,7 +39,13 @@ fn spawn_anvil(fork_url: &str) -> (Child, String) {
     let offset = PORT_COUNTER.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
     let port = 19545 + (std::process::id() % 1000) as u16 + offset;
     let child = Command::new("anvil")
-        .args(["--fork-url", fork_url, "--port", &port.to_string(), "--silent"])
+        .args([
+            "--fork-url",
+            fork_url,
+            "--port",
+            &port.to_string(),
+            "--silent",
+        ])
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()
@@ -64,17 +76,13 @@ async fn wait_ready(url: &str) -> bool {
     false
 }
 
-async fn screen_pair(
-    rpc: &str,
-    pair: Address,
-    token: Address,
-    base_slot: u64,
-) -> RoundTripVerdict {
+async fn screen_pair(rpc: &str, pair: Address, token: Address, base_slot: u64) -> RoundTripVerdict {
     let parsed: url::Url = rpc.parse().unwrap();
     let provider = ProviderBuilder::new().connect_http(parsed).erased();
     let latest = provider.get_block_number().await.expect("block");
-    let state = RpcForkedState::new_at_latest(provider.clone(), latest, 4_000_000_000, 1_000_000_000)
-        .expect("fork state");
+    let state =
+        RpcForkedState::new_at_latest(provider.clone(), latest, 4_000_000_000, 1_000_000_000)
+            .expect("fork state");
     screen_token_v2_round_trip(
         state,
         pair,
@@ -137,7 +145,10 @@ async fn configured_fot_token_flags_fee_on_transfer() {
     assert!(wait_ready(&local).await);
     let v = screen_pair(&local, pair, token, slot).await;
     assert!(
-        matches!(v, RoundTripVerdict::FeeOnTransfer { .. } | RoundTripVerdict::Honeypot { .. }),
+        matches!(
+            v,
+            RoundTripVerdict::FeeOnTransfer { .. } | RoundTripVerdict::Honeypot { .. }
+        ),
         "expected FOT/honeypot verdict, got {v:?}"
     );
     let _ = anvil.kill();

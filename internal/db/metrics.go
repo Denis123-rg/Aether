@@ -15,10 +15,10 @@ import (
 // Registered against the default Prometheus registry on first construction.
 // Repeated NewLedgerMetrics calls return the same singleton instance.
 type LedgerMetrics struct {
-	WritesTotal     *prometheus.CounterVec
-	DropsTotal      *prometheus.CounterVec
-	QueueDepth      prometheus.Gauge
-	WriteLatencyMs  *prometheus.HistogramVec
+	WritesTotal    *prometheus.CounterVec
+	DropsTotal     *prometheus.CounterVec
+	QueueDepth     prometheus.Gauge
+	WriteLatencyMs *prometheus.HistogramVec
 }
 
 var (
@@ -52,8 +52,8 @@ func NewLedgerMetrics() *LedgerMetrics {
 				Help: "Pending trade-ledger writes sitting in the writer goroutine channel",
 			}),
 			WriteLatencyMs: prometheus.NewHistogramVec(prometheus.HistogramOpts{
-				Name: "aether_ledger_write_latency_ms",
-				Help: "Per-op latency of trade-ledger writes from dequeue to query completion",
+				Name:    "aether_ledger_write_latency_ms",
+				Help:    "Per-op latency of trade-ledger writes from dequeue to query completion",
 				Buckets: []float64{0.1, 0.25, 0.5, 1.0, 2.0, 5.0, 10.0, 25.0, 50.0, 100.0, 250.0, 500.0},
 			}, []string{"op"}),
 		}

@@ -121,10 +121,9 @@ impl VolumeSource {
         metrics: Option<Arc<DiscoveryMetrics>>,
     ) -> Self {
         match source {
-            "subgraph" => VolumeSource::Subgraph(SubgraphVolumeProvider::new(
-                subgraph_endpoint,
-                metrics,
-            )),
+            "subgraph" => {
+                VolumeSource::Subgraph(SubgraphVolumeProvider::new(subgraph_endpoint, metrics))
+            }
             _ => VolumeSource::Proxy(ProxyVolumeProvider),
         }
     }
@@ -169,7 +168,13 @@ mod tests {
         let pool = address!("0x00000000000000000000000000000000000000aa");
         let provider = SubgraphVolumeProvider::new(String::new(), None);
         provider.inject_cache(pool, 42_000.0);
-        let vol = provider.volume_24h_usd(pool, Address::ZERO, Address::ZERO, ProtocolType::UniswapV2, 10_000.0);
+        let vol = provider.volume_24h_usd(
+            pool,
+            Address::ZERO,
+            Address::ZERO,
+            ProtocolType::UniswapV2,
+            10_000.0,
+        );
         assert!((vol - 42_000.0).abs() < 0.01);
     }
 
@@ -177,7 +182,13 @@ mod tests {
     fn subgraph_fail_falls_back_to_proxy() {
         let pool = address!("0x00000000000000000000000000000000000000bb");
         let provider = SubgraphVolumeProvider::new("http://invalid".into(), None);
-        let vol = provider.volume_24h_usd(pool, Address::ZERO, Address::ZERO, ProtocolType::UniswapV2, 20_000.0);
+        let vol = provider.volume_24h_usd(
+            pool,
+            Address::ZERO,
+            Address::ZERO,
+            ProtocolType::UniswapV2,
+            20_000.0,
+        );
         assert!((vol - 1_000.0).abs() < 0.01);
     }
 
@@ -200,9 +211,21 @@ mod tests {
         let pool_b = address!("0x00000000000000000000000000000000000000b1");
         let subgraph = SubgraphVolumeProvider::new(String::new(), None);
         subgraph.inject_cache(pool_a, 500_000.0);
-        let vol_a = subgraph.volume_24h_usd(pool_a, Address::ZERO, Address::ZERO, ProtocolType::UniswapV2, 10_000.0);
+        let vol_a = subgraph.volume_24h_usd(
+            pool_a,
+            Address::ZERO,
+            Address::ZERO,
+            ProtocolType::UniswapV2,
+            10_000.0,
+        );
         let proxy = ProxyVolumeProvider;
-        let vol_b = proxy.volume_24h_usd(pool_b, Address::ZERO, Address::ZERO, ProtocolType::UniswapV2, 100_000.0);
+        let vol_b = proxy.volume_24h_usd(
+            pool_b,
+            Address::ZERO,
+            Address::ZERO,
+            ProtocolType::UniswapV2,
+            100_000.0,
+        );
         assert!(vol_a > vol_b);
     }
 

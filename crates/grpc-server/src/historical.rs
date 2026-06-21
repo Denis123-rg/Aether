@@ -32,8 +32,14 @@ pub const Q96: f64 = 79_228_162_514_264_337_593_543_950_336.0;
 /// V2/Sushi carry `(reserve0, reserve1)`.
 #[derive(Clone, Copy, Debug)]
 pub enum PoolState {
-    V2 { r0: U256, r1: U256 },
-    V3 { sqrt_price_x96: U256, liquidity: u128 },
+    V2 {
+        r0: U256,
+        r1: U256,
+    },
+    V3 {
+        sqrt_price_x96: U256,
+        liquidity: u128,
+    },
 }
 
 #[derive(Clone, Debug)]
@@ -149,9 +155,9 @@ pub async fn fetch_pool_state_at(
                     .to(pool.address)
                     .input(liq_calldata.into());
                 let liquidity: u128 = match provider.call(liq_tx).block(block_id).await {
-                    Ok(lout) if lout.len() >= 32 => {
-                        U256::from_be_slice(&lout[0..32]).try_into().unwrap_or(0u128)
-                    }
+                    Ok(lout) if lout.len() >= 32 => U256::from_be_slice(&lout[0..32])
+                        .try_into()
+                        .unwrap_or(0u128),
                     _ => 0u128,
                 };
                 Some(PoolState::V3 {
@@ -214,7 +220,8 @@ pub fn uniswap_v2_get_amount_out(
 pub fn load_executor_init_bytecode(artifact_path: &PathBuf) -> Result<Vec<u8>> {
     let raw = std::fs::read_to_string(artifact_path)
         .with_context(|| format!("read executor artifact {}", artifact_path.display()))?;
-    let v: serde_json::Value = serde_json::from_str(&raw).context("parse executor artifact JSON")?;
+    let v: serde_json::Value =
+        serde_json::from_str(&raw).context("parse executor artifact JSON")?;
     let hex_str = v
         .pointer("/bytecode/object")
         .and_then(|x| x.as_str())
@@ -233,12 +240,27 @@ mod tests {
 
     #[test]
     fn parse_protocol_known_strings() {
-        assert!(matches!(parse_protocol("uniswap_v2"), Some(ProtocolType::UniswapV2)));
-        assert!(matches!(parse_protocol("sushiswap"), Some(ProtocolType::SushiSwap)));
-        assert!(matches!(parse_protocol("uniswap_v3"), Some(ProtocolType::UniswapV3)));
+        assert!(matches!(
+            parse_protocol("uniswap_v2"),
+            Some(ProtocolType::UniswapV2)
+        ));
+        assert!(matches!(
+            parse_protocol("sushiswap"),
+            Some(ProtocolType::SushiSwap)
+        ));
+        assert!(matches!(
+            parse_protocol("uniswap_v3"),
+            Some(ProtocolType::UniswapV3)
+        ));
         assert!(matches!(parse_protocol("curve"), Some(ProtocolType::Curve)));
-        assert!(matches!(parse_protocol("balancer_v2"), Some(ProtocolType::BalancerV2)));
-        assert!(matches!(parse_protocol("bancor_v3"), Some(ProtocolType::BancorV3)));
+        assert!(matches!(
+            parse_protocol("balancer_v2"),
+            Some(ProtocolType::BalancerV2)
+        ));
+        assert!(matches!(
+            parse_protocol("bancor_v3"),
+            Some(ProtocolType::BancorV3)
+        ));
         assert!(parse_protocol("unknown").is_none());
         assert!(parse_protocol("").is_none());
     }
@@ -254,7 +276,12 @@ mod tests {
     fn uniswap_v2_get_amount_out_canonical() {
         // 1 token in, 1000:1000 reserves, 30 bps fee.
         // Expected: (1 * 9970 * 1000) / (1000 * 10000 + 1 * 9970) = 9970000 / 10009970 ≈ 0
-        let out = uniswap_v2_get_amount_out(U256::from(1u64), U256::from(1000u64), U256::from(1000u64), 30);
+        let out = uniswap_v2_get_amount_out(
+            U256::from(1u64),
+            U256::from(1000u64),
+            U256::from(1000u64),
+            30,
+        );
         assert_eq!(out, Some(U256::from(0u64)));
         // Larger trade.
         let out = uniswap_v2_get_amount_out(
@@ -322,8 +349,12 @@ fee_bps = 30
         let pools = load_pools(&tmp.path().to_path_buf()).unwrap();
         // Curve + unknown filtered out; V2 + V3 retained.
         assert_eq!(pools.len(), 2);
-        assert!(pools.iter().any(|p| matches!(p.protocol, ProtocolType::UniswapV2)));
-        assert!(pools.iter().any(|p| matches!(p.protocol, ProtocolType::UniswapV3)));
+        assert!(pools
+            .iter()
+            .any(|p| matches!(p.protocol, ProtocolType::UniswapV2)));
+        assert!(pools
+            .iter()
+            .any(|p| matches!(p.protocol, ProtocolType::UniswapV3)));
     }
 
     #[test]
@@ -369,7 +400,8 @@ fee_bps = 30
             U256::from(1000u64),
             U256::from(1000u64),
             0, // no fee
-        ).unwrap();
+        )
+        .unwrap();
         let expected = U256::from(90u64); // floor of 100*1000/1100 = 90.909
         assert_eq!(out, expected);
     }
@@ -377,7 +409,7 @@ fee_bps = 30
     #[test]
     fn uniswap_v2_get_amount_out_large_reserves() {
         let out = uniswap_v2_get_amount_out(
-            U256::from(1_000_000_000_000_000_000u128), // 1e18
+            U256::from(1_000_000_000_000_000_000u128),     // 1e18
             U256::from(1_000_000_000_000_000_000_000u128), // 1e21
             U256::from(1_000_000_000_000_000_000_000u128), // 1e21
             30,
@@ -393,7 +425,8 @@ fee_bps = 30
             U256::from(1_000_000_000u64),
             U256::from(1_000_000_000u64),
             100, // 1% fee
-        ).unwrap();
+        )
+        .unwrap();
         assert!(out > U256::ZERO);
     }
 
@@ -429,7 +462,11 @@ fee_bps = 30
     #[test]
     fn load_executor_init_bytecode_valid() {
         let tmp = tempfile::NamedTempFile::new().unwrap();
-        std::fs::write(tmp.path(), r#"{"bytecode": {"object": "0x6080604052348015600f57600080fd5b50"}}"#).unwrap();
+        std::fs::write(
+            tmp.path(),
+            r#"{"bytecode": {"object": "0x6080604052348015600f57600080fd5b50"}}"#,
+        )
+        .unwrap();
         let bytes = load_executor_init_bytecode(&tmp.path().to_path_buf()).unwrap();
         assert!(!bytes.is_empty());
         assert_eq!(bytes[0], 0x60);
@@ -438,7 +475,11 @@ fee_bps = 30
     #[test]
     fn load_executor_init_bytecode_without_0x_prefix() {
         let tmp = tempfile::NamedTempFile::new().unwrap();
-        std::fs::write(tmp.path(), r#"{"bytecode": {"object": "6080604052348015600f57600080fd5b50"}}"#).unwrap();
+        std::fs::write(
+            tmp.path(),
+            r#"{"bytecode": {"object": "6080604052348015600f57600080fd5b50"}}"#,
+        )
+        .unwrap();
         let bytes = load_executor_init_bytecode(&tmp.path().to_path_buf()).unwrap();
         assert!(!bytes.is_empty());
     }
@@ -467,7 +508,10 @@ fee_bps = 30
             liquidity: 1_000_000_000_000u128,
         };
         match state {
-            PoolState::V3 { sqrt_price_x96, liquidity } => {
+            PoolState::V3 {
+                sqrt_price_x96,
+                liquidity,
+            } => {
                 assert!(sqrt_price_x96 > U256::ZERO);
                 assert_eq!(liquidity, 1_000_000_000_000u128);
             }
@@ -594,7 +638,7 @@ fee_bps = 30
             protocol: ProtocolType::Curve,
             fee_bps: 4,
         };
-        // Curve protocol is handled by the function (returns V2/Curve state), 
+        // Curve protocol is handled by the function (returns V2/Curve state),
         // so test with a protocol that has no match arm.
         // Actually Curve IS handled. Let's just verify the function compiles
         // by testing with the Curve protocol - it should fetch balances.
@@ -730,7 +774,9 @@ fee_bps = 30
 
     #[test]
     fn q96_is_positive_finite() {
-        const { assert!(Q96 > 0.0); }
+        const {
+            assert!(Q96 > 0.0);
+        }
         assert!(Q96.is_finite());
     }
 
@@ -827,12 +873,8 @@ fee_bps = 30
 
     #[test]
     fn uniswap_v2_get_amount_out_very_small_reserves() {
-        let out = uniswap_v2_get_amount_out(
-            U256::from(1000u64),
-            U256::from(1u64),
-            U256::from(1u64),
-            30,
-        );
+        let out =
+            uniswap_v2_get_amount_out(U256::from(1000u64), U256::from(1u64), U256::from(1u64), 30);
         assert!(out.is_some());
     }
 
@@ -878,7 +920,10 @@ fee_bps = 30
         };
         let cloned = state;
         match cloned {
-            PoolState::V3 { sqrt_price_x96, liquidity } => {
+            PoolState::V3 {
+                sqrt_price_x96,
+                liquidity,
+            } => {
                 assert_eq!(sqrt_price_x96, U256::from(500u64));
                 assert_eq!(liquidity, 777u128);
             }

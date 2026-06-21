@@ -17,8 +17,8 @@ use std::time::Instant;
 use alloy::providers::{Provider, ProviderBuilder};
 
 use common::{
-    build_price_graph, check_rpc_available, default_pool_set, fetch_all_reserves,
-    run_detection, PoolDef,
+    build_price_graph, check_rpc_available, default_pool_set, fetch_all_reserves, run_detection,
+    PoolDef,
 };
 
 // ── Scanner types ───────────────────────────────────────────────────
@@ -140,7 +140,10 @@ async fn test_scan_recent_blocks() {
     let start = latest.saturating_sub(scan_count - 1);
 
     eprintln!("=== Historical Block Scanner: Recent Blocks ===");
-    eprintln!("Scanning blocks {} to {} (latest={})", start, latest, latest);
+    eprintln!(
+        "Scanning blocks {} to {} (latest={})",
+        start, latest, latest
+    );
 
     let config = ScanConfig {
         rate_limit_delay_ms: 150,

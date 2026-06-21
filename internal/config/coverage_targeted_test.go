@@ -94,8 +94,8 @@ func TestNewTestValidateProductionConfig_AllPaths(t *testing.T) {
 		{"no admin IDs", ProductionConfig{Telegram: TelegramConfig{BotToken: "tok"}}},
 		{"negative interval", ProductionConfig{Telegram: TelegramConfig{
 			BotToken: "tok", AdminChatIDs: []int64{1},
-			DashboardUpdateIntervalSecs:                 -1,
-			ExecutorMetricsURL:                          "http://x",
+			DashboardUpdateIntervalSecs: -1,
+			ExecutorMetricsURL:          "http://x",
 		}}},
 		{"empty metrics URL", ProductionConfig{Telegram: TelegramConfig{
 			BotToken: "tok", AdminChatIDs: []int64{1},

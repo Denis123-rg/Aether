@@ -129,8 +129,8 @@ func TestDumpShadowBundle_RoundTrip(t *testing.T) {
 				PoolAddress:  pool,
 				TokenIn:      weth,
 				TokenOut:     dai,
-				AmountIn:    new(big.Int).SetUint64(1_000_000_000_000_000_000).Bytes(), // 1e18
-				ExpectedOut: mustBigInt("1800000000000000000000").Bytes(),             // 1.8e21
+				AmountIn:     new(big.Int).SetUint64(1_000_000_000_000_000_000).Bytes(), // 1e18
+				ExpectedOut:  mustBigInt("1800000000000000000000").Bytes(),              // 1.8e21
 				EstimatedGas: 150_000,
 			},
 		},

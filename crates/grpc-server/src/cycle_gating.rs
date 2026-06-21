@@ -224,7 +224,10 @@ pub fn build_fingerprint_index(
 ///
 /// Corrupt/unpriced-placeholder rejection (`reserve_in == 0.0`) holds for
 /// every protocol — a successfully seeded V3 edge has `x_v > 0.0`.
-fn edge_passes_reserve_gate(edge: &aether_state::price_graph::PriceEdge, config: &GatingConfig) -> bool {
+fn edge_passes_reserve_gate(
+    edge: &aether_state::price_graph::PriceEdge,
+    config: &GatingConfig,
+) -> bool {
     match edge.protocol {
         ProtocolType::UniswapV3 => edge.reserve_in > 0.0,
         _ => edge.reserve_in >= config.min_reserve_f64,
@@ -412,8 +415,7 @@ pub fn gate_post_sim(
     if actual_profit_wei == 0 {
         info!(
             expected_net_wei,
-            actual_profit_wei,
-            "REVM CONTRADICTS DETECTOR: zero actual vs nonzero expected"
+            actual_profit_wei, "REVM CONTRADICTS DETECTOR: zero actual vs nonzero expected"
         );
         metrics.inc_cycle_gate_dropped(GateDropReason::RevmContradicts.as_label());
         return PostSimGateVerdict::Drop(GateDropReason::RevmContradicts);
@@ -465,7 +467,15 @@ mod tests {
         reserve_in: f64,
         reserve_out: f64,
     ) {
-        add_test_edge_proto(g, from, to, reserve_in, reserve_out, ProtocolType::UniswapV2, 0)
+        add_test_edge_proto(
+            g,
+            from,
+            to,
+            reserve_in,
+            reserve_out,
+            ProtocolType::UniswapV2,
+            0,
+        )
     }
 
     /// Same as [`add_test_edge`] but parametrised by protocol so V3-specific
@@ -506,7 +516,10 @@ mod tests {
     fn fingerprint_bucket_collapses_identical_profits() {
         let q = 1.0e-6;
         // The two values differ by ~1e-9, well inside the quantum.
-        assert_eq!(fingerprint_bucket(0.025_000_001, q), fingerprint_bucket(0.025_000_002, q));
+        assert_eq!(
+            fingerprint_bucket(0.025_000_001, q),
+            fingerprint_bucket(0.025_000_002, q)
+        );
         // Values an order of magnitude apart land in different buckets.
         assert_ne!(fingerprint_bucket(0.025, q), fingerprint_bucket(0.030, q));
     }
@@ -550,7 +563,10 @@ mod tests {
             verdict,
             PreSimGateVerdict::Drop(GateDropReason::ProfitFactorImpossible)
         );
-        assert_eq!(metrics.cycle_gate_dropped_count("profit_factor_impossible"), 1);
+        assert_eq!(
+            metrics.cycle_gate_dropped_count("profit_factor_impossible"),
+            1
+        );
     }
 
     #[test]
@@ -591,7 +607,10 @@ mod tests {
             total_weight: -0.05, // realistic 5% profit
         };
         let verdict = gate_pre_sim(&cycle, &graph, &index, &config, &metrics);
-        assert_eq!(verdict, PreSimGateVerdict::Drop(GateDropReason::ReservesTooLow));
+        assert_eq!(
+            verdict,
+            PreSimGateVerdict::Drop(GateDropReason::ReservesTooLow)
+        );
         assert_eq!(metrics.cycle_gate_dropped_count("reserves_too_low"), 1);
     }
 
@@ -655,7 +674,10 @@ mod tests {
             total_weight: -0.05,
         };
         let verdict = gate_pre_sim(&cycle, &graph, &index, &config, &metrics);
-        assert_eq!(verdict, PreSimGateVerdict::Drop(GateDropReason::ReservesTooLow));
+        assert_eq!(
+            verdict,
+            PreSimGateVerdict::Drop(GateDropReason::ReservesTooLow)
+        );
         assert_eq!(metrics.cycle_gate_dropped_count("reserves_too_low"), 1);
     }
 
@@ -687,7 +709,10 @@ mod tests {
             total_weight: -0.05,
         };
         let verdict = gate_pre_sim(&cycle, &graph, &index, &config, &metrics);
-        assert_eq!(verdict, PreSimGateVerdict::Drop(GateDropReason::ReservesTooLow));
+        assert_eq!(
+            verdict,
+            PreSimGateVerdict::Drop(GateDropReason::ReservesTooLow)
+        );
     }
 
     #[test]
@@ -745,7 +770,10 @@ mod tests {
         let mut index = std::collections::HashMap::new();
         index.insert(bucket, 6);
         let verdict = gate_pre_sim(&cycle, &graph, &index, &config, &metrics);
-        assert_eq!(verdict, PreSimGateVerdict::Drop(GateDropReason::FingerprintCluster));
+        assert_eq!(
+            verdict,
+            PreSimGateVerdict::Drop(GateDropReason::FingerprintCluster)
+        );
         assert_eq!(metrics.cycle_gate_dropped_count("fingerprint_cluster"), 1);
     }
 
@@ -776,7 +804,10 @@ mod tests {
         let metrics = EngineMetrics::new();
         let config = GatingConfig::default();
         let verdict = gate_post_sim(1_000_000, 0, &config, &metrics);
-        assert_eq!(verdict, PostSimGateVerdict::Drop(GateDropReason::RevmContradicts));
+        assert_eq!(
+            verdict,
+            PostSimGateVerdict::Drop(GateDropReason::RevmContradicts)
+        );
         assert_eq!(metrics.cycle_gate_dropped_count("revm_contradicts"), 1);
     }
 
@@ -788,7 +819,10 @@ mod tests {
         let expected: u128 = 21_000_000_000_000_000_000_000_000_000;
         let actual: u128 = 1_000_000_000_000_000;
         let verdict = gate_post_sim(expected, actual, &config, &metrics);
-        assert_eq!(verdict, PostSimGateVerdict::Drop(GateDropReason::RevmContradicts));
+        assert_eq!(
+            verdict,
+            PostSimGateVerdict::Drop(GateDropReason::RevmContradicts)
+        );
     }
 
     #[test]

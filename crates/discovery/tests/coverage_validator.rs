@@ -4,11 +4,10 @@ use aether_common::types::{addresses::WETH, ProtocolType};
 use aether_discovery::metrics::DiscoveryMetrics;
 use aether_discovery::types::{PoolInfo, ValidationResult};
 use aether_discovery::validator::{
-    validate_balancer_v3_balances, validate_balancer_v3_pool_full,
-    validate_balancer_v3_pool_revm, validate_balancer_v3_pool_rpc, validate_curve_balances,
-    validate_curve_pool_full, validate_curve_pool_revm, validate_curve_pool_rpc,
-    validate_pool_revm, validate_v2_pool_full, validate_v2_pool_revm, validate_v2_pool_rpc,
-    validate_v3_pool_full, validate_v3_pool_revm,
+    validate_balancer_v3_balances, validate_balancer_v3_pool_full, validate_balancer_v3_pool_revm,
+    validate_balancer_v3_pool_rpc, validate_curve_balances, validate_curve_pool_full,
+    validate_curve_pool_revm, validate_curve_pool_rpc, validate_pool_revm, validate_v2_pool_full,
+    validate_v2_pool_revm, validate_v2_pool_rpc, validate_v3_pool_full, validate_v3_pool_revm,
 };
 use alloy::primitives::{address, Address, U256};
 use alloy::providers::{Provider, ProviderBuilder};
@@ -26,9 +25,7 @@ fn rpc_ok(result_hex: &str) -> String {
 }
 
 fn rpc_error(message: &str) -> String {
-    format!(
-        r#"{{"jsonrpc":"2.0","id":1,"error":{{"code":-32000,"message":"{message}"}}}}"#
-    )
+    format!(r#"{{"jsonrpc":"2.0","id":1,"error":{{"code":-32000,"message":"{message}"}}}}"#)
 }
 
 fn pool_info(addr: Address, protocol: ProtocolType) -> PoolInfo {
@@ -129,8 +126,7 @@ async fn custodial_provider(
     (provider, server)
 }
 
-async fn custodial_provider_rpc_error(
-) -> (
+async fn custodial_provider_rpc_error() -> (
     alloy::providers::DynProvider<alloy::network::Ethereum>,
     ServerGuard,
 ) {
@@ -213,8 +209,7 @@ async fn validate_curve_pool_rpc_balances_call_fails() {
 async fn validate_balancer_v3_pool_rpc_no_bytecode() {
     let pool = address!("0x5c6Ee304399DBdB9C8Ef030aB642B10820DB8F56");
     let (provider, _server) = balancer_provider(U256::ZERO, U256::ZERO, "0x").await;
-    let result =
-        validate_balancer_v3_pool_rpc(&provider, pool, USDC, WETH, 10, 0.001).await;
+    let result = validate_balancer_v3_pool_rpc(&provider, pool, USDC, WETH, 10, 0.001).await;
     assert!(matches!(result, ValidationResult::Invalid(_)));
 }
 
@@ -229,8 +224,7 @@ async fn validate_balancer_v3_pool_rpc_rpc_error_fails_open() {
     let url: url::Url = server.url().parse().expect("url");
     let provider = ProviderBuilder::new().connect_http(url).erased();
     let pool = address!("0x5c6Ee304399DBdB9C8Ef030aB642B10820DB8F56");
-    let result =
-        validate_balancer_v3_pool_rpc(&provider, pool, USDC, WETH, 10, 0.001).await;
+    let result = validate_balancer_v3_pool_rpc(&provider, pool, USDC, WETH, 10, 0.001).await;
     assert_eq!(result, ValidationResult::Valid);
 }
 
@@ -243,8 +237,7 @@ async fn validate_balancer_v3_pool_rpc_success() {
         "0x6000600055",
     )
     .await;
-    let result =
-        validate_balancer_v3_pool_rpc(&provider, pool, USDC, WETH, 10, 0.001).await;
+    let result = validate_balancer_v3_pool_rpc(&provider, pool, USDC, WETH, 10, 0.001).await;
     assert_eq!(result, ValidationResult::Valid);
 }
 
@@ -301,17 +294,8 @@ async fn validate_custodial_pool_deployed_accepted() {
 async fn validate_v3_pool_full_analytical_non_weth() {
     let pool = address!("5777d92f208679DB4b9778590Fa3CAB3aC9e2168");
     let (provider, _server) = custodial_provider(true).await;
-    let result = validate_v3_pool_full(
-        &provider,
-        pool,
-        DAI,
-        USDC,
-        1,
-        0.001,
-        "analytical",
-        None,
-    )
-    .await;
+    let result =
+        validate_v3_pool_full(&provider, pool, DAI, USDC, 1, 0.001, "analytical", None).await;
     assert_eq!(result, ValidationResult::Valid);
 }
 
@@ -328,17 +312,8 @@ async fn validate_v3_pool_full_both_mode_with_metrics() {
     let url: url::Url = server.url().parse().expect("url");
     let provider = ProviderBuilder::new().connect_http(url).erased();
     let metrics = DiscoveryMetrics::noop();
-    let result = validate_v3_pool_full(
-        &provider,
-        pool,
-        USDC,
-        WETH,
-        5,
-        0.001,
-        "both",
-        Some(metrics),
-    )
-    .await;
+    let result =
+        validate_v3_pool_full(&provider, pool, USDC, WETH, 5, 0.001, "both", Some(metrics)).await;
     assert!(matches!(
         result,
         ValidationResult::Valid | ValidationResult::Invalid(_)
@@ -380,17 +355,8 @@ async fn validate_curve_pool_full_both_mode() {
         U256::from(1_000_000_000_000_000_000_000u128),
     )
     .await;
-    let result = validate_curve_pool_full(
-        &provider,
-        pool,
-        USDC,
-        WETH,
-        4,
-        0.001,
-        "both",
-        None,
-    )
-    .await;
+    let result =
+        validate_curve_pool_full(&provider, pool, USDC, WETH, 4, 0.001, "both", None).await;
     assert!(matches!(
         result,
         ValidationResult::Valid | ValidationResult::Invalid(_)
@@ -406,17 +372,8 @@ async fn validate_curve_pool_full_rev_mode() {
         U256::from(1_000_000_000_000_000_000_000u128),
     )
     .await;
-    let result = validate_curve_pool_full(
-        &provider,
-        pool,
-        USDC,
-        WETH,
-        4,
-        0.001,
-        "revm",
-        None,
-    )
-    .await;
+    let result =
+        validate_curve_pool_full(&provider, pool, USDC, WETH, 4, 0.001, "revm", None).await;
     assert!(matches!(
         result,
         ValidationResult::Valid | ValidationResult::Invalid(_)
@@ -458,17 +415,8 @@ async fn validate_balancer_v3_pool_full_both() {
         "0x6000600055",
     )
     .await;
-    let result = validate_balancer_v3_pool_full(
-        &provider,
-        pool,
-        USDC,
-        WETH,
-        10,
-        0.001,
-        "both",
-        None,
-    )
-    .await;
+    let result =
+        validate_balancer_v3_pool_full(&provider, pool, USDC, WETH, 10, 0.001, "both", None).await;
     assert!(matches!(
         result,
         ValidationResult::Valid | ValidationResult::Invalid(_)
@@ -484,17 +432,8 @@ async fn validate_balancer_v3_pool_full_rev() {
         "0x6000600055",
     )
     .await;
-    let result = validate_balancer_v3_pool_full(
-        &provider,
-        pool,
-        USDC,
-        WETH,
-        10,
-        0.001,
-        "revm",
-        None,
-    )
-    .await;
+    let result =
+        validate_balancer_v3_pool_full(&provider, pool, USDC, WETH, 10, 0.001, "revm", None).await;
     assert!(matches!(
         result,
         ValidationResult::Valid | ValidationResult::Invalid(_)
@@ -755,7 +694,13 @@ async fn validate_v2_pool_rpc_short_token0_output() {
     let provider = ProviderBuilder::new().connect_http(url).erased();
     let pool = address!("B4e16d0168e52d35CaCD2c6185b44281Ec28C9Dc");
     let result = validate_v2_pool_rpc(
-        &provider, pool, USDC, WETH, ProtocolType::UniswapV2, 30, 0.001,
+        &provider,
+        pool,
+        USDC,
+        WETH,
+        ProtocolType::UniswapV2,
+        30,
+        0.001,
     )
     .await;
     assert!(matches!(result, ValidationResult::Invalid(_)));
@@ -802,7 +747,13 @@ async fn validate_v2_pool_rpc_short_getreserves_output() {
     let provider = ProviderBuilder::new().connect_http(url).erased();
     let pool = address!("B4e16d0168e52d35CaCD2c6185b44281Ec28C9Dc");
     let result = validate_v2_pool_rpc(
-        &provider, pool, USDC, WETH, ProtocolType::UniswapV2, 30, 0.001,
+        &provider,
+        pool,
+        USDC,
+        WETH,
+        ProtocolType::UniswapV2,
+        30,
+        0.001,
     )
     .await;
     assert!(matches!(result, ValidationResult::Invalid(_)));
@@ -824,8 +775,7 @@ async fn validate_balancer_v3_pool_rpc_short_erc20_balance() {
     let url: url::Url = server.url().parse().expect("url");
     let provider = ProviderBuilder::new().connect_http(url).erased();
     let pool = address!("0x5c6Ee304399DBdB9C8Ef030aB642B10820DB8F56");
-    let result =
-        validate_balancer_v3_pool_rpc(&provider, pool, USDC, WETH, 10, 0.001).await;
+    let result = validate_balancer_v3_pool_rpc(&provider, pool, USDC, WETH, 10, 0.001).await;
     assert_eq!(result, ValidationResult::Valid);
 }
 
@@ -847,7 +797,13 @@ async fn validate_v2_pool_revm_non_weth_pair() {
     let parsed: url::Url = dead_url.parse().unwrap();
     let provider = ProviderBuilder::new().connect_http(parsed).erased();
     let result = validate_v2_pool_revm(
-        &provider, Address::ZERO, DAI, USDC, ProtocolType::UniswapV2, 0.001, None,
+        &provider,
+        Address::ZERO,
+        DAI,
+        USDC,
+        ProtocolType::UniswapV2,
+        0.001,
+        None,
     )
     .await;
     assert_eq!(result, ValidationResult::Valid);
@@ -858,10 +814,7 @@ async fn validate_v3_pool_revm_non_weth_pair() {
     let dead_url = "http://127.0.0.1:59996";
     let parsed: url::Url = dead_url.parse().unwrap();
     let provider = ProviderBuilder::new().connect_http(parsed).erased();
-    let result = validate_v3_pool_revm(
-        &provider, Address::ZERO, DAI, USDC, 30, 0.001, None,
-    )
-    .await;
+    let result = validate_v3_pool_revm(&provider, Address::ZERO, DAI, USDC, 30, 0.001, None).await;
     assert_eq!(result, ValidationResult::Valid);
 }
 

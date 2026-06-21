@@ -16,16 +16,16 @@ type StateHandler func()
 // DashboardData holds the observable fields without synchronization.
 // Safe to pass by value — no mutex.
 type DashboardData struct {
-	PnLTotal        float64
-	WinRate         float64
+	PnLTotal         float64
+	WinRate          float64
 	LastBundleProfit float64
-	LastBundleGas   float64
-	LastBuilder     string
-	BreakerOpen     bool
-	BreakerReason   string
-	SignerHealthy   bool
-	LastBundleHash  string
-	RedisConnected  bool
+	LastBundleGas    float64
+	LastBuilder      string
+	BreakerOpen      bool
+	BreakerReason    string
+	SignerHealthy    bool
+	LastBundleHash   string
+	RedisConnected   bool
 }
 
 // DashboardState is the in-memory state telebot uses for the dashboard.

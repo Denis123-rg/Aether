@@ -1,7 +1,6 @@
 //! Integration tests for the Aether arbitrage pipeline.
 //! Tests the full flow: pool state -> price graph -> detection -> simulation.
 
-use alloy::primitives::{address, Address, U256};
 use aether_common::types::*;
 use aether_detector::bellman_ford::BellmanFord;
 use aether_detector::gas;
@@ -17,6 +16,7 @@ use aether_simulator::EvmSimulator;
 use aether_state::price_graph::PriceGraph;
 use aether_state::snapshot::SnapshotManager;
 use aether_state::token_index::TokenIndex;
+use alloy::primitives::{address, Address, U256};
 
 const USDC: Address = address!("A0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48");
 const WETH: Address = address!("C02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2");
@@ -197,8 +197,12 @@ fn test_optimizer_finds_peak() {
         let v = x.to::<i128>();
         -(v - 500) * (v - 500) + 250000
     };
-    let (optimal, max_profit) =
-        optimizer::ternary_search_optimal_input(U256::from(1u64), U256::from(1000u64), 100, profit_fn);
+    let (optimal, max_profit) = optimizer::ternary_search_optimal_input(
+        U256::from(1u64),
+        U256::from(1000u64),
+        100,
+        profit_fn,
+    );
     let v = optimal.to::<u64>();
     assert!((495..=505).contains(&v), "got {}", v);
     assert!(max_profit > 249_000);
@@ -290,7 +294,15 @@ fn test_bellman_ford_triangular_arb() {
         protocol: ProtocolType::Curve,
     };
 
-    graph.add_edge(0, 1, 1.01, pool_a, Address::ZERO, ProtocolType::UniswapV2, U256::ZERO);
+    graph.add_edge(
+        0,
+        1,
+        1.01,
+        pool_a,
+        Address::ZERO,
+        ProtocolType::UniswapV2,
+        U256::ZERO,
+    );
     graph.add_edge(
         1,
         2,

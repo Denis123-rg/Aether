@@ -39,9 +39,9 @@ func (r *partialReader) Read(p []byte) (int, error) {
 // causing cipher.NewGCM to fail and exercising that branch.
 type badBlockCipher struct{}
 
-func (badBlockCipher) BlockSize() int        { return 8 }
-func (badBlockCipher) Encrypt(_, _ []byte)  {}
-func (badBlockCipher) Decrypt(_, _ []byte)  {}
+func (badBlockCipher) BlockSize() int      { return 8 }
+func (badBlockCipher) Encrypt(_, _ []byte) {}
+func (badBlockCipher) Decrypt(_, _ []byte) {}
 
 // --- Encrypt: io.ReadFull(rand.Reader, ...) error paths ---
 

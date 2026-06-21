@@ -60,11 +60,8 @@ fn bench_sequential_vs_parallel(c: &mut Criterion) {
                 let sim = EvmSimulator::new(config.clone());
                 b.iter(|| {
                     for _ in 0..n {
-                        let result = sim.simulate(
-                            black_box(&state),
-                            black_box(contract),
-                            black_box(vec![]),
-                        );
+                        let result =
+                            sim.simulate(black_box(&state), black_box(contract), black_box(vec![]));
                         black_box(result);
                     }
                 });

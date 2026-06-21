@@ -31,8 +31,8 @@ use aether_state::token_index::TokenIndex;
 use common::{
     check_prerequisites, contracts_root, deploy_executor, erc20_balance, erc20_balance_slot,
     fetch_reserves, get_amount_out, spawn_anvil_at_block, swapCall, transferCall, u256_to_f64,
-    wait_for_anvil, ANVIL_ACCOUNT0, SUSHI_WETH_USDC,
-    UNIV2_WETH_USDC, USDC, WETH, WETH_BALANCE_SLOT,
+    wait_for_anvil, ANVIL_ACCOUNT0, SUSHI_WETH_USDC, UNIV2_WETH_USDC, USDC, WETH,
+    WETH_BALANCE_SLOT,
 };
 
 /// Dump 200 WETH on UniV2 to create ~8% price gap
@@ -117,10 +117,7 @@ async fn run_flash_loan_test(anvil_url: &str) -> Result<(), String> {
         .await
         .ok_or("Failed to fetch Sushi reserves")?;
 
-    eprintln!(
-        "UniV2 pre-dump:  USDC={}, WETH={}",
-        uni_r0_pre, uni_r1_pre
-    );
+    eprintln!("UniV2 pre-dump:  USDC={}, WETH={}", uni_r0_pre, uni_r1_pre);
     eprintln!(
         "Sushi pre-dump:  USDC={}, WETH={}",
         sushi_r0_pre, sushi_r1_pre
@@ -192,10 +189,7 @@ async fn run_flash_loan_test(anvil_url: &str) -> Result<(), String> {
     let effective_weth_reserve = uni_r1_pre + dump_amount;
     let usdc_out = get_amount_out(dump_amount, effective_weth_reserve, uni_r0_pre);
 
-    eprintln!(
-        "Swap: {} WETH → {} USDC on UniV2",
-        dump_amount, usdc_out
-    );
+    eprintln!("Swap: {} WETH → {} USDC on UniV2", dump_amount, usdc_out);
 
     let swap_calldata = swapCall {
         amount0Out: usdc_out,
@@ -220,10 +214,7 @@ async fn run_flash_loan_test(anvil_url: &str) -> Result<(), String> {
         .map_err(|e| format!("UniV2 swap watch: {e}"))?;
     eprintln!("UniV2 dump swap tx: {swap_hash:?}");
 
-    phase_times.push((
-        "Phase 4 (manufacture arb)",
-        t_phase4.elapsed().as_millis(),
-    ));
+    phase_times.push(("Phase 4 (manufacture arb)", t_phase4.elapsed().as_millis()));
 
     // ── Phase 5: Verify price gap ────────────────────────────────────
     let t_phase5 = Instant::now();
@@ -239,8 +230,14 @@ async fn run_flash_loan_test(anvil_url: &str) -> Result<(), String> {
     let sushi_price = u256_to_f64(sushi_r0_post) / u256_to_f64(sushi_r1_post);
     let gap_pct = ((sushi_price - uni_price) / sushi_price) * 100.0;
 
-    eprintln!("UniV2 post-dump:  USDC={}, WETH={}", uni_r0_post, uni_r1_post);
-    eprintln!("Sushi post-dump:  USDC={}, WETH={}", sushi_r0_post, sushi_r1_post);
+    eprintln!(
+        "UniV2 post-dump:  USDC={}, WETH={}",
+        uni_r0_post, uni_r1_post
+    );
+    eprintln!(
+        "Sushi post-dump:  USDC={}, WETH={}",
+        sushi_r0_post, sushi_r1_post
+    );
     eprintln!(
         "Prices: UniV2={:.2} USDC/WETH, Sushi={:.2} USDC/WETH, Gap={:.2}%",
         uni_price, sushi_price, gap_pct
@@ -418,10 +415,7 @@ async fn run_flash_loan_test(anvil_url: &str) -> Result<(), String> {
         U256::from(9000u64),
     );
 
-    phase_times.push((
-        "Phase 7 (build calldata)",
-        t_phase7.elapsed().as_millis(),
-    ));
+    phase_times.push(("Phase 7 (build calldata)", t_phase7.elapsed().as_millis()));
 
     // ── Phase 8: Simulate via revm ───────────────────────────────────
     let t_phase8 = Instant::now();
@@ -436,8 +430,10 @@ async fn run_flash_loan_test(anvil_url: &str) -> Result<(), String> {
         .map_err(|e| format!("get_block for sim: {e}"))?
         .ok_or("block not found for sim")?;
     let current_ts = current_block_data.header.timestamp;
-    let current_base_fee =
-        current_block_data.header.base_fee_per_gas.unwrap_or(30_000_000_000);
+    let current_base_fee = current_block_data
+        .header
+        .base_fee_per_gas
+        .unwrap_or(30_000_000_000);
 
     let sim_parsed: url::Url = anvil_url.parse().expect("valid URL");
     let sim_provider = ProviderBuilder::new().connect_http(sim_parsed);

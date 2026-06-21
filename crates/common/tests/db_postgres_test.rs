@@ -8,8 +8,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use aether_common::db::{
-    InclusionUpdate, Ledger, LedgerMetrics, NewArb, NewPool, NoopLedger, PgLedger, ledger_from_env,
-    protocol_label,
+    ledger_from_env, protocol_label, InclusionUpdate, Ledger, LedgerMetrics, NewArb, NewPool,
+    NoopLedger, PgLedger,
 };
 use aether_common::types::ProtocolType;
 use alloy::primitives::{Address, B256, U256};
@@ -45,9 +45,7 @@ async fn start_postgres() -> Result<(ContainerAsync<Postgres>, String), String> 
         .get_host_port_ipv4(5432)
         .await
         .map_err(|e| format!("port: {e}"))?;
-    let url = format!(
-        "postgres://postgres:postgres@{host}:{port}/postgres?sslmode=disable"
-    );
+    let url = format!("postgres://postgres:postgres@{host}:{port}/postgres?sslmode=disable");
     Ok((container, url))
 }
 
@@ -114,13 +112,11 @@ async fn pg_ledger_inserts_arb_and_pool() {
         .expect("count arbs");
     assert_eq!(count.0, 1);
 
-    let proto: (String,) = sqlx::query_as(
-        "SELECT protocol FROM pool_registry WHERE address = $1",
-    )
-    .bind(Address::from([0x11u8; 20]).as_slice())
-    .fetch_one(&pool)
-    .await
-    .expect("pool row");
+    let proto: (String,) = sqlx::query_as("SELECT protocol FROM pool_registry WHERE address = $1")
+        .bind(Address::from([0x11u8; 20]).as_slice())
+        .fetch_one(&pool)
+        .await
+        .expect("pool row");
     assert_eq!(proto.0, protocol_label(ProtocolType::UniswapV2));
 }
 
@@ -263,7 +259,10 @@ async fn pg_ledger_duplicate_arb_is_idempotent() {
 async fn pg_ledger_from_env_bad_url_falls_back_to_noop() {
     let registry = Registry::new();
     let metrics = LedgerMetrics::register(&registry);
-    std::env::set_var("DATABASE_URL", "postgres://127.0.0.1:1/none?connect_timeout=1");
+    std::env::set_var(
+        "DATABASE_URL",
+        "postgres://127.0.0.1:1/none?connect_timeout=1",
+    );
     let ledger = ledger_from_env(metrics).await;
     // NoopLedger accepts writes without panicking.
     ledger.insert_arb(&NewArb::default());
@@ -287,7 +286,9 @@ async fn pg_ledger_drops_metric_on_saturated_channel() {
     let pool = PgPool::connect(&url).await.expect("connect");
     apply_migrations(&pool).await;
 
-    let ledger = PgLedger::connect(&url, Arc::clone(&metrics)).await.expect("PgLedger");
+    let ledger = PgLedger::connect(&url, Arc::clone(&metrics))
+        .await
+        .expect("PgLedger");
     for i in 0..2048 {
         let mut arb = sample_arb(Uuid::new_v4());
         arb.target_block = 18_000_000 + i;

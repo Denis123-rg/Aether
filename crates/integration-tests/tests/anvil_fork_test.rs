@@ -35,7 +35,10 @@ fn prerequisites_available() -> bool {
         eprintln!("Skipping anvil fork test: ETH_RPC_URL not set");
         return false;
     }
-    match std::process::Command::new("anvil").arg("--version").output() {
+    match std::process::Command::new("anvil")
+        .arg("--version")
+        .output()
+    {
         Ok(out) => out.status.success(),
         Err(_) => {
             eprintln!("Skipping anvil fork test: anvil not found in PATH");
@@ -199,8 +202,13 @@ async fn test_anvil_fork_log_fetch_and_decode() {
             Ok(logs) => logs,
             Err(e) => {
                 let msg = e.to_string();
-                if msg.contains("restrictions") || msg.contains("specify an address") || msg.contains("dedicated") {
-                    eprintln!("skip anvil_fork_test: public RPC restricts unfiltered log queries ({msg})");
+                if msg.contains("restrictions")
+                    || msg.contains("specify an address")
+                    || msg.contains("dedicated")
+                {
+                    eprintln!(
+                        "skip anvil_fork_test: public RPC restricts unfiltered log queries ({msg})"
+                    );
                     return;
                 }
                 panic!("should get logs: {e}");
@@ -226,7 +234,11 @@ async fn test_anvil_fork_log_fetch_and_decode() {
             }
         }
 
-        eprintln!("Successfully decoded {} out of {} logs", decoded_count, logs.len());
+        eprintln!(
+            "Successfully decoded {} out of {} logs",
+            decoded_count,
+            logs.len()
+        );
 
         // All recognized logs should decode successfully.
         // (Some logs may have topics we filter for but invalid data.)
@@ -282,8 +294,13 @@ async fn test_anvil_fork_full_pipeline() {
             Ok(logs) => logs,
             Err(e) => {
                 let msg = e.to_string();
-                if msg.contains("restrictions") || msg.contains("specify an address") || msg.contains("dedicated") {
-                    eprintln!("skip anvil_fork_test: public RPC restricts unfiltered log queries ({msg})");
+                if msg.contains("restrictions")
+                    || msg.contains("specify an address")
+                    || msg.contains("dedicated")
+                {
+                    eprintln!(
+                        "skip anvil_fork_test: public RPC restricts unfiltered log queries ({msg})"
+                    );
                     return;
                 }
                 panic!("should get sync logs: {e}");

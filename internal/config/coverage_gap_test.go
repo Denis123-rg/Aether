@@ -185,8 +185,8 @@ func TestValidateProductionConfig_NoAdminIDs_Coverage(t *testing.T) {
 func TestValidateProductionConfig_NegativeInterval_Coverage(t *testing.T) {
 	err := ValidateProductionConfig(ProductionConfig{
 		Telegram: TelegramConfig{
-			BotToken:                  "token",
-			AdminChatIDs:              []int64{123},
+			BotToken:                    "token",
+			AdminChatIDs:                []int64{123},
 			DashboardUpdateIntervalSecs: -1,
 		},
 	})

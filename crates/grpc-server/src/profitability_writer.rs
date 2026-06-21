@@ -18,7 +18,9 @@ use std::time::Instant;
 use alloy::primitives::U256;
 use bigdecimal::BigDecimal;
 use chrono::{DateTime, Utc};
-use prometheus::{HistogramOpts, HistogramVec, IntCounter, IntCounterVec, IntGauge, Opts, Registry};
+use prometheus::{
+    HistogramOpts, HistogramVec, IntCounter, IntCounterVec, IntGauge, Opts, Registry,
+};
 use serde::{Deserialize, Serialize};
 use sqlx::postgres::{PgPool, PgPoolOptions};
 use tokio::sync::mpsc;
@@ -137,7 +139,9 @@ impl ProfitabilityWriterMetrics {
                 "aether_mempool_profit_writer_write_latency_ms",
                 "Per-write latency of profitability inserts from dequeue to query completion",
             )
-            .buckets(vec![0.5, 1.0, 2.0, 5.0, 10.0, 25.0, 50.0, 100.0, 250.0, 500.0]),
+            .buckets(vec![
+                0.5, 1.0, 2.0, 5.0, 10.0, 25.0, 50.0, 100.0, 250.0, 500.0,
+            ]),
             &["result"],
         )
         .expect("aether_mempool_profit_writer_write_latency_ms histogram vec");
@@ -255,7 +259,10 @@ impl PgProfitabilityWriter {
         .bind(limit)
         .fetch_all(pool)
         .await?;
-        Ok(rows.into_iter().map(UnscoredConfirmedPrediction::from).collect())
+        Ok(rows
+            .into_iter()
+            .map(UnscoredConfirmedPrediction::from)
+            .collect())
     }
 }
 
@@ -344,10 +351,7 @@ fn spawn_writer_task(
     });
 }
 
-async fn insert_score_inner(
-    pool: &PgPool,
-    s: &NewProfitabilityScore,
-) -> Result<(), sqlx::Error> {
+async fn insert_score_inner(pool: &PgPool, s: &NewProfitabilityScore) -> Result<(), sqlx::Error> {
     let realized_wei = u256_to_decimal(s.realized_profit_wei);
     let gas_wei = u256_to_decimal(s.gas_estimate_wei);
     // net can be negative. BigDecimal supports signed values natively.
@@ -787,7 +791,9 @@ mod tests {
             .encode_to_string(&registry.gather())
             .unwrap();
         assert!(
-            output.contains(r#"aether_mempool_profit_scored_total{decision="unprofitable",reason="n/a"} 1"#),
+            output.contains(
+                r#"aether_mempool_profit_scored_total{decision="unprofitable",reason="n/a"} 1"#
+            ),
             "expected scored_total inc, got: {output}"
         );
     }
@@ -930,7 +936,10 @@ mod tests {
         let registry = Registry::new();
         let metrics = ProfitabilityWriterMetrics::register(&registry);
         let (tx, _rx) = mpsc::channel::<NewProfitabilityScore>(1);
-        let writer = PgProfitabilityWriter { tx, metrics: Arc::clone(&metrics) };
+        let writer = PgProfitabilityWriter {
+            tx,
+            metrics: Arc::clone(&metrics),
+        };
 
         writer.insert_score(sample_score());
         writer.insert_score(sample_score());
@@ -952,7 +961,10 @@ mod tests {
         let metrics = ProfitabilityWriterMetrics::register(&registry);
         let (tx, rx) = mpsc::channel::<NewProfitabilityScore>(2);
         drop(rx);
-        let writer = PgProfitabilityWriter { tx, metrics: Arc::clone(&metrics) };
+        let writer = PgProfitabilityWriter {
+            tx,
+            metrics: Arc::clone(&metrics),
+        };
 
         writer.insert_score(sample_score());
 
@@ -972,7 +984,10 @@ mod tests {
         let registry = Registry::new();
         let metrics = ProfitabilityWriterMetrics::register(&registry);
         let (tx, _rx) = mpsc::channel::<NewProfitabilityScore>(256);
-        let writer = PgProfitabilityWriter { tx, metrics: Arc::clone(&metrics) };
+        let writer = PgProfitabilityWriter {
+            tx,
+            metrics: Arc::clone(&metrics),
+        };
 
         writer.insert_score(NewProfitabilityScore {
             prediction_id: Uuid::new_v4(),
@@ -1014,7 +1029,12 @@ mod tests {
 
     #[test]
     fn new_profitability_score_all_decisions() {
-        for decision in [DECISION_PROFITABLE, DECISION_UNPROFITABLE, DECISION_REVERTED, DECISION_NO_PATH] {
+        for decision in [
+            DECISION_PROFITABLE,
+            DECISION_UNPROFITABLE,
+            DECISION_REVERTED,
+            DECISION_NO_PATH,
+        ] {
             let score = NewProfitabilityScore {
                 prediction_id: Uuid::new_v4(),
                 scored_at: Utc::now(),
@@ -1034,7 +1054,13 @@ mod tests {
 
     #[test]
     fn new_profitability_score_all_reasons() {
-        for reason in [REASON_NA, REASON_U256_WALKER, REASON_ABSURDITY_FLOOR, REASON_REVM_REVERT, REASON_REVM_VERDICT] {
+        for reason in [
+            REASON_NA,
+            REASON_U256_WALKER,
+            REASON_ABSURDITY_FLOOR,
+            REASON_REVM_REVERT,
+            REASON_REVM_VERDICT,
+        ] {
             let score = NewProfitabilityScore {
                 prediction_id: Uuid::new_v4(),
                 scored_at: Utc::now(),
@@ -1130,8 +1156,19 @@ mod tests {
     fn metrics_scored_total_all_combinations() {
         let registry = Registry::new();
         let m = ProfitabilityWriterMetrics::register(&registry);
-        let decisions = [DECISION_PROFITABLE, DECISION_UNPROFITABLE, DECISION_REVERTED, DECISION_NO_PATH];
-        let reasons = [REASON_NA, REASON_U256_WALKER, REASON_ABSURDITY_FLOOR, REASON_REVM_REVERT, REASON_REVM_VERDICT];
+        let decisions = [
+            DECISION_PROFITABLE,
+            DECISION_UNPROFITABLE,
+            DECISION_REVERTED,
+            DECISION_NO_PATH,
+        ];
+        let reasons = [
+            REASON_NA,
+            REASON_U256_WALKER,
+            REASON_ABSURDITY_FLOOR,
+            REASON_REVM_REVERT,
+            REASON_REVM_VERDICT,
+        ];
         for d in &decisions {
             for r in &reasons {
                 m.scored_total.with_label_values(&[d, r]).inc();
@@ -1223,7 +1260,10 @@ mod tests {
         let registry = Registry::new();
         let metrics = ProfitabilityWriterMetrics::register(&registry);
         let (tx, _rx) = mpsc::channel::<NewProfitabilityScore>(10);
-        let writer = PgProfitabilityWriter { tx, metrics: Arc::clone(&metrics) };
+        let writer = PgProfitabilityWriter {
+            tx,
+            metrics: Arc::clone(&metrics),
+        };
 
         for _ in 0..10 {
             writer.insert_score(sample_score());

@@ -23,7 +23,7 @@ type fakeSubscription struct {
 	errCh chan error
 }
 
-func (f *fakeSubscription) Unsubscribe()        {}
+func (f *fakeSubscription) Unsubscribe()      {}
 func (f *fakeSubscription) Err() <-chan error { return f.errCh }
 
 type fakeEthClient struct {

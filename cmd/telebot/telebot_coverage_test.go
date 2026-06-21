@@ -21,10 +21,10 @@ import (
 )
 
 type mockBotFailing struct {
-	mu       sync.Mutex
-	sent     []tgbotapi.Chattable
-	updates  chan tgbotapi.Update
-	sendErr  error
+	mu      sync.Mutex
+	sent    []tgbotapi.Chattable
+	updates chan tgbotapi.Update
+	sendErr error
 }
 
 func (m *mockBotFailing) Send(c tgbotapi.Chattable) (tgbotapi.Message, error) {
@@ -798,14 +798,14 @@ func TestFormatDashboardWithMultiplePools(t *testing.T) {
 	pools := make([]metrics.TopPool, 10)
 	for i := range pools {
 		pools[i] = metrics.TopPool{
-			Address: fmt.Sprintf("0x%040d", i),
-			Score:   float64(i) * 0.1,
+			Address:  fmt.Sprintf("0x%040d", i),
+			Score:    float64(i) * 0.1,
 			Protocol: "uniswap_v2",
 		}
 	}
 	snap := metrics.Snapshot{
-		TopPools:     pools,
-		SystemState:  "Running",
+		TopPools:      pools,
+		SystemState:   "Running",
 		SignerHealthy: true,
 		RPCHealthy:    true,
 	}
@@ -820,7 +820,7 @@ func TestFormatDashboardShortPoolAddress(t *testing.T) {
 		TopPools: []metrics.TopPool{
 			{Address: "0xabc", Score: 0.5, Protocol: "v2"},
 		},
-		SystemState:  "Running",
+		SystemState:   "Running",
 		SignerHealthy: true,
 	}
 	text := FormatDashboard(snap, events.DashboardData{}, false)
@@ -831,8 +831,8 @@ func TestFormatDashboardShortPoolAddress(t *testing.T) {
 
 func TestFormatDashboardNoPools(t *testing.T) {
 	snap := metrics.Snapshot{
-		TopPools:     nil,
-		SystemState:  "Running",
+		TopPools:      nil,
+		SystemState:   "Running",
 		SignerHealthy: true,
 	}
 	text := FormatDashboard(snap, events.DashboardData{}, false)
@@ -861,7 +861,7 @@ func TestFormatDashboardRedisOverlaySignerHealthy(t *testing.T) {
 
 func TestFormatDashboardRedisNotActive(t *testing.T) {
 	snap := metrics.Snapshot{
-		SystemState:  "Running",
+		SystemState:   "Running",
 		SignerHealthy: true,
 		RPCHealthy:    true,
 		RedisHealthy:  true,
@@ -874,13 +874,13 @@ func TestFormatDashboardRedisNotActive(t *testing.T) {
 
 func TestFormatHealthAllHealthy(t *testing.T) {
 	snap := metrics.Snapshot{
-		SignerHealthy:      true,
-		RPCHealthy:         true,
-		DiscoveryHealthy:   true,
-		TimescaleHealthy:   true,
-		RedisHealthy:       true,
-		SystemState:        "Running",
-		BreakerOpen:        false,
+		SignerHealthy:    true,
+		RPCHealthy:       true,
+		DiscoveryHealthy: true,
+		TimescaleHealthy: true,
+		RedisHealthy:     true,
+		SystemState:      "Running",
+		BreakerOpen:      false,
 	}
 	text := FormatHealth(snap)
 	if !strings.Contains(text, "healthy") {
@@ -893,13 +893,13 @@ func TestFormatHealthAllHealthy(t *testing.T) {
 
 func TestFormatHealthAllUnhealthy(t *testing.T) {
 	snap := metrics.Snapshot{
-		SignerHealthy:      false,
-		RPCHealthy:         false,
-		DiscoveryHealthy:   false,
-		TimescaleHealthy:   false,
-		RedisHealthy:       false,
-		SystemState:        "Halted",
-		BreakerOpen:        true,
+		SignerHealthy:    false,
+		RPCHealthy:       false,
+		DiscoveryHealthy: false,
+		TimescaleHealthy: false,
+		RedisHealthy:     false,
+		SystemState:      "Halted",
+		BreakerOpen:      true,
 	}
 	text := FormatHealth(snap)
 	if strings.Count(text, "unhealthy") < 5 {
@@ -1028,7 +1028,7 @@ func TestFormatDashboardRedisOverlayAllFields(t *testing.T) {
 		PnLTotal: 99.0, WinRate: 90.0,
 		LastBundleProfit: 0.99, LastBundleGas: 0.09, LastBuilder: "builder_b",
 		SignerHealthy: true,
-		BreakerOpen: true, BreakerReason: "high_gas",
+		BreakerOpen:   true, BreakerReason: "high_gas",
 	}
 	text := FormatDashboard(snap, redis, true)
 	for _, want := range []string{"99.000000", "90.0", "0.990000", "0.090000", "builder_b"} {

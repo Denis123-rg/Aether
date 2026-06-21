@@ -24,9 +24,9 @@ use aether_simulator::fork::{RpcForkedState, SimConfig};
 use aether_simulator::EvmSimulator;
 
 use common::{
-    build_price_graph, check_prerequisites, cycle_to_swap_route, default_pool_set,
-    deploy_executor, fetch_all_reserves, is_flashloanable, run_detection,
-    spawn_anvil_at_block, wait_for_anvil, PoolDef, ANVIL_ACCOUNT0,
+    build_price_graph, check_prerequisites, cycle_to_swap_route, default_pool_set, deploy_executor,
+    fetch_all_reserves, is_flashloanable, run_detection, spawn_anvil_at_block, wait_for_anvil,
+    PoolDef, ANVIL_ACCOUNT0,
 };
 
 // ── Types ───────────────────────────────────────────────────────────
@@ -105,13 +105,15 @@ async fn run_backtest(
     let mut metrics = BacktestMetrics::default();
 
     // ── Phase 1: Scan all blocks ─────────────────────────────────────
-    eprintln!("\n--- Phase 1: Scanning blocks {} to {} ---", start_block, end_block);
+    eprintln!(
+        "\n--- Phase 1: Scanning blocks {} to {} ---",
+        start_block, end_block
+    );
 
     let mut scan_results: Vec<BlockScanEntry> = Vec::new();
 
     for bn in start_block..=end_block {
-        let reserves =
-            fetch_all_reserves(&provider, &config.scan.pools, Some(bn)).await;
+        let reserves = fetch_all_reserves(&provider, &config.scan.pools, Some(bn)).await;
 
         let t_detect = Instant::now();
         let (graph, _) = build_price_graph(&config.scan.pools, &reserves);
@@ -131,7 +133,10 @@ async fn run_backtest(
 
         eprintln!(
             "  Block {}: {} pools, {}us{}",
-            bn, reserves.len(), detection_us, marker
+            bn,
+            reserves.len(),
+            detection_us,
+            marker
         );
 
         scan_results.push(BlockScanEntry {
@@ -148,12 +153,19 @@ async fn run_backtest(
     }
 
     metrics.blocks_scanned = scan_results.len() as u64;
-    metrics.blocks_with_arbs = scan_results.iter().filter(|r| r.cycles_detected > 0).count() as u64;
+    metrics.blocks_with_arbs = scan_results
+        .iter()
+        .filter(|r| r.cycles_detected > 0)
+        .count() as u64;
     metrics.total_cycles = scan_results.iter().map(|r| r.cycles_detected as u64).sum();
     metrics.avg_detection_us = if scan_results.is_empty() {
         0.0
     } else {
-        scan_results.iter().map(|r| r.detection_us as f64).sum::<f64>() / scan_results.len() as f64
+        scan_results
+            .iter()
+            .map(|r| r.detection_us as f64)
+            .sum::<f64>()
+            / scan_results.len() as f64
     };
     metrics.detection_rate_pct = if metrics.blocks_scanned > 0 {
         (metrics.blocks_with_arbs as f64 / metrics.blocks_scanned as f64) * 100.0
@@ -174,7 +186,11 @@ async fn run_backtest(
     });
 
     let e2e_count = candidates.len().min(config.max_e2e_executions);
-    let e2e_candidates: Vec<u64> = candidates.iter().take(e2e_count).map(|c| c.block_number).collect();
+    let e2e_candidates: Vec<u64> = candidates
+        .iter()
+        .take(e2e_count)
+        .map(|c| c.block_number)
+        .collect();
 
     if e2e_candidates.is_empty() {
         eprintln!("\n--- Phase 2: No arb blocks found, skipping E2E ---");
@@ -284,7 +300,13 @@ async fn run_single_e2e_inner(
         };
 
         if let Some((_, final_amount)) = cycle_to_swap_route(
-            cycle, &graph, &token_index, pools, &reserves, test_input, Address::ZERO,
+            cycle,
+            &graph,
+            &token_index,
+            pools,
+            &reserves,
+            test_input,
+            Address::ZERO,
         ) {
             if final_amount > test_input {
                 // Optimize
@@ -293,7 +315,13 @@ async fn run_single_e2e_inner(
                 let cycle_ref = cycle;
                 let profit_fn = |amount: U256| -> i128 {
                     match cycle_to_swap_route(
-                        cycle_ref, &graph, &token_index, pools, &reserves, amount, Address::ZERO,
+                        cycle_ref,
+                        &graph,
+                        &token_index,
+                        pools,
+                        &reserves,
+                        amount,
+                        Address::ZERO,
                     ) {
                         Some((_, fa)) => {
                             let premium = amount * U256::from(5) / U256::from(10000);
@@ -329,7 +357,13 @@ async fn run_single_e2e_inner(
 
     // Build calldata
     let (final_steps, _) = cycle_to_swap_route(
-        &cycle, &graph, &token_index, pools, &reserves, optimal_input, executor_addr,
+        &cycle,
+        &graph,
+        &token_index,
+        pools,
+        &reserves,
+        optimal_input,
+        executor_addr,
     )
     .ok_or("Route build failed")?;
 
@@ -344,7 +378,10 @@ async fn run_single_e2e_inner(
     );
 
     // Simulate
-    let bn = provider.get_block_number().await.map_err(|e| format!("{e}"))?;
+    let bn = provider
+        .get_block_number()
+        .await
+        .map_err(|e| format!("{e}"))?;
     let blk = provider
         .get_block_by_number(alloy::eips::BlockNumberOrTag::Number(bn))
         .await
@@ -424,28 +461,67 @@ fn print_metrics(metrics: &BacktestMetrics) {
     eprintln!("\n╔════════════════════════════════════════════════╗");
     eprintln!("║         BACKTEST METRICS SUMMARY               ║");
     eprintln!("╠════════════════════════════════════════════════╣");
-    eprintln!("║ Blocks scanned:         {:>6}                 ║", metrics.blocks_scanned);
-    eprintln!("║ Blocks with arbs:       {:>6}                 ║", metrics.blocks_with_arbs);
-    eprintln!("║ Detection rate:         {:>6.1}%                ║", metrics.detection_rate_pct);
-    eprintln!("║ Total cycles:           {:>6}                 ║", metrics.total_cycles);
-    eprintln!("║ Avg detection time:     {:>6.0}us               ║", metrics.avg_detection_us);
+    eprintln!(
+        "║ Blocks scanned:         {:>6}                 ║",
+        metrics.blocks_scanned
+    );
+    eprintln!(
+        "║ Blocks with arbs:       {:>6}                 ║",
+        metrics.blocks_with_arbs
+    );
+    eprintln!(
+        "║ Detection rate:         {:>6.1}%                ║",
+        metrics.detection_rate_pct
+    );
+    eprintln!(
+        "║ Total cycles:           {:>6}                 ║",
+        metrics.total_cycles
+    );
+    eprintln!(
+        "║ Avg detection time:     {:>6.0}us               ║",
+        metrics.avg_detection_us
+    );
     eprintln!("╠────────────────────────────────────────────────╣");
-    eprintln!("║ Simulations run:        {:>6}                 ║", metrics.simulations_run);
-    eprintln!("║ Simulations passed:     {:>6}                 ║", metrics.simulations_passed);
-    eprintln!("║ False positive rate:    {:>6.1}%                ║", metrics.false_positive_rate_pct);
+    eprintln!(
+        "║ Simulations run:        {:>6}                 ║",
+        metrics.simulations_run
+    );
+    eprintln!(
+        "║ Simulations passed:     {:>6}                 ║",
+        metrics.simulations_passed
+    );
+    eprintln!(
+        "║ False positive rate:    {:>6.1}%                ║",
+        metrics.false_positive_rate_pct
+    );
     eprintln!("╠────────────────────────────────────────────────╣");
-    eprintln!("║ Executions run:         {:>6}                 ║", metrics.executions_run);
-    eprintln!("║ Executions passed:      {:>6}                 ║", metrics.executions_passed);
-    eprintln!("║ Profits collected:      {:>6}                 ║", metrics.profits_wei.len());
+    eprintln!(
+        "║ Executions run:         {:>6}                 ║",
+        metrics.executions_run
+    );
+    eprintln!(
+        "║ Executions passed:      {:>6}                 ║",
+        metrics.executions_passed
+    );
+    eprintln!(
+        "║ Profits collected:      {:>6}                 ║",
+        metrics.profits_wei.len()
+    );
 
     if !metrics.gas_used.is_empty() {
         let avg_gas: f64 =
             metrics.gas_used.iter().map(|g| *g as f64).sum::<f64>() / metrics.gas_used.len() as f64;
-        eprintln!("║ Avg gas used:           {:>6.0}                 ║", avg_gas);
+        eprintln!(
+            "║ Avg gas used:           {:>6.0}                 ║",
+            avg_gas
+        );
     }
 
     eprintln!("╠────────────────────────────────────────────────╣");
-    eprintln!("║ Total elapsed:          {:>6.1}s                ║", metrics.total_elapsed_s);
+    eprintln!(
+        "║ Total elapsed:          {:>6.1}s                ║",
+        metrics.total_elapsed_s
+    );
     eprintln!("╚════════════════════════════════════════════════╝");
 }
 

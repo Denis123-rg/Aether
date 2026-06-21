@@ -157,8 +157,7 @@ impl HotCacheUpdater {
     pub fn spawn(self: Arc<Self>, mut shutdown: tokio::sync::watch::Receiver<bool>) {
         let interval_secs = self.config.update_interval_secs;
         tokio::spawn(async move {
-            let mut ticker =
-                tokio::time::interval(std::time::Duration::from_secs(interval_secs));
+            let mut ticker = tokio::time::interval(std::time::Duration::from_secs(interval_secs));
             // Run immediately on startup.
             let diff = self.refresh_once();
             info!(
@@ -265,7 +264,8 @@ mod tests {
     #[test]
     fn apply_diff_updates_size() {
         let cache = HotCache::new(HotCacheMetrics::noop());
-        let diff = HotCacheDiff::compute(&HashSet::new(), vec![make_pool(1, 1e6), make_pool(2, 2e6)]);
+        let diff =
+            HotCacheDiff::compute(&HashSet::new(), vec![make_pool(1, 1e6), make_pool(2, 2e6)]);
         cache.apply_diff(diff);
         assert_eq!(cache.len(), 2);
     }
@@ -365,10 +365,8 @@ mod tests {
         let cache = HotCache::new(HotCacheMetrics::noop());
         let addr1 = Address::from([1u8; 20]);
         let addr2 = Address::from([2u8; 20]);
-        let diff = HotCacheDiff::compute(
-            &HashSet::new(),
-            vec![make_pool(1, 1e6), make_pool(2, 2e6)],
-        );
+        let diff =
+            HotCacheDiff::compute(&HashSet::new(), vec![make_pool(1, 1e6), make_pool(2, 2e6)]);
         cache.apply_diff(diff);
         let addrs = cache.pool_addresses();
         assert_eq!(addrs.len(), 2);
@@ -428,10 +426,8 @@ mod tests {
         let registry = prometheus::Registry::new();
         let metrics = HotCacheMetrics::register(&registry);
         let cache = HotCache::new(metrics.clone());
-        let diff = HotCacheDiff::compute(
-            &HashSet::new(),
-            vec![make_pool(1, 1e6), make_pool(2, 2e6)],
-        );
+        let diff =
+            HotCacheDiff::compute(&HashSet::new(), vec![make_pool(1, 1e6), make_pool(2, 2e6)]);
         cache.apply_diff(diff);
         assert_eq!(metrics.pools_added.get(), 2);
         assert_eq!(metrics.pools_removed.get(), 0);
@@ -466,17 +462,12 @@ mod tests {
     #[test]
     fn apply_diff_replaces_previous_state() {
         let cache = HotCache::new(HotCacheMetrics::noop());
-        let diff1 = HotCacheDiff::compute(
-            &HashSet::new(),
-            vec![make_pool(1, 1e6), make_pool(2, 2e6)],
-        );
+        let diff1 =
+            HotCacheDiff::compute(&HashSet::new(), vec![make_pool(1, 1e6), make_pool(2, 2e6)]);
         cache.apply_diff(diff1);
         assert_eq!(cache.len(), 2);
 
-        let diff2 = HotCacheDiff::compute(
-            &cache.pool_addresses(),
-            vec![make_pool(3, 3e6)],
-        );
+        let diff2 = HotCacheDiff::compute(&cache.pool_addresses(), vec![make_pool(3, 3e6)]);
         cache.apply_diff(diff2);
         assert_eq!(cache.len(), 1);
         assert!(cache.contains(&Address::from([3u8; 20])));
@@ -599,6 +590,9 @@ mod tests {
         prev.insert(Address::from([1u8; 20]));
         prev.insert(Address::from([2u8; 20]));
         let diff = HotCacheDiff::compute(&prev, vec![make_pool(2, 2e6)]);
-        assert!(diff.removed_addresses.iter().all(|a| !diff.new_addresses.contains(a)));
+        assert!(diff
+            .removed_addresses
+            .iter()
+            .all(|a| !diff.new_addresses.contains(a)));
     }
 }

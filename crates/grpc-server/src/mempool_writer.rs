@@ -30,7 +30,9 @@ use std::time::Instant;
 use alloy::primitives::{Address, B256, U256};
 use bigdecimal::BigDecimal;
 use chrono::{DateTime, Utc};
-use prometheus::{HistogramOpts, HistogramVec, IntCounter, IntCounterVec, IntGauge, Opts, Registry};
+use prometheus::{
+    HistogramOpts, HistogramVec, IntCounter, IntCounterVec, IntGauge, Opts, Registry,
+};
 use serde::{Deserialize, Serialize};
 use sqlx::postgres::{PgPool, PgPoolOptions};
 use tokio::sync::mpsc;
@@ -127,43 +129,28 @@ pub enum PredictedPostState {
     /// affected pool, expressed as `f64` so the JSONB row matches what the
     /// price graph holds — the profitability scorer pulls these directly
     /// without unit conversion.
-    V2 {
-        reserve_in: f64,
-        reserve_out: f64,
-    },
+    V2 { reserve_in: f64, reserve_out: f64 },
     /// V3: analytical predictor result mapped onto the virtual
     /// constant-product reserves `(x_v, y_v)` the price graph stores
     /// (`uniswap_v3::virtual_reserves` from post-state L + sqrtPrice). The raw
     /// `new_sqrt_price_x96` is reserved for the scorer (PR-3) — emitting
     /// `reserve_in/out` matches the V2 case and keeps reconciler SQL simple.
-    V3 {
-        reserve_in: f64,
-        reserve_out: f64,
-    },
+    V3 { reserve_in: f64, reserve_out: f64 },
     /// Balancer equal-weight 2-token: balances map directly to graph
     /// reserves with the pool's fee factor applied at the graph layer.
-    Balancer {
-        reserve_in: f64,
-        reserve_out: f64,
-    },
+    Balancer { reserve_in: f64, reserve_out: f64 },
     /// Curve StableSwap: balances of the (token_in, token_out) coin pair
     /// post-swap, expressed as `f64` so the JSONB row matches what the
     /// price graph holds. The full N-coin balance vector lives in the
     /// `CurvePostState` predictor output but only the two coins the
     /// victim touched matter for graph-edge accuracy here.
-    Curve {
-        reserve_in: f64,
-        reserve_out: f64,
-    },
+    Curve { reserve_in: f64, reserve_out: f64 },
     /// Bancor V3 bonding-curve pool: post-swap balances on the
     /// (token, BNT) sides, aligned with the swap direction by the
     /// `BancorPool::predict_post_state` predictor. Multi-hop trades
     /// (neither token is BNT) bail upstream — only single-pool
     /// Bancor swaps reach the writer.
-    Bancor {
-        reserve_in: f64,
-        reserve_out: f64,
-    },
+    Bancor { reserve_in: f64, reserve_out: f64 },
     /// 1inch v6 peeled-pool record: the per-hop pool is resolved via
     /// `pool_address`, its protocol family looked up in the registry.
     /// `reserve_in`/`reserve_out` are the post-swap reserves on the
@@ -171,10 +158,7 @@ pub enum PredictedPostState {
     /// protocol's variant — the kind discriminator records that the
     /// upstream calldata was a 1inch chain so the reconciler can split
     /// metrics by router.
-    OneInchV6 {
-        reserve_in: f64,
-        reserve_out: f64,
-    },
+    OneInchV6 { reserve_in: f64, reserve_out: f64 },
 }
 
 impl PredictedPostState {
@@ -231,7 +215,9 @@ impl MempoolWriterMetrics {
                 "aether_mempool_writer_write_latency_ms",
                 "Per-write latency of mempool prediction inserts from dequeue to query completion",
             )
-            .buckets(vec![0.5, 1.0, 2.0, 5.0, 10.0, 25.0, 50.0, 100.0, 250.0, 500.0]),
+            .buckets(vec![
+                0.5, 1.0, 2.0, 5.0, 10.0, 25.0, 50.0, 100.0, 250.0, 500.0,
+            ]),
             &["result"],
         )
         .expect("aether_mempool_writer_write_latency_ms histogram vec");
@@ -467,8 +453,7 @@ async fn insert_prediction_inner(
 /// keep the writer self-contained.
 fn u256_to_decimal(v: U256) -> BigDecimal {
     let s = v.to_string();
-    BigDecimal::from_str(&s)
-        .expect("U256::to_string is always a valid base-10 BigDecimal input")
+    BigDecimal::from_str(&s).expect("U256::to_string is always a valid base-10 BigDecimal input")
 }
 
 #[cfg(test)]
@@ -493,7 +478,10 @@ mod tests {
 
     impl MempoolPredictionSink for CapturingSink {
         fn insert_prediction(&self, prediction: NewMempoolPrediction) {
-            self.seen.lock().expect("capturing sink poisoned").push(prediction);
+            self.seen
+                .lock()
+                .expect("capturing sink poisoned")
+                .push(prediction);
         }
     }
 
@@ -556,7 +544,10 @@ mod tests {
             },
         ] {
             let json = serde_json::to_value(&original).expect("serialize");
-            let kind = json.get("kind").and_then(|v| v.as_str()).expect("kind present");
+            let kind = json
+                .get("kind")
+                .and_then(|v| v.as_str())
+                .expect("kind present");
             // `kind` lives under `#[serde(rename_all = "snake_case")]` so a
             // future refactor that drops the rename surfaces here.
             assert!(
@@ -585,7 +576,9 @@ mod tests {
     fn metrics_register_round_trips() {
         let registry = Registry::new();
         let m = MempoolWriterMetrics::register(&registry);
-        m.persisted_total.with_label_values(&[PROTOCOL_UNI_V2]).inc();
+        m.persisted_total
+            .with_label_values(&[PROTOCOL_UNI_V2])
+            .inc();
         m.drops_total.inc();
         m.queue_depth.set(3);
         m.write_latency_ms.with_label_values(&["ok"]).observe(1.5);
@@ -686,7 +679,10 @@ mod tests {
             reserve_out: 200.5,
         };
         let json = serde_json::to_value(&original).expect("serialize");
-        let kind = json.get("kind").and_then(|v| v.as_str()).expect("kind present");
+        let kind = json
+            .get("kind")
+            .and_then(|v| v.as_str())
+            .expect("kind present");
         assert_eq!(kind, "one_inch_v6");
         let parsed: PredictedPostState = serde_json::from_value(json).expect("deserialize");
         assert_eq!(
@@ -735,10 +731,16 @@ mod tests {
     fn metrics_multiple_protocol_labels() {
         let registry = Registry::new();
         let m = MempoolWriterMetrics::register(&registry);
-        m.persisted_total.with_label_values(&[PROTOCOL_UNI_V2]).inc();
+        m.persisted_total
+            .with_label_values(&[PROTOCOL_UNI_V2])
+            .inc();
         m.persisted_total.with_label_values(&[PROTOCOL_SUSHI]).inc();
-        m.persisted_total.with_label_values(&[PROTOCOL_UNI_V3]).inc();
-        m.persisted_total.with_label_values(&[PROTOCOL_BALANCER]).inc();
+        m.persisted_total
+            .with_label_values(&[PROTOCOL_UNI_V3])
+            .inc();
+        m.persisted_total
+            .with_label_values(&[PROTOCOL_BALANCER])
+            .inc();
     }
 
     #[test]
@@ -759,7 +761,9 @@ mod tests {
         let m = MempoolWriterMetrics::register(&registry);
         m.write_latency_ms.with_label_values(&["ok"]).observe(0.5);
         m.write_latency_ms.with_label_values(&["ok"]).observe(50.0);
-        m.write_latency_ms.with_label_values(&["err"]).observe(100.0);
+        m.write_latency_ms
+            .with_label_values(&["err"])
+            .observe(100.0);
     }
 
     #[test]
@@ -777,12 +781,30 @@ mod tests {
     #[test]
     fn predicted_post_state_all_variants_into_json() {
         for variant in [
-            PredictedPostState::V2 { reserve_in: 1.0, reserve_out: 2.0 },
-            PredictedPostState::V3 { reserve_in: 3.0, reserve_out: 4.0 },
-            PredictedPostState::Balancer { reserve_in: 5.0, reserve_out: 6.0 },
-            PredictedPostState::Curve { reserve_in: 7.0, reserve_out: 8.0 },
-            PredictedPostState::Bancor { reserve_in: 9.0, reserve_out: 10.0 },
-            PredictedPostState::OneInchV6 { reserve_in: 11.0, reserve_out: 12.0 },
+            PredictedPostState::V2 {
+                reserve_in: 1.0,
+                reserve_out: 2.0,
+            },
+            PredictedPostState::V3 {
+                reserve_in: 3.0,
+                reserve_out: 4.0,
+            },
+            PredictedPostState::Balancer {
+                reserve_in: 5.0,
+                reserve_out: 6.0,
+            },
+            PredictedPostState::Curve {
+                reserve_in: 7.0,
+                reserve_out: 8.0,
+            },
+            PredictedPostState::Bancor {
+                reserve_in: 9.0,
+                reserve_out: 10.0,
+            },
+            PredictedPostState::OneInchV6 {
+                reserve_in: 11.0,
+                reserve_out: 12.0,
+            },
         ] {
             let json = variant.into_json();
             assert!(json.is_object());
@@ -810,7 +832,10 @@ mod tests {
         let registry = Registry::new();
         let metrics = Arc::new(MempoolWriterMetrics::register(&registry));
         let (tx, _rx) = mpsc::channel::<NewMempoolPrediction>(1);
-        let writer = PgMempoolWriter { tx, metrics: Arc::clone(&metrics) };
+        let writer = PgMempoolWriter {
+            tx,
+            metrics: Arc::clone(&metrics),
+        };
 
         writer.insert_prediction(sample_prediction());
         writer.insert_prediction(sample_prediction());
@@ -832,7 +857,10 @@ mod tests {
         let metrics = Arc::new(MempoolWriterMetrics::register(&registry));
         let (tx, rx) = mpsc::channel::<NewMempoolPrediction>(2);
         drop(rx);
-        let writer = PgMempoolWriter { tx, metrics: Arc::clone(&metrics) };
+        let writer = PgMempoolWriter {
+            tx,
+            metrics: Arc::clone(&metrics),
+        };
 
         writer.insert_prediction(sample_prediction());
 
@@ -852,7 +880,10 @@ mod tests {
         let registry = Registry::new();
         let metrics = Arc::new(MempoolWriterMetrics::register(&registry));
         let (tx, _rx) = mpsc::channel::<NewMempoolPrediction>(256);
-        let writer = PgMempoolWriter { tx, metrics: Arc::clone(&metrics) };
+        let writer = PgMempoolWriter {
+            tx,
+            metrics: Arc::clone(&metrics),
+        };
 
         writer.insert_prediction(sample_prediction());
 
@@ -882,9 +913,13 @@ mod tests {
         sink.insert_prediction(sample_prediction());
 
         if let Some(v) = prev {
-            unsafe { std::env::set_var("MEMPOOL_LEDGER_DSN", v); }
+            unsafe {
+                std::env::set_var("MEMPOOL_LEDGER_DSN", v);
+            }
         } else {
-            unsafe { std::env::remove_var("MEMPOOL_LEDGER_DSN"); }
+            unsafe {
+                std::env::remove_var("MEMPOOL_LEDGER_DSN");
+            }
         }
     }
 
@@ -921,15 +956,54 @@ mod tests {
     #[test]
     fn predicted_post_state_serde_kind_field() {
         for (variant, expected_kind) in [
-            (PredictedPostState::V2 { reserve_in: 1.0, reserve_out: 2.0 }, "v2"),
-            (PredictedPostState::V3 { reserve_in: 1.0, reserve_out: 2.0 }, "v3"),
-            (PredictedPostState::Balancer { reserve_in: 1.0, reserve_out: 2.0 }, "balancer"),
-            (PredictedPostState::Curve { reserve_in: 1.0, reserve_out: 2.0 }, "curve"),
-            (PredictedPostState::Bancor { reserve_in: 1.0, reserve_out: 2.0 }, "bancor"),
-            (PredictedPostState::OneInchV6 { reserve_in: 1.0, reserve_out: 2.0 }, "one_inch_v6"),
+            (
+                PredictedPostState::V2 {
+                    reserve_in: 1.0,
+                    reserve_out: 2.0,
+                },
+                "v2",
+            ),
+            (
+                PredictedPostState::V3 {
+                    reserve_in: 1.0,
+                    reserve_out: 2.0,
+                },
+                "v3",
+            ),
+            (
+                PredictedPostState::Balancer {
+                    reserve_in: 1.0,
+                    reserve_out: 2.0,
+                },
+                "balancer",
+            ),
+            (
+                PredictedPostState::Curve {
+                    reserve_in: 1.0,
+                    reserve_out: 2.0,
+                },
+                "curve",
+            ),
+            (
+                PredictedPostState::Bancor {
+                    reserve_in: 1.0,
+                    reserve_out: 2.0,
+                },
+                "bancor",
+            ),
+            (
+                PredictedPostState::OneInchV6 {
+                    reserve_in: 1.0,
+                    reserve_out: 2.0,
+                },
+                "one_inch_v6",
+            ),
         ] {
             let json = serde_json::to_value(&variant).expect("serialize");
-            let kind = json.get("kind").and_then(|v| v.as_str()).expect("kind present");
+            let kind = json
+                .get("kind")
+                .and_then(|v| v.as_str())
+                .expect("kind present");
             assert_eq!(kind, expected_kind);
         }
     }
@@ -948,7 +1022,9 @@ mod tests {
         let registry = Registry::new();
         let m = MempoolWriterMetrics::register(&registry);
         for i in 0..100 {
-            m.write_latency_ms.with_label_values(&["ok"]).observe(i as f64);
+            m.write_latency_ms
+                .with_label_values(&["ok"])
+                .observe(i as f64);
         }
         let output = prometheus::TextEncoder::new()
             .encode_to_string(&registry.gather())

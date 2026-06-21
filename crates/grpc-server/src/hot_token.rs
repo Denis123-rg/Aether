@@ -348,7 +348,10 @@ mod tests {
         t.record(a, c, Protocol::UniswapV2, None, 0);
         let ranked = t.ranked(0);
         assert_eq!(ranked.len(), 2);
-        assert_eq!(pair_key(ranked[0].token_a, ranked[0].token_b), pair_key(a, b));
+        assert_eq!(
+            pair_key(ranked[0].token_a, ranked[0].token_b),
+            pair_key(a, b)
+        );
     }
 
     #[test]
@@ -380,7 +383,7 @@ mod tests {
         let t = HotTokenTracker::new(cfg);
         let (a, b) = (addr(1), addr(2));
         t.record(a, b, Protocol::UniswapV2, None, 0); // score 1.0 at t=0
-        // After ~4 half-lives (40s) score ~0.0625 < 0.1 floor -> pruned.
+                                                      // After ~4 half-lives (40s) score ~0.0625 < 0.1 floor -> pruned.
         let removed = t.prune(40);
         assert_eq!(removed, 1);
         assert!(t.is_empty());

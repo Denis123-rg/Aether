@@ -169,9 +169,9 @@ where
     if known_balance.is_zero() {
         return None;
     }
-    (0..max_slots).map(U256::from).find(|slot| {
-        read_storage(erc20_balance_key(holder, *slot)) == known_balance
-    })
+    (0..max_slots)
+        .map(U256::from)
+        .find(|slot| read_storage(erc20_balance_key(holder, *slot)) == known_balance)
 }
 
 /// Screen `token` (paired in `pool`, which currently holds `pool_token_balance`
@@ -372,10 +372,8 @@ pub fn classify_round_trip(
         };
     }
     // Actual recovery in bps of base_in.
-    let actual_bps = u32::try_from(
-        base_out.saturating_mul(U256::from(10_000u64)) / base_in,
-    )
-    .unwrap_or(u32::MAX);
+    let actual_bps =
+        u32::try_from(base_out.saturating_mul(U256::from(10_000u64)) / base_in).unwrap_or(u32::MAX);
     // Fee-only expectation: (1-fee)² expressed in bps = fee_factor² / 10000.
     let ff = (10_000u64).saturating_sub(fee_bps as u64);
     let expected_bps = u32::try_from(ff * ff / 10_000).unwrap_or(10_000);
@@ -542,10 +540,14 @@ pub fn screen_token_v2_round_trip(
 
     // Fund the pair with `base_in` of base (tax-free => override is faithful).
     let pair_base_key = erc20_balance_key(pair, base_slot);
-    let pair_base_bal = state.db.storage_ref(base, pair_base_key).unwrap_or_default();
-    let _ = state
+    let pair_base_bal = state
         .db
-        .insert_account_storage(base, pair_base_key, pair_base_bal.saturating_add(base_in));
+        .storage_ref(base, pair_base_key)
+        .unwrap_or_default();
+    let _ =
+        state
+            .db
+            .insert_account_storage(base, pair_base_key, pair_base_bal.saturating_add(base_in));
 
     let RpcForkedState {
         db,
@@ -612,7 +614,10 @@ pub fn screen_token_v2_round_trip(
     );
     if !ok_t {
         return RoundTripVerdict::Honeypot {
-            reason: format!("sell transfer to pair failed: {}", reason_t.unwrap_or_default()),
+            reason: format!(
+                "sell transfer to pair failed: {}",
+                reason_t.unwrap_or_default()
+            ),
         };
     }
 
@@ -765,11 +770,21 @@ mod tests {
     #[test]
     fn expected_amount_out_hundred_percent_fee_returns_zero() {
         assert_eq!(
-            expected_amount_out(U256::from(100u64), U256::from(1000u64), U256::from(1000u64), 10_000),
+            expected_amount_out(
+                U256::from(100u64),
+                U256::from(1000u64),
+                U256::from(1000u64),
+                10_000
+            ),
             U256::ZERO
         );
         assert_eq!(
-            expected_amount_out(U256::from(100u64), U256::from(1000u64), U256::from(1000u64), 10_001),
+            expected_amount_out(
+                U256::from(100u64),
+                U256::from(1000u64),
+                U256::from(1000u64),
+                10_001
+            ),
             U256::ZERO
         );
     }
@@ -802,14 +817,8 @@ mod tests {
         }
         .is_admissible());
         assert!(!FotVerdict::FeeOnTransfer { tax_bps: 500 }.is_admissible());
-        assert!(!FotVerdict::Honeypot {
-            reason: "x".into()
-        }
-        .is_admissible());
-        assert!(!FotVerdict::Inconclusive {
-            reason: "x".into()
-        }
-        .is_admissible());
+        assert!(!FotVerdict::Honeypot { reason: "x".into() }.is_admissible());
+        assert!(!FotVerdict::Inconclusive { reason: "x".into() }.is_admissible());
     }
 
     #[test]
@@ -831,7 +840,10 @@ mod tests {
             None
         );
         // Zero known-balance => None (cannot disambiguate).
-        assert_eq!(discover_balance_slot(reader, token_holder, U256::ZERO, 40), None);
+        assert_eq!(
+            discover_balance_slot(reader, token_holder, U256::ZERO, 40),
+            None
+        );
         // Slot beyond probe budget is not found.
         assert_eq!(discover_balance_slot(reader, token_holder, known, 7), None);
     }
@@ -975,7 +987,7 @@ mod tests {
     #[test]
     fn encode_v2_swap_zero_addresses() {
         let data = encode_v2_swap(U256::from(1u64), U256::ZERO, Address::ZERO);
-        assert_eq!(data.len(), 4+5*32);
+        assert_eq!(data.len(), 4 + 5 * 32);
     }
 
     #[test]
@@ -987,7 +999,9 @@ mod tests {
     fn classify_transfer_zero_sent() {
         assert_eq!(
             classify_transfer(U256::ZERO, U256::ZERO, 10),
-            FotVerdict::Clean { observed_tax_bps: 0 }
+            FotVerdict::Clean {
+                observed_tax_bps: 0
+            }
         );
     }
 
@@ -1002,7 +1016,12 @@ mod tests {
 
     #[test]
     fn expected_amount_out_one_wei_in() {
-        let out = expected_amount_out(U256::from(1u64), U256::from(1_000_000u64), U256::from(1_000_000u64), 30);
+        let out = expected_amount_out(
+            U256::from(1u64),
+            U256::from(1_000_000u64),
+            U256::from(1_000_000u64),
+            30,
+        );
         assert!(out <= U256::from(1u64));
     }
 
@@ -1017,26 +1036,17 @@ mod tests {
 
     #[test]
     fn classify_round_trip_clean_path_cov() {
-        let v = classify_round_trip(
-            U256::from(1000u64),
-            U256::from(995u64),
-            30,
-            true,
-            100,
-        );
+        let v = classify_round_trip(U256::from(1000u64), U256::from(995u64), 30, true, 100);
         assert!(matches!(v, RoundTripVerdict::Clean { .. }));
     }
 
     #[test]
     fn classify_round_trip_flags_high_fee() {
-        let v = classify_round_trip(
-            U256::from(1000u64),
-            U256::from(500u64),
-            30,
-            true,
-            50,
-        );
-        assert!(matches!(v, RoundTripVerdict::FeeOnTransfer { .. } | RoundTripVerdict::Honeypot { .. }));
+        let v = classify_round_trip(U256::from(1000u64), U256::from(500u64), 30, true, 50);
+        assert!(matches!(
+            v,
+            RoundTripVerdict::FeeOnTransfer { .. } | RoundTripVerdict::Honeypot { .. }
+        ));
     }
 
     #[test]
@@ -1110,13 +1120,8 @@ mod tests {
         ($name:ident, $in:expr, $out:expr, $fee:expr, $max_loss:expr) => {
             #[test]
             fn $name() {
-                let _ = classify_round_trip(
-                    U256::from($in),
-                    U256::from($out),
-                    $fee,
-                    true,
-                    $max_loss,
-                );
+                let _ =
+                    classify_round_trip(U256::from($in), U256::from($out), $fee, true, $max_loss);
             }
         };
     }
@@ -1154,7 +1159,9 @@ mod tests {
     fn fee_calc_zero_percent_full_recovery() {
         assert_eq!(
             classify_transfer(U256::from(10_000u64), U256::from(10_000u64), 0),
-            FotVerdict::Clean { observed_tax_bps: 0 }
+            FotVerdict::Clean {
+                observed_tax_bps: 0
+            }
         );
         let out = expected_amount_out(
             U256::from(100u64),
@@ -1192,12 +1199,14 @@ mod tests {
             U256::from(10_000u64),
             1000,
         );
-        assert!(out < expected_amount_out(
-            U256::from(1000u64),
-            U256::from(10_000u64),
-            U256::from(10_000u64),
-            500,
-        ));
+        assert!(
+            out < expected_amount_out(
+                U256::from(1000u64),
+                U256::from(10_000u64),
+                U256::from(10_000u64),
+                500,
+            )
+        );
     }
 
     #[test]
@@ -1251,10 +1260,7 @@ mod tests {
     fn round_trip_verdict_is_admissible_only_clean() {
         assert!(RoundTripVerdict::Clean { recovery_bps: 9900 }.is_admissible());
         assert!(!RoundTripVerdict::FeeOnTransfer { loss_bps: 100 }.is_admissible());
-        assert!(!RoundTripVerdict::Honeypot {
-            reason: "x".into()
-        }
-        .is_admissible());
+        assert!(!RoundTripVerdict::Honeypot { reason: "x".into() }.is_admissible());
     }
 
     #[test]
@@ -1294,7 +1300,9 @@ mod tests {
     fn classify_transfer_received_more_than_sent() {
         assert!(matches!(
             classify_transfer(U256::from(100u64), U256::from(200u64), 0),
-            FotVerdict::Clean { observed_tax_bps: 0 }
+            FotVerdict::Clean {
+                observed_tax_bps: 0
+            }
         ));
     }
 
@@ -1410,7 +1418,10 @@ mod tests {
 
     #[test]
     fn fot_verdict_clone_all_variants() {
-        let _ = FotVerdict::Clean { observed_tax_bps: 0 }.clone();
+        let _ = FotVerdict::Clean {
+            observed_tax_bps: 0,
+        }
+        .clone();
         let _ = FotVerdict::FeeOnTransfer { tax_bps: 500 }.clone();
         let _ = FotVerdict::Honeypot { reason: "x".into() }.clone();
         let _ = FotVerdict::Inconclusive { reason: "x".into() }.clone();
@@ -1426,13 +1437,23 @@ mod tests {
 
     #[test]
     fn expected_amount_out_fee_one_bps() {
-        let out = expected_amount_out(U256::from(1000u64), U256::from(1_000_000u64), U256::from(1_000_000u64), 1);
+        let out = expected_amount_out(
+            U256::from(1000u64),
+            U256::from(1_000_000u64),
+            U256::from(1_000_000u64),
+            1,
+        );
         assert!(out > U256::ZERO);
     }
 
     #[test]
     fn expected_amount_out_fee_9999_bps() {
-        let out = expected_amount_out(U256::from(1000u64), U256::from(1_000_000u64), U256::from(1_000_000u64), 9999);
+        let out = expected_amount_out(
+            U256::from(1000u64),
+            U256::from(1_000_000u64),
+            U256::from(1_000_000u64),
+            9999,
+        );
         assert_eq!(out, U256::ZERO);
     }
 
@@ -1474,13 +1495,23 @@ mod tests {
         // actual_bps = 1000*10000/1000 = 10000
         // loss_bps = 0 - 10000 → saturates to 0 → 0 <= 100 → Clean { recovery_bps: 10000 }
         let v = classify_round_trip(U256::from(1000u64), U256::from(1000u64), 20000, true, 100);
-        assert!(matches!(v, RoundTripVerdict::Clean { recovery_bps: 10000 }));
+        assert!(matches!(
+            v,
+            RoundTripVerdict::Clean {
+                recovery_bps: 10000
+            }
+        ));
     }
 
     #[test]
     fn classify_round_trip_fee_bps_zero() {
         let v = classify_round_trip(U256::from(1000u64), U256::from(1000u64), 0, true, 0);
-        assert!(matches!(v, RoundTripVerdict::Clean { recovery_bps: 10000 }));
+        assert!(matches!(
+            v,
+            RoundTripVerdict::Clean {
+                recovery_bps: 10000
+            }
+        ));
     }
 
     #[test]
@@ -1489,7 +1520,10 @@ mod tests {
         // actual_bps = 9900*10000/10000 = 9900
         // loss_bps = 9940 - 9900 = 40 → > 0 → FeeOnTransfer
         let v = classify_round_trip(U256::from(10_000u64), U256::from(9_900u64), 30, true, 0);
-        assert!(matches!(v, RoundTripVerdict::FeeOnTransfer { loss_bps: 40 }));
+        assert!(matches!(
+            v,
+            RoundTripVerdict::FeeOnTransfer { loss_bps: 40 }
+        ));
     }
 
     #[test]
@@ -1535,18 +1569,43 @@ mod tests {
 
     #[test]
     fn fot_verdict_debug_all_variants() {
-        let _ = format!("{:?}", FotVerdict::Clean { observed_tax_bps: 0 });
+        let _ = format!(
+            "{:?}",
+            FotVerdict::Clean {
+                observed_tax_bps: 0
+            }
+        );
         let _ = format!("{:?}", FotVerdict::FeeOnTransfer { tax_bps: 500 });
-        let _ = format!("{:?}", FotVerdict::Honeypot { reason: "test".into() });
-        let _ = format!("{:?}", FotVerdict::Inconclusive { reason: "test".into() });
+        let _ = format!(
+            "{:?}",
+            FotVerdict::Honeypot {
+                reason: "test".into()
+            }
+        );
+        let _ = format!(
+            "{:?}",
+            FotVerdict::Inconclusive {
+                reason: "test".into()
+            }
+        );
     }
 
     #[test]
     fn round_trip_verdict_debug_all_variants() {
         let _ = format!("{:?}", RoundTripVerdict::Clean { recovery_bps: 9900 });
         let _ = format!("{:?}", RoundTripVerdict::FeeOnTransfer { loss_bps: 100 });
-        let _ = format!("{:?}", RoundTripVerdict::Honeypot { reason: "test".into() });
-        let _ = format!("{:?}", RoundTripVerdict::Inconclusive { reason: "test".into() });
+        let _ = format!(
+            "{:?}",
+            RoundTripVerdict::Honeypot {
+                reason: "test".into()
+            }
+        );
+        let _ = format!(
+            "{:?}",
+            RoundTripVerdict::Inconclusive {
+                reason: "test".into()
+            }
+        );
     }
 
     #[test]
@@ -1616,13 +1675,13 @@ mod tests {
         base: Address,
         base_slot: u64,
     ) -> RoundTripVerdict {
-        let parsed: alloy::transports::http::reqwest::Url =
-            rpc_url.parse().expect("valid RPC URL");
+        let parsed: alloy::transports::http::reqwest::Url = rpc_url.parse().expect("valid RPC URL");
         let provider = ProviderBuilder::new().connect_http(parsed).erased();
         let latest = provider.get_block_number().await.expect("block number");
         // A fresh RpcForkedState is required per run (AlloyDB is !Clone).
-        let state = RpcForkedState::new_at_latest(provider.clone(), latest, 4_000_000_000, 1_000_000_000)
-            .expect("must run inside a multi-thread tokio runtime");
+        let state =
+            RpcForkedState::new_at_latest(provider.clone(), latest, 4_000_000_000, 1_000_000_000)
+                .expect("must run inside a multi-thread tokio runtime");
         // 0.1% probe, 3% round-trip loss tolerance to absorb fee + slippage.
         screen_token_v2_round_trip(
             state,

@@ -189,7 +189,6 @@ func errUnknownSubcommand(sub string) error {
 	return fmt.Errorf("unknown subcommand %q (want 'serve' or 'encrypt')", sub)
 }
 
-
 func TestFlagSetParseErrors(t *testing.T) {
 	fs := flag.NewFlagSet("encrypt", flag.ContinueOnError)
 	fs.String("out", "", "")

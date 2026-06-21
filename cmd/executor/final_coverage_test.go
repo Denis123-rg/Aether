@@ -31,7 +31,6 @@ func TestLoadConfig_ReturnsDefaultsWhenFilesMissing(t *testing.T) {
 	}
 }
 
-
 func TestLoadRiskConfig_Fallback(t *testing.T) {
 	cfg := loadRiskConfig()
 	if cfg.MaxGasGwei <= 0 {
@@ -111,7 +110,6 @@ func TestStateToInt_AllStates(t *testing.T) {
 		}
 	}
 }
-
 
 func TestSetAuthSigner(t *testing.T) {
 	submitter, err := NewSubmitter(defaultBuilderConfigs(), "")

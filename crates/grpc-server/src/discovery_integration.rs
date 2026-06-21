@@ -33,8 +33,7 @@ pub struct DiscoveryRuntime {
 
 /// Load discovery config from `AETHER_DISCOVERY_CONFIG` or `config/discovery.toml`.
 pub fn discovery_config_path() -> String {
-    std::env::var("AETHER_DISCOVERY_CONFIG")
-        .unwrap_or_else(|_| "config/discovery.toml".to_string())
+    std::env::var("AETHER_DISCOVERY_CONFIG").unwrap_or_else(|_| "config/discovery.toml".to_string())
 }
 
 /// Start discovery + hot cache when enabled. Returns `None` when disabled
@@ -143,8 +142,7 @@ pub async fn maybe_start_discovery(
     let interval_secs = config.hot_cache.update_interval_secs;
     let mut shutdown_sync = shutdown_rx;
     let hot_cache_handle = tokio::spawn(async move {
-        let mut ticker =
-            tokio::time::interval(std::time::Duration::from_secs(interval_secs));
+        let mut ticker = tokio::time::interval(std::time::Duration::from_secs(interval_secs));
         // Skip immediate tick — initial refresh already ran above.
         ticker.tick().await;
         loop {
@@ -201,9 +199,9 @@ mod tests {
 
     #[tokio::test]
     async fn hot_cache_diff_compute_drives_sync_inputs() {
+        use aether_common::types::ProtocolType;
         use aether_state::hot_cache::{HotCache, HotCacheDiff, HotCacheMetrics};
         use alloy::primitives::address;
-        use aether_common::types::ProtocolType;
 
         let registry = prometheus::Registry::new();
         let metrics = HotCacheMetrics::register(&registry);
@@ -272,7 +270,10 @@ mod tests {
     #[test]
     fn discovery_config_path_contains_discovery() {
         let path = discovery_config_path();
-        assert!(path.contains("discovery"), "path should contain 'discovery': {path}");
+        assert!(
+            path.contains("discovery"),
+            "path should contain 'discovery': {path}"
+        );
     }
 
     // ---- load_workspace_discovery_config additional assertions ----
@@ -301,8 +302,8 @@ mod tests {
     #[test]
     fn hot_cache_diff_removes_pools() {
         use aether_common::types::ProtocolType;
-        use aether_state::hot_cache::HotCacheDiff;
         use aether_state::hot_cache::HotCache;
+        use aether_state::hot_cache::HotCacheDiff;
         use aether_state::hot_cache::HotCacheMetrics;
         use alloy::primitives::address;
 
@@ -326,7 +327,10 @@ mod tests {
         // Pre-populate cache
         let mut existing = std::collections::HashSet::new();
         existing.insert(pool.address);
-        cache.apply_diff(HotCacheDiff::compute(&std::collections::HashSet::new(), vec![pool.clone()]));
+        cache.apply_diff(HotCacheDiff::compute(
+            &std::collections::HashSet::new(),
+            vec![pool.clone()],
+        ));
 
         // Now compute diff with empty pool list — should remove the pool
         let diff = HotCacheDiff::compute(&cache.pool_addresses(), vec![]);
@@ -392,7 +396,10 @@ update_interval_secs = 5
     #[serial]
     #[tokio::test]
     async fn maybe_start_discovery_config_load_error() {
-        std::env::set_var("AETHER_DISCOVERY_CONFIG", "/tmp/nonexistent_discovery_config_12345.toml");
+        std::env::set_var(
+            "AETHER_DISCOVERY_CONFIG",
+            "/tmp/nonexistent_discovery_config_12345.toml",
+        );
         let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
         let (tx, _rx) = tokio::sync::broadcast::channel(16);
         let engine = std::sync::Arc::new(crate::engine::AetherEngine::new(
@@ -435,7 +442,10 @@ update_interval_secs = 5
         ));
         let metrics = std::sync::Arc::new(aether_grpc_server::EngineMetrics::new());
         let result = maybe_start_discovery(&engine, &metrics, None, shutdown_rx).await;
-        assert!(result.is_some(), "should succeed even without RPC in offline mode");
+        assert!(
+            result.is_some(),
+            "should succeed even without RPC in offline mode"
+        );
         let runtime = result.unwrap();
         assert!(runtime.hot_cache.is_empty());
         std::env::remove_var("AETHER_DISCOVERY_CONFIG");
@@ -445,7 +455,10 @@ update_interval_secs = 5
     #[serial]
     #[tokio::test]
     async fn maybe_start_discovery_env_override() {
-        std::env::set_var("AETHER_DISCOVERY_CONFIG", "/tmp/nonexistent_for_override_test.toml");
+        std::env::set_var(
+            "AETHER_DISCOVERY_CONFIG",
+            "/tmp/nonexistent_for_override_test.toml",
+        );
         let result = discovery_config_path();
         assert_eq!(result, "/tmp/nonexistent_for_override_test.toml");
         std::env::remove_var("AETHER_DISCOVERY_CONFIG");
@@ -489,19 +502,20 @@ update_interval_secs = 5
         use aether_state::hot_cache::HotCacheDiff;
         use alloy::primitives::address;
 
-   let pools: Vec<_> = (0..5)
-      .map(|i| aether_discovery::types::PoolInfo {
-        address: format!("0x{:040x}", i).parse().unwrap(),
-        token0: address!("A0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"),
-        token1: address!("C02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2"),
-        protocol: ProtocolType::UniswapV2,
-        fee_bps: 30,
-        score: 0.5 + i as f64 * 0.1,
-        tvl_usd: 1000.0,
-        volume_24h_usd: 100.0,
-        slippage_estimate: 0.01,
-        discovered_at: i as u64,
-    })            .collect();
+        let pools: Vec<_> = (0..5)
+            .map(|i| aether_discovery::types::PoolInfo {
+                address: format!("0x{:040x}", i).parse().unwrap(),
+                token0: address!("A0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"),
+                token1: address!("C02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2"),
+                protocol: ProtocolType::UniswapV2,
+                fee_bps: 30,
+                score: 0.5 + i as f64 * 0.1,
+                tvl_usd: 1000.0,
+                volume_24h_usd: 100.0,
+                slippage_estimate: 0.01,
+                discovered_at: i as u64,
+            })
+            .collect();
         let diff = HotCacheDiff::compute(&std::collections::HashSet::new(), pools.clone());
         assert_eq!(diff.added, 5);
         assert_eq!(diff.added_pools.len(), 5);

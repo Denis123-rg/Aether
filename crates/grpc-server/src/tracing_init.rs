@@ -28,8 +28,7 @@ impl Drop for TracingGuard {
 /// `LOG_FORMAT=json` picks the JSON fmt layer; anything else keeps the
 /// human-readable pretty output.
 pub fn init() -> TracingGuard {
-    let env_filter =
-        EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
+    let env_filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
 
     let json_fmt = matches!(std::env::var("LOG_FORMAT").as_deref(), Ok("json"));
     let otlp_endpoint = std::env::var("OTEL_EXPORTER_OTLP_ENDPOINT")
@@ -235,8 +234,7 @@ mod tests {
     #[test]
     fn otlp_service_name_default() {
         std::env::remove_var("OTEL_SERVICE_NAME");
-        let name = std::env::var("OTEL_SERVICE_NAME")
-            .unwrap_or_else(|_| "aether-rust".to_string());
+        let name = std::env::var("OTEL_SERVICE_NAME").unwrap_or_else(|_| "aether-rust".to_string());
         assert_eq!(name, "aether-rust");
     }
 
@@ -244,8 +242,7 @@ mod tests {
     #[test]
     fn otlp_service_name_custom() {
         std::env::set_var("OTEL_SERVICE_NAME", "my-service");
-        let name = std::env::var("OTEL_SERVICE_NAME")
-            .unwrap_or_else(|_| "aether-rust".to_string());
+        let name = std::env::var("OTEL_SERVICE_NAME").unwrap_or_else(|_| "aether-rust".to_string());
         assert_eq!(name, "my-service");
         std::env::remove_var("OTEL_SERVICE_NAME");
     }
@@ -480,8 +477,7 @@ mod tests {
     #[test]
     fn init_otel_service_name_env_detection() {
         std::env::set_var("OTEL_SERVICE_NAME", "test-service");
-        let name = std::env::var("OTEL_SERVICE_NAME")
-            .unwrap_or_else(|_| "aether-rust".to_string());
+        let name = std::env::var("OTEL_SERVICE_NAME").unwrap_or_else(|_| "aether-rust".to_string());
         assert_eq!(name, "test-service");
         std::env::remove_var("OTEL_SERVICE_NAME");
     }
@@ -490,9 +486,15 @@ mod tests {
 
     #[test]
     fn multiple_guards_drop_sequentially() {
-        let g1 = TracingGuard { otel_installed: false };
-        let g2 = TracingGuard { otel_installed: false };
-        let g3 = TracingGuard { otel_installed: false };
+        let g1 = TracingGuard {
+            otel_installed: false,
+        };
+        let g2 = TracingGuard {
+            otel_installed: false,
+        };
+        let g3 = TracingGuard {
+            otel_installed: false,
+        };
         drop(g1);
         drop(g2);
         drop(g3);
@@ -512,13 +514,17 @@ mod tests {
 
     #[test]
     fn tracing_guard_otel_installed_field_true() {
-        let guard = TracingGuard { otel_installed: true };
+        let guard = TracingGuard {
+            otel_installed: true,
+        };
         assert!(guard.otel_installed);
     }
 
     #[test]
     fn tracing_guard_otel_installed_field_false() {
-        let guard = TracingGuard { otel_installed: false };
+        let guard = TracingGuard {
+            otel_installed: false,
+        };
         assert!(!guard.otel_installed);
     }
 
@@ -610,9 +616,15 @@ mod tests {
     #[test]
     fn guard_drop_multiple_invocations() {
         {
-            let _g1 = TracingGuard { otel_installed: false };
-            let _g2 = TracingGuard { otel_installed: false };
-            let _g3 = TracingGuard { otel_installed: false };
+            let _g1 = TracingGuard {
+                otel_installed: false,
+            };
+            let _g2 = TracingGuard {
+                otel_installed: false,
+            };
+            let _g3 = TracingGuard {
+                otel_installed: false,
+            };
         }
     }
 
@@ -656,8 +668,7 @@ mod tests {
     #[test]
     fn init_pretty_fmt_layer_properties() {
         use tracing_subscriber::fmt;
-        let _layer = fmt::layer::<tracing_subscriber::Registry>()
-            .with_target(true);
+        let _layer = fmt::layer::<tracing_subscriber::Registry>().with_target(true);
     }
 
     #[test]
@@ -671,14 +682,18 @@ mod tests {
 
     #[test]
     fn tracing_guard_debug_otel_installed() {
-        let guard = TracingGuard { otel_installed: true };
+        let guard = TracingGuard {
+            otel_installed: true,
+        };
         let debug = format!("{:?}", guard);
         assert!(debug.contains("true"));
     }
 
     #[test]
     fn tracing_guard_debug_no_otel() {
-        let guard = TracingGuard { otel_installed: false };
+        let guard = TracingGuard {
+            otel_installed: false,
+        };
         let debug = format!("{:?}", guard);
         assert!(debug.contains("false"));
     }
@@ -687,7 +702,10 @@ mod tests {
     fn env_filter_with_all_log_levels() {
         let filter = EnvFilter::new("error,warn,info,debug,trace");
         let s = filter.to_string();
-        assert!(s.contains("trace"), "expected 'trace' in EnvFilter output, got: {s:?}");
+        assert!(
+            s.contains("trace"),
+            "expected 'trace' in EnvFilter output, got: {s:?}"
+        );
     }
 
     #[serial]
@@ -705,8 +723,7 @@ mod tests {
     #[test]
     fn otlp_service_name_default_when_unset() {
         std::env::remove_var("OTEL_SERVICE_NAME");
-        let name = std::env::var("OTEL_SERVICE_NAME")
-            .unwrap_or_else(|_| "aether-rust".to_string());
+        let name = std::env::var("OTEL_SERVICE_NAME").unwrap_or_else(|_| "aether-rust".to_string());
         assert_eq!(name, "aether-rust");
     }
 
@@ -729,6 +746,9 @@ mod tests {
             .with_tonic()
             .with_endpoint(endpoint)
             .build();
-        assert!(result.is_ok(), "builder should succeed for any string endpoint");
+        assert!(
+            result.is_ok(),
+            "builder should succeed for any string endpoint"
+        );
     }
 }

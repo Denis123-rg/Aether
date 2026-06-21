@@ -25,10 +25,7 @@ fn edge(from: usize, to: usize, weight: f64, filtered: bool) -> PriceEdge {
 
 #[test]
 fn filtered_edge_not_selected() {
-    let edges = vec![
-        edge(0, 1, 0.1, true),
-        edge(0, 1, 0.5, false),
-    ];
+    let edges = vec![edge(0, 1, 0.1, true), edge(0, 1, 0.5, false)];
     let best = select_best_edge_for_hop(&edges, 1).expect("unfiltered edge");
     assert!((best.weight - 0.5).abs() < f64::EPSILON);
     assert!(!best.filtered);
@@ -83,10 +80,7 @@ fn empty_edge_list_returns_none() {
 
 #[test]
 fn filtered_lowest_weight_ignored_for_better_unfiltered() {
-    let edges = vec![
-        edge(0, 1, 0.01, true),
-        edge(0, 1, 0.99, false),
-    ];
+    let edges = vec![edge(0, 1, 0.01, true), edge(0, 1, 0.99, false)];
     let best = select_best_edge_for_hop(&edges, 1).unwrap();
     assert!((best.weight - 0.99).abs() < f64::EPSILON);
 }

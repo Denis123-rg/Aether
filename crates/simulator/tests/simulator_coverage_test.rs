@@ -40,7 +40,11 @@ fn simulate_with_profit_revert() {
     let sim = default_sim();
     let mut state = funded_state();
     // REVERT
-    state.insert_account(CONTRACT, U256::ZERO, Bytes::from(vec![0x60, 0x00, 0x60, 0x00, 0xfd]));
+    state.insert_account(
+        CONTRACT,
+        U256::ZERO,
+        Bytes::from(vec![0x60, 0x00, 0x60, 0x00, 0xfd]),
+    );
     let result = sim.simulate_with_profit(&state, CONTRACT, vec![], Address::ZERO, CALLER);
     assert!(!result.success);
     assert!(result.revert_reason.is_some());
@@ -88,10 +92,7 @@ fn simulate_revert_with_error_data() {
     let sim = default_sim();
     let mut state = funded_state();
     // PUSH1 0x01 PUSH1 0x00 MSTORE PUSH1 0x20 PUSH1 0x00 REVERT (revert with 32 bytes)
-    let bytecode = vec![
-        0x60, 0x01, 0x60, 0x00, 0x52,
-        0x60, 0x20, 0x60, 0x00, 0xfd,
-    ];
+    let bytecode = vec![0x60, 0x01, 0x60, 0x00, 0x52, 0x60, 0x20, 0x60, 0x00, 0xfd];
     state.insert_account(CONTRACT, U256::ZERO, Bytes::from(bytecode));
     let result = sim.simulate(&state, CONTRACT, vec![]);
     assert!(!result.success);
@@ -172,7 +173,11 @@ fn simulate_against_empty_state() {
 fn simulation_result_fields_on_revert() {
     let sim = default_sim();
     let mut state = funded_state();
-    state.insert_account(CONTRACT, U256::ZERO, Bytes::from(vec![0x60, 0x00, 0x60, 0x00, 0xfd]));
+    state.insert_account(
+        CONTRACT,
+        U256::ZERO,
+        Bytes::from(vec![0x60, 0x00, 0x60, 0x00, 0xfd]),
+    );
     let result = sim.simulate(&state, CONTRACT, vec![]);
     assert!(!result.success);
     assert_eq!(result.profit_wei, U256::ZERO);
@@ -237,16 +242,26 @@ mod deploy_tests {
 
     static PORT_COUNTER: std::sync::atomic::AtomicU16 = std::sync::atomic::AtomicU16::new(0);
 
-    struct AnvilGuard { child: std::process::Child, url: String }
+    struct AnvilGuard {
+        child: std::process::Child,
+        url: String,
+    }
     impl Drop for AnvilGuard {
-        fn drop(&mut self) { let _ = self.child.kill(); let _ = self.child.wait(); }
+        fn drop(&mut self) {
+            let _ = self.child.kill();
+            let _ = self.child.wait();
+        }
     }
     impl AnvilGuard {
         fn start() -> Self {
             let offset = PORT_COUNTER.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             let port = 18545 + (std::process::id() % 500) as u16 + offset;
-            let child = Command::new("anvil").args(["--port", &port.to_string(), "--silent", "--block-time", "1"])
-                .stdout(Stdio::null()).stderr(Stdio::null()).spawn().expect("anvil");
+            let child = Command::new("anvil")
+                .args(["--port", &port.to_string(), "--silent", "--block-time", "1"])
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+                .expect("anvil");
             let url = format!("http://127.0.0.1:{port}");
             std::thread::sleep(Duration::from_millis(2000));
             AnvilGuard { child, url }
@@ -255,7 +270,8 @@ mod deploy_tests {
             let parsed: url::Url = self.url.parse().unwrap();
             let provider = ProviderBuilder::new().connect_http(parsed).erased();
             let latest = provider.get_block_number().await.expect("block number");
-            RpcForkedState::new_at_latest(provider.clone(), latest, 4_000_000_000, 1_000_000_000).expect("fork state")
+            RpcForkedState::new_at_latest(provider.clone(), latest, 4_000_000_000, 1_000_000_000)
+                .expect("fork state")
         }
     }
 
@@ -276,7 +292,11 @@ mod deploy_tests {
         let sim = EvmSimulator::new(config);
         let target = address!("dead00000000000000000000000000000000dead");
         let result = sim.simulate_rpc(state, target, vec![]);
-        assert!(result.success, "call to address with no code should succeed: {:?}", result.revert_reason);
+        assert!(
+            result.success,
+            "call to address with no code should succeed: {:?}",
+            result.revert_reason
+        );
     }
 
     /// Build initcode that deploys the given runtime bytecode.
@@ -289,7 +309,7 @@ mod deploy_tests {
         initcode.push(0x7f); // PUSH32
         initcode.extend_from_slice(&padded);
         initcode.extend_from_slice(&[0x60, 0x00, 0x52]); // PUSH1 0 MSTORE
-        // RETURN(0, len)
+                                                         // RETURN(0, len)
         initcode.extend_from_slice(&[0x60, len as u8, 0x60, 0x00, 0xf3]);
         initcode
     }
@@ -362,7 +382,14 @@ mod deploy_tests {
         let sim = EvmSimulator::with_defaults();
         let token = address!("c02aaa39b223fe8d0a0e5c4f27ead9083c756cc2");
         let recipient = address!("1111111111111111111111111111111111111111");
-        let result = sim.simulate_rpc_with_erc20_profit(state, contract, vec![], token, recipient, U256::from(3));
+        let result = sim.simulate_rpc_with_erc20_profit(
+            state,
+            contract,
+            vec![],
+            token,
+            recipient,
+            U256::from(3),
+        );
         assert!(result.success);
     }
 
@@ -387,7 +414,14 @@ mod deploy_tests {
         let sim = EvmSimulator::with_defaults();
         let token = address!("c02aaa39b223fe8d0a0e5c4f27ead9083c756cc2");
         let recipient = address!("1111111111111111111111111111111111111111");
-        let result = sim.simulate_rpc_with_erc20_profit(state, contract, vec![], token, recipient, U256::from(3));
+        let result = sim.simulate_rpc_with_erc20_profit(
+            state,
+            contract,
+            vec![],
+            token,
+            recipient,
+            U256::from(3),
+        );
         assert!(!result.success);
         assert!(result.revert_reason.is_some());
     }
@@ -412,7 +446,14 @@ mod deploy_tests {
         let sim = EvmSimulator::with_defaults();
         let token = address!("c02aaa39b223fe8d0a0e5c4f27ead9083c756cc2");
         let recipient = address!("1111111111111111111111111111111111111111");
-        let result = sim.simulate_rpc_with_erc20_profit(state, contract, vec![], token, recipient, U256::from(3));
+        let result = sim.simulate_rpc_with_erc20_profit(
+            state,
+            contract,
+            vec![],
+            token,
+            recipient,
+            U256::from(3),
+        );
         assert!(!result.success);
     }
 
@@ -441,7 +482,11 @@ mod deploy_tests {
         );
         assert!(!result.success);
         let reason = result.revert_reason.unwrap();
-        assert!(reason.contains("CREATE reverted") || reason.contains("CREATE halted") || reason.contains("EVM error"));
+        assert!(
+            reason.contains("CREATE reverted")
+                || reason.contains("CREATE halted")
+                || reason.contains("EVM error")
+        );
     }
 
     #[tokio::test(flavor = "multi_thread")]

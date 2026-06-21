@@ -183,8 +183,7 @@ mod tests {
 
     #[test]
     fn test_expand_env_vars_mixed_known_and_unknown() {
-        let result =
-            expand_env_vars_with("${AETHER_A}-${UNKNOWN}-${AETHER_B}", test_resolver);
+        let result = expand_env_vars_with("${AETHER_A}-${UNKNOWN}-${AETHER_B}", test_resolver);
         assert_eq!(result, "1-${UNKNOWN}-2");
     }
 
@@ -318,8 +317,7 @@ nodes:
         let mut f = std::fs::File::create(&path).expect("create");
         f.write_all(yaml.as_bytes()).expect("write");
 
-        let (configs, _) =
-            load_nodes_config(path.to_str().expect("path")).expect("load");
+        let (configs, _) = load_nodes_config(path.to_str().expect("path")).expect("load");
         assert_eq!(configs[0].priority, 10, "default priority should be 10");
 
         std::fs::remove_file(&path).ok();
@@ -345,8 +343,7 @@ nodes:
         let mut f = std::fs::File::create(&path).expect("create");
         f.write_all(yaml.as_bytes()).expect("write");
 
-        let (configs, _) =
-            load_nodes_config(path.to_str().expect("path")).expect("load");
+        let (configs, _) = load_nodes_config(path.to_str().expect("path")).expect("load");
         assert_eq!(configs[0].url, "wss://env-expanded.example.com");
 
         std::env::remove_var("AETHER_TEST_NODE_URL");
@@ -396,8 +393,7 @@ nodes:
         let mut f = std::fs::File::create(&path).expect("create");
         f.write_all(yaml.as_bytes()).expect("write");
 
-        let (configs, _) =
-            load_nodes_config(path.to_str().expect("path")).expect("load");
+        let (configs, _) = load_nodes_config(path.to_str().expect("path")).expect("load");
         assert!(configs.is_empty());
 
         std::fs::remove_file(&path).ok();
@@ -420,13 +416,9 @@ nodes:
         let mut f = std::fs::File::create(&path).expect("create");
         f.write_all(yaml.as_bytes()).expect("write");
 
-        let (configs, _) =
-            load_nodes_config(path.to_str().expect("path")).expect("load");
+        let (configs, _) = load_nodes_config(path.to_str().expect("path")).expect("load");
         assert_eq!(configs[0].max_retries, 5);
-        assert_eq!(
-            configs[0].health_check_interval,
-            Duration::from_secs(30)
-        );
+        assert_eq!(configs[0].health_check_interval, Duration::from_secs(30));
 
         std::fs::remove_file(&path).ok();
         std::fs::remove_dir(&dir).ok();

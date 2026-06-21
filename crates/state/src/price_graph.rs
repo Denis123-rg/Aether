@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
-use alloy::primitives::{Address, U256};
 use aether_common::types::{PoolId, ProtocolType};
+use alloy::primitives::{Address, U256};
 
 /// Default ERC20 token decimals assumed for any vertex whose decimals have not
 /// been explicitly set. Most ERC20 tokens use 18 decimals.
@@ -216,8 +216,7 @@ impl PriceGraph {
         // and the protocol-aware cycle-gating liquidity check.
         let filtered = match self.weth_vertex {
             Some(weth)
-                if self.min_liquidity_weth > 0.0
-                    && pool_id.protocol != ProtocolType::UniswapV3 =>
+                if self.min_liquidity_weth > 0.0 && pool_id.protocol != ProtocolType::UniswapV3 =>
             {
                 let weth_human = if from == weth {
                     Some(reserve_in / 10f64.powi(self.token_decimals(from) as i32))
@@ -266,13 +265,7 @@ impl PriceGraph {
     /// No-op when no edge matches `(from, to, pool_id)`. Safe to call before or
     /// after [`Self::update_edge_from_reserves`]; the next reserve refresh will
     /// overwrite the flag with the min-liquidity-floor verdict.
-    pub fn set_edge_filtered(
-        &mut self,
-        from: usize,
-        to: usize,
-        pool_id: PoolId,
-        filtered: bool,
-    ) {
+    pub fn set_edge_filtered(&mut self, from: usize, to: usize, pool_id: PoolId, filtered: bool) {
         if let Some(existing) = self.edges[from]
             .iter_mut()
             .find(|e| e.to == to && e.pool_id == pool_id)
@@ -372,7 +365,8 @@ impl PriceGraph {
         self.edge_index.clear();
 
         for (idx, (edge, was_dirty)) in surviving.into_iter().enumerate() {
-            self.edge_index.insert((edge.from, edge.to, edge.pool_id), idx);
+            self.edge_index
+                .insert((edge.from, edge.to, edge.pool_id), idx);
             self.all_edges.push(edge);
             self.dirty.push(was_dirty);
         }
@@ -786,7 +780,10 @@ mod tests {
 
         // Mark pool B's edge dirty via a reserve update before removing pool A.
         g.update_edge_from_reserves(2, 3, pool_b, 1000.0, 2000.0, 0.997);
-        assert!(g.has_dirty_edges(), "pool B edge should be dirty before removal");
+        assert!(
+            g.has_dirty_edges(),
+            "pool B edge should be dirty before removal"
+        );
 
         g.remove_pool_edges(&pool_a);
 
@@ -836,7 +833,10 @@ mod tests {
         g.remove_pool_edges(&pool_a);
 
         assert_eq!(g.num_edges(), 1);
-        assert!(!g.has_dirty_edges(), "clean edge should remain clean after removal");
+        assert!(
+            !g.has_dirty_edges(),
+            "clean edge should remain clean after removal"
+        );
     }
 
     #[test]
@@ -1006,10 +1006,7 @@ mod tests {
             );
         }
         // Removed pool should not appear in the index.
-        assert!(!g
-            .edge_index
-            .keys()
-            .any(|(_, _, pid)| pid == &removed_pool));
+        assert!(!g.edge_index.keys().any(|(_, _, pid)| pid == &removed_pool));
     }
 
     #[test]
@@ -1050,9 +1047,33 @@ mod tests {
         let p2 = make_pool_id(2, ProtocolType::SushiSwap);
         let p3 = make_pool_id(3, ProtocolType::Curve);
 
-        g.add_edge(0, 1, 2.0, p1, Address::repeat_byte(1), ProtocolType::UniswapV2, U256::from(100u64));
-        g.add_edge(1, 2, 1.5, p2, Address::repeat_byte(2), ProtocolType::SushiSwap, U256::from(200u64));
-        g.add_edge(2, 3, 1.2, p3, Address::repeat_byte(3), ProtocolType::Curve, U256::from(300u64));
+        g.add_edge(
+            0,
+            1,
+            2.0,
+            p1,
+            Address::repeat_byte(1),
+            ProtocolType::UniswapV2,
+            U256::from(100u64),
+        );
+        g.add_edge(
+            1,
+            2,
+            1.5,
+            p2,
+            Address::repeat_byte(2),
+            ProtocolType::SushiSwap,
+            U256::from(200u64),
+        );
+        g.add_edge(
+            2,
+            3,
+            1.2,
+            p3,
+            Address::repeat_byte(3),
+            ProtocolType::Curve,
+            U256::from(300u64),
+        );
 
         // All three should be dirty.
         let mut indices = g.dirty_edge_indices();
@@ -1204,7 +1225,10 @@ mod tests {
             "V3 synthetic USDC->WETH human rate off: got {human_rate}, want ~{expected} (must NOT carry 1e12)"
         );
         // Sanity: a 1e12-off bug would put human_rate near 3.3e8; assert nowhere close.
-        assert!(human_rate < 1.0, "human rate must be sub-1, got {human_rate}");
+        assert!(
+            human_rate < 1.0,
+            "human rate must be sub-1, got {human_rate}"
+        );
     }
 
     // --------------- Minimum-liquidity floor ---------------
@@ -1217,8 +1241,24 @@ mod tests {
         g.set_token_decimals(0, 18); // arbitrary token
         g.set_token_decimals(1, weth_decimals); // WETH
         let pool_id = make_pool_id(1, ProtocolType::UniswapV2);
-        g.add_edge(0, 1, 1.0, pool_id, Address::repeat_byte(1), ProtocolType::UniswapV2, U256::from(1u64));
-        g.add_edge(1, 0, 1.0, pool_id, Address::repeat_byte(1), ProtocolType::UniswapV2, U256::from(1u64));
+        g.add_edge(
+            0,
+            1,
+            1.0,
+            pool_id,
+            Address::repeat_byte(1),
+            ProtocolType::UniswapV2,
+            U256::from(1u64),
+        );
+        g.add_edge(
+            1,
+            0,
+            1.0,
+            pool_id,
+            Address::repeat_byte(1),
+            ProtocolType::UniswapV2,
+            U256::from(1u64),
+        );
         (g, pool_id)
     }
 
@@ -1254,8 +1294,14 @@ mod tests {
         g.update_edge_from_reserves(0, 1, pool_id, token_reserve, weth_reserve, 0.997);
         g.update_edge_from_reserves(1, 0, pool_id, weth_reserve, token_reserve, 0.997);
 
-        assert!(!g.edges_from(0)[0].filtered, "0->1 edge should not be filtered");
-        assert!(!g.edges_from(1)[0].filtered, "1->0 edge should not be filtered");
+        assert!(
+            !g.edges_from(0)[0].filtered,
+            "0->1 edge should not be filtered"
+        );
+        assert!(
+            !g.edges_from(1)[0].filtered,
+            "1->0 edge should not be filtered"
+        );
         assert!(g.all_edges().iter().all(|e| !e.filtered));
     }
 
@@ -1270,11 +1316,22 @@ mod tests {
         g.set_min_liquidity_weth(1.0);
 
         let pool_id = make_pool_id(1, ProtocolType::UniswapV2);
-        g.add_edge(0, 1, 1.0, pool_id, Address::repeat_byte(1), ProtocolType::UniswapV2, U256::from(1u64));
+        g.add_edge(
+            0,
+            1,
+            1.0,
+            pool_id,
+            Address::repeat_byte(1),
+            ProtocolType::UniswapV2,
+            U256::from(1u64),
+        );
         // Tiny reserves on both sides — would be filtered if this were WETH-paired.
         g.update_edge_from_reserves(0, 1, pool_id, 1.0, 1.0, 0.997);
 
-        assert!(!g.edges_from(0)[0].filtered, "non-WETH pool must never be floored");
+        assert!(
+            !g.edges_from(0)[0].filtered,
+            "non-WETH pool must never be floored"
+        );
     }
 
     #[test]
@@ -1326,8 +1383,19 @@ mod tests {
     fn test_add_edge_initializes_filtered_false() {
         let mut g = PriceGraph::new(2);
         let pool_id = make_pool_id(1, ProtocolType::UniswapV2);
-        g.add_edge(0, 1, 2.0, pool_id, Address::repeat_byte(1), ProtocolType::UniswapV2, U256::from(1u64));
-        assert!(!g.all_edges()[0].filtered, "placeholder edge must start unfiltered");
+        g.add_edge(
+            0,
+            1,
+            2.0,
+            pool_id,
+            Address::repeat_byte(1),
+            ProtocolType::UniswapV2,
+            U256::from(1u64),
+        );
+        assert!(
+            !g.all_edges()[0].filtered,
+            "placeholder edge must start unfiltered"
+        );
     }
 
     #[test]
@@ -1349,7 +1417,15 @@ mod tests {
             address: Address::repeat_byte(2),
             protocol: ProtocolType::UniswapV3,
         };
-        g.add_edge(0, 1, 1.0, pool_id, Address::repeat_byte(2), ProtocolType::UniswapV3, U256::ZERO);
+        g.add_edge(
+            0,
+            1,
+            1.0,
+            pool_id,
+            Address::repeat_byte(2),
+            ProtocolType::UniswapV3,
+            U256::ZERO,
+        );
 
         // Realistic V3 USDC->WETH synthetic seed: spot in raw base units
         // = (1/3000) human * 10^(18-6) = (1/3000) * 1e12 ≈ 3.33e8.
@@ -1377,7 +1453,15 @@ mod tests {
             address: Address::repeat_byte(3),
             protocol: ProtocolType::UniswapV3,
         };
-        g.add_edge(0, 1, 1.0, pool_id, Address::repeat_byte(3), ProtocolType::UniswapV3, U256::ZERO);
+        g.add_edge(
+            0,
+            1,
+            1.0,
+            pool_id,
+            Address::repeat_byte(3),
+            ProtocolType::UniswapV3,
+            U256::ZERO,
+        );
 
         // WETH->USDC: synthetic reserve_in = 1.0 (the WETH side), real
         // spot on the output side. The exact spot value is irrelevant
@@ -1406,7 +1490,15 @@ mod tests {
             protocol: ProtocolType::UniswapV2,
         };
         // Overwrite with our explicit V2 pool to be unambiguous about protocol.
-        g.add_edge(0, 1, 1.0, v2_pool_id, Address::repeat_byte(4), ProtocolType::UniswapV2, U256::ZERO);
+        g.add_edge(
+            0,
+            1,
+            1.0,
+            v2_pool_id,
+            Address::repeat_byte(4),
+            ProtocolType::UniswapV2,
+            U256::ZERO,
+        );
 
         // 0.5 WETH on the WETH side (raw 5e17), one token unit on the
         // other side. Below the 1.0 WETH floor → must still be filtered.
@@ -1456,16 +1548,51 @@ mod tests {
         let mut g = PriceGraph::new(3);
         let hot_id = make_pool_id(10, ProtocolType::UniswapV2);
         let cold_id = make_pool_id(11, ProtocolType::SushiSwap);
-        g.add_edge(0, 1, 1.2, hot_id, hot_id.address, ProtocolType::UniswapV2, U256::from(100));
-        g.add_edge(1, 0, 0.8, hot_id, hot_id.address, ProtocolType::UniswapV2, U256::from(100));
-        g.add_edge(0, 2, 1.5, cold_id, cold_id.address, ProtocolType::SushiSwap, U256::from(50));
-        g.add_edge(2, 0, 0.6, cold_id, cold_id.address, ProtocolType::SushiSwap, U256::from(50));
+        g.add_edge(
+            0,
+            1,
+            1.2,
+            hot_id,
+            hot_id.address,
+            ProtocolType::UniswapV2,
+            U256::from(100),
+        );
+        g.add_edge(
+            1,
+            0,
+            0.8,
+            hot_id,
+            hot_id.address,
+            ProtocolType::UniswapV2,
+            U256::from(100),
+        );
+        g.add_edge(
+            0,
+            2,
+            1.5,
+            cold_id,
+            cold_id.address,
+            ProtocolType::SushiSwap,
+            U256::from(50),
+        );
+        g.add_edge(
+            2,
+            0,
+            0.6,
+            cold_id,
+            cold_id.address,
+            ProtocolType::SushiSwap,
+            U256::from(50),
+        );
 
         let mut allowed = HashSet::new();
         allowed.insert(hot_id.address);
         let filtered = g.clone_retaining_pools(&allowed);
         assert_eq!(filtered.num_edges(), 2);
-        assert!(filtered.all_edges().iter().all(|e| e.pool_address == hot_id.address));
+        assert!(filtered
+            .all_edges()
+            .iter()
+            .all(|e| e.pool_address == hot_id.address));
     }
 
     #[test]
@@ -1473,7 +1600,15 @@ mod tests {
         use std::collections::HashSet;
         let mut g = PriceGraph::new(2);
         let pid = make_pool_id(1, ProtocolType::UniswapV2);
-        g.add_edge(0, 1, 1.0, pid, pid.address, ProtocolType::UniswapV2, U256::ZERO);
+        g.add_edge(
+            0,
+            1,
+            1.0,
+            pid,
+            pid.address,
+            ProtocolType::UniswapV2,
+            U256::ZERO,
+        );
         let filtered = g.clone_retaining_pools(&HashSet::new());
         assert_eq!(filtered.num_edges(), g.num_edges());
     }

@@ -58,9 +58,9 @@ func (m *testMockNonceProvider) PendingNonceAt(ctx context.Context, account comm
 }
 
 type testMockFeeHistoryProvider struct {
-	returnZeroBaseFee    bool
-	returnEmptyReward    bool
-	returnError          bool
+	returnZeroBaseFee bool
+	returnEmptyReward bool
+	returnError       bool
 }
 
 func (m *testMockFeeHistoryProvider) FeeHistory(ctx context.Context, blockCount uint64, lastBlock *big.Int, rewardPercentiles []float64) (*ethereum.FeeHistory, error) {
@@ -1752,8 +1752,8 @@ func (testPingerOK) Close()                         {}
 type testPingerFail struct{}
 
 func (testPingerFail) Ping(ctx context.Context) error { return errors.New("connection refused") }
-func (testPingerFail) Record(m db.Metric)              {}
-func (testPingerFail) Close()                          {}
+func (testPingerFail) Record(m db.Metric)             {}
+func (testPingerFail) Close()                         {}
 
 func TestMetricsStoreHealthy_PingerOK(t *testing.T) {
 	orig := os.Getenv("DATABASE_URL")
@@ -1945,7 +1945,7 @@ func TestRun_NonceSyncWarning(t *testing.T) {
 			return nil, errors.New("no gRPC")
 		},
 		SkipMetricsHTTP: true, SkipAdminHTTP: true, ReconnectDelay: 10 * time.Millisecond,
-		TxSigner: &testFailingSigner{err: errors.New("test")},
+		TxSigner:  &testFailingSigner{err: errors.New("test")},
 		EthClient: nil, // TxSigner set but EthClient nil => "SEARCHER_KEY not set" log
 	}
 
@@ -2676,7 +2676,7 @@ func TestRun_NilEventPublisher(t *testing.T) {
 	deps := &Dependencies{
 		Submitter: &Submitter{}, Ledger: db.NewNoopLedger(), MetricsStore: db.NewNoopMetricsStore(),
 		ExecutorAddr: "0x0000000000000000000000000000000000000001",
-		ChainID: 1, GRPCDial: func(addr string) (*aethergrpc.Client, error) {
+		ChainID:      1, GRPCDial: func(addr string) (*aethergrpc.Client, error) {
 			return nil, errors.New("no gRPC")
 		}, SkipMigrations: true, SkipMetricsHTTP: true, SkipAdminHTTP: true, ReconnectDelay: 10 * time.Millisecond,
 	}
@@ -2708,7 +2708,7 @@ func TestRun_WithRemoteSigner_PingFail(t *testing.T) {
 	// Create a real RemoteSigner that will fail ping (bad socket)
 	// We test with nil RemoteSigner instead since RemoteSigner is a concrete type
 	deps := &Dependencies{
-		Submitter:    &Submitter{}, Ledger: db.NewNoopLedger(), MetricsStore: db.NewNoopMetricsStore(),
+		Submitter: &Submitter{}, Ledger: db.NewNoopLedger(), MetricsStore: db.NewNoopMetricsStore(),
 		EventPublisher: events.NewPublisherFromEnv(), ExecutorAddr: "0x0000000000000000000000000000000000000001",
 		ChainID: 1, GRPCDial: grpcDial, SkipMigrations: true, SkipMetricsHTTP: true, SkipAdminHTTP: true,
 		ReconnectDelay: 10 * time.Millisecond, RemoteSigner: nil,
@@ -2739,7 +2739,7 @@ func TestRun_ShadowMode(t *testing.T) {
 	cfg.GRPCAddress = "localhost:99999"
 
 	deps := &Dependencies{
-		Submitter:    &Submitter{}, Ledger: db.NewNoopLedger(), MetricsStore: db.NewNoopMetricsStore(),
+		Submitter: &Submitter{}, Ledger: db.NewNoopLedger(), MetricsStore: db.NewNoopMetricsStore(),
 		EventPublisher: events.NewPublisherFromEnv(), ExecutorAddr: "0x0000000000000000000000000000000000000001",
 		ChainID: 1, GRPCDial: func(addr string) (*aethergrpc.Client, error) {
 			return nil, errors.New("no gRPC")

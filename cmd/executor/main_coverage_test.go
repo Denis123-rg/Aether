@@ -8,10 +8,10 @@ import (
 	"os"
 	"testing"
 
+	pb "github.com/aether-arb/aether/internal/pb"
+	"github.com/aether-arb/aether/internal/risk"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/types"
-	"github.com/aether-arb/aether/internal/risk"
-	pb "github.com/aether-arb/aether/internal/pb"
 )
 
 type failingSigner struct{}
@@ -395,13 +395,13 @@ func TestDumpShadowBundle_NilHops_Coverage(t *testing.T) {
 	os.Setenv("AETHER_SHADOW_DUMP_DIR", dir)
 	defer os.Unsetenv("AETHER_SHADOW_DUMP_DIR")
 	arb := &pb.ValidatedArb{
-		Id:             "nil-hops-cov",
-		BlockNumber:    100,
-		FlashloanToken: []byte{0xC0, 0x2a},
+		Id:              "nil-hops-cov",
+		BlockNumber:     100,
+		FlashloanToken:  []byte{0xC0, 0x2a},
 		FlashloanAmount: big.NewInt(1000).Bytes(),
-		NetProfitWei:   big.NewInt(100).Bytes(),
-		TotalGas:       200000,
-		Calldata:       []byte{0x01},
+		NetProfitWei:    big.NewInt(100).Bytes(),
+		TotalGas:        200000,
+		Calldata:        []byte{0x01},
 	}
 	bundle := &Bundle{RawTxs: [][]byte{{0xde, 0xad}}, BlockNumber: 101}
 	if err := dumpShadowBundle(arb, bundle, 0.01, 50.0, 75.0); err != nil {

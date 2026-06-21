@@ -1,6 +1,6 @@
-use alloy::primitives::{address, Address, U256};
-use aether_common::types::ProtocolType;
 use crate::Pool;
+use aether_common::types::ProtocolType;
+use alloy::primitives::{address, Address, U256};
 
 /// Canonical Bancor Network Token (BNT) address on Ethereum mainnet.
 ///
@@ -279,7 +279,13 @@ impl Pool for BancorPool {
         } else {
             return Vec::new();
         };
-        crate::swap_encode::encode_bancor_trade(token_in, token_out, amount_in, min_out, Address::ZERO)
+        crate::swap_encode::encode_bancor_trade(
+            token_in,
+            token_out,
+            amount_in,
+            min_out,
+            Address::ZERO,
+        )
     }
 
     fn liquidity_depth(&self) -> U256 {
@@ -357,10 +363,11 @@ mod tests {
         let amount_in = U256::from(1_000_000_000_000_000_000u64);
         let fee_complement = U256::from(10_000u64 - 30);
         let amount_in_after_fee = amount_in * fee_complement / U256::from(10_000u64);
-        let raw = pool.bnt_balance * amount_in_after_fee
-            / (pool.token_balance + amount_in_after_fee);
+        let raw =
+            pool.bnt_balance * amount_in_after_fee / (pool.token_balance + amount_in_after_fee);
         let out = pool.get_amount_out(pool.token, amount_in).unwrap();
-        let expected = raw * U256::from(10_000u32 - ANALYTICAL_SAFETY_MARGIN_BPS) / U256::from(10_000u32);
+        let expected =
+            raw * U256::from(10_000u32 - ANALYTICAL_SAFETY_MARGIN_BPS) / U256::from(10_000u32);
         assert_eq!(out, expected);
     }
 
@@ -394,7 +401,9 @@ mod tests {
             address!("1F573D6Fb3F13d689FF844B4cE37794d79a7FF1C"),
             30,
         );
-        assert!(pool.predict_post_state(pool.token, U256::from(1u64)).is_none());
+        assert!(pool
+            .predict_post_state(pool.token, U256::from(1u64))
+            .is_none());
     }
 
     #[test]
@@ -439,10 +448,12 @@ mod tests {
         // predictor bails on those by design while `get_amount_out` returns
         // a literal zero.
         for amt in [
-            U256::from(1_000_000_000_000_000_000u128),  // 1 ETH
+            U256::from(1_000_000_000_000_000_000u128),   // 1 ETH
             U256::from(100_000_000_000_000_000_000u128), // 100 ETH
         ] {
-            let analytical_out = pool.get_amount_out(pool.token, amt).expect("get_amount_out");
+            let analytical_out = pool
+                .get_amount_out(pool.token, amt)
+                .expect("get_amount_out");
             let predicted = pool
                 .predict_post_state(pool.token, amt)
                 .expect("predict_post_state");
@@ -459,7 +470,9 @@ mod tests {
         // the predictor bails so the caller doesn't emit a zero-output
         // graph edge that would corrupt Bellman-Ford weights.
         let pool = seeded_pool();
-        assert!(pool.predict_post_state(pool.token, U256::from(1u64)).is_none());
+        assert!(pool
+            .predict_post_state(pool.token, U256::from(1u64))
+            .is_none());
     }
 
     // ----- predict_post_state_multihop -----
@@ -494,7 +507,7 @@ mod tests {
             30,
         );
         pool.update_state(
-            U256::from(500_000_000_000_000_000_000u128), // 500 LINK
+            U256::from(500_000_000_000_000_000_000u128),   // 500 LINK
             U256::from(1_500_000_000_000_000_000_000u128), // 1500 BNT
         );
         pool
@@ -514,14 +527,23 @@ mod tests {
         // new_balance_out tracks BNT side.
         assert!(leg_a.analytical);
         assert_eq!(leg_a.new_balance_in, leg_a_pool.token_balance + amount_in);
-        assert_eq!(leg_a.new_balance_out, leg_a_pool.bnt_balance - leg_a.amount_out);
+        assert_eq!(
+            leg_a.new_balance_out,
+            leg_a_pool.bnt_balance - leg_a.amount_out
+        );
 
         // Leg B: BNT-in, LINK-out → new_balance_in tracks BNT side,
         // new_balance_out tracks LINK side. Intermediate amount equals
         // leg A's amount_out.
         assert!(leg_b.analytical);
-        assert_eq!(leg_b.new_balance_in, leg_b_pool.bnt_balance + leg_a.amount_out);
-        assert_eq!(leg_b.new_balance_out, leg_b_pool.token_balance - leg_b.amount_out);
+        assert_eq!(
+            leg_b.new_balance_in,
+            leg_b_pool.bnt_balance + leg_a.amount_out
+        );
+        assert_eq!(
+            leg_b.new_balance_out,
+            leg_b_pool.token_balance - leg_b.amount_out
+        );
         assert!(leg_b.amount_out > U256::ZERO);
     }
 
@@ -599,12 +621,7 @@ mod tests {
     fn multihop_returns_none_when_leg_a_predictor_bails() {
         // Empty reserves on leg A → first `predict_post_state` returns
         // None → no second-leg call.
-        let leg_a_pool = BancorPool::new(
-            Address::ZERO,
-            weth_address(),
-            BNT_ADDRESS,
-            30,
-        );
+        let leg_a_pool = BancorPool::new(Address::ZERO, weth_address(), BNT_ADDRESS, 30);
         let leg_b_pool = link_bnt_pool();
         let amount_in = U256::from(1_000_000_000_000_000_000u128);
         assert!(leg_a_pool
@@ -614,13 +631,10 @@ mod tests {
 
     #[test]
     fn test_bancor_zero_reserves_error() {
-        let pool = BancorPool::new(
-            Address::ZERO,
-            weth_address(),
-            BNT_ADDRESS,
-            30,
-        );
-        assert!(pool.get_amount_out(weth_address(), U256::from(1000u64)).is_none());
+        let pool = BancorPool::new(Address::ZERO, weth_address(), BNT_ADDRESS, 30);
+        assert!(pool
+            .get_amount_out(weth_address(), U256::from(1000u64))
+            .is_none());
     }
 
     #[test]
@@ -634,9 +648,7 @@ mod tests {
     #[test]
     fn test_bancor_get_amount_in_exceeds_reserve() {
         let pool = seeded_pool();
-        assert!(pool
-            .get_amount_in(pool.bnt, pool.bnt_balance)
-            .is_none());
+        assert!(pool.get_amount_in(pool.bnt, pool.bnt_balance).is_none());
     }
 
     #[test]

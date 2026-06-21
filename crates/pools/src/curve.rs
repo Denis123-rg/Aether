@@ -1,6 +1,6 @@
-use alloy::primitives::{Address, U256};
-use aether_common::types::ProtocolType;
 use crate::Pool;
+use aether_common::types::ProtocolType;
+use alloy::primitives::{Address, U256};
 
 /// Curve StableSwap pool (2-token variant)
 ///
@@ -129,11 +129,7 @@ impl CurvePool {
     /// `new_balance_out = balances[j] - amount_out`. The pool keeps the
     /// fee, which is why the post-balance is *higher* than the Newton-
     /// solved `y`.
-    pub fn predict_post_state(
-        &self,
-        token_in: Address,
-        amount_in: U256,
-    ) -> Option<CurvePostState> {
+    pub fn predict_post_state(&self, token_in: Address, amount_in: U256) -> Option<CurvePostState> {
         if amount_in.is_zero() {
             return None;
         }
@@ -361,7 +357,9 @@ mod tests {
     #[test]
     fn predict_post_state_none_for_zero_amount() {
         let pool = setup_curve_pool();
-        assert!(pool.predict_post_state(pool.tokens[0], U256::ZERO).is_none());
+        assert!(pool
+            .predict_post_state(pool.tokens[0], U256::ZERO)
+            .is_none());
     }
 
     #[test]
@@ -458,7 +456,9 @@ mod tests {
     fn test_curve_zero_balance_in_returns_none() {
         let mut pool = setup_curve_pool();
         pool.balances[0] = U256::ZERO;
-        assert!(pool.get_amount_out(pool.tokens[0], U256::from(1000u64)).is_none());
+        assert!(pool
+            .get_amount_out(pool.tokens[0], U256::from(1000u64))
+            .is_none());
     }
 
     #[test]
@@ -481,10 +481,7 @@ mod tests {
     fn test_curve_large_swap_still_positive() {
         let pool = setup_curve_pool();
         let out = pool
-            .get_amount_out(
-                pool.tokens[0],
-                U256::from(100_000_000_000u64),
-            )
+            .get_amount_out(pool.tokens[0], U256::from(100_000_000_000u64))
             .expect("stableswap");
         assert!(out > U256::ZERO);
     }

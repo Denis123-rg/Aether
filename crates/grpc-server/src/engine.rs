@@ -16,11 +16,10 @@ use aether_common::types::{
     erc20_balance_slot_for_token, known_token_decimals, ArbHop, ArbOpportunity, PoolId,
     ProtocolType, SwapStep,
 };
-use sha2::{Digest, Sha256};
-use uuid::Uuid;
 use aether_detector::bellman_ford::BellmanFord;
 use aether_detector::gas::{estimate_total_gas, gas_cost_wei};
 use aether_detector::optimizer::ternary_search_optimal_input;
+use aether_discovery::types::PoolInfo;
 use aether_ingestion::event_decoder::PoolEvent;
 use aether_ingestion::subscription::{EventChannels, NewBlockEvent};
 use aether_pools::uniswap_v2::UniswapV2Pool;
@@ -28,20 +27,19 @@ use aether_pools::{new_pool_state_cache, Pool, PoolState, PoolStateCache};
 use aether_simulator::calldata::build_execute_arb_calldata;
 use aether_simulator::fork::{prewarm_state, ForkedState, PrewarmedState, RpcForkedState};
 use aether_simulator::EvmSimulator;
-use aether_discovery::types::PoolInfo;
 use aether_state::hot_cache::HotCache;
 use aether_state::price_graph::PriceGraph;
 use aether_state::snapshot::SnapshotManager;
 use aether_state::token_index::TokenIndex;
+use sha2::{Digest, Sha256};
+use uuid::Uuid;
 
 // Import the proto ValidatedArb type from service module
 use aether_grpc_server::EngineMetrics;
 
-use aether_grpc_server::cycle_gating::{
-    self, GatingConfig, PostSimGateVerdict, PreSimGateVerdict,
-};
 use crate::pipeline;
 use crate::service::aether_proto::ValidatedArb as ProtoValidatedArb;
+use aether_grpc_server::cycle_gating::{self, GatingConfig, PostSimGateVerdict, PreSimGateVerdict};
 
 /// Rewrite a `wss://` / `ws://` URL into the corresponding `https://` /
 /// `http://` URL so the revm fork backend (HTTP-only `eth_getStorageAt`
@@ -104,7 +102,7 @@ impl Default for EngineConfig {
     fn default() -> Self {
         Self {
             max_hops: 4,
-            detection_time_budget_us: 3_000, // 3ms
+            detection_time_budget_us: 3_000,                 // 3ms
             min_profit_threshold_wei: 1_000_000_000_000_000, // 0.001 ETH
             gas_price_gwei: 30.0,
             rpc_url: None,
@@ -272,8 +270,7 @@ fn token_label(addr: &Address) -> String {
 /// `grep <id> logs/* | xargs psql -c 'SELECT … WHERE arb_id = …'` work without
 /// a second lookup table.
 const ARB_ID_NAMESPACE: Uuid = Uuid::from_bytes([
-    0x6e, 0xc6, 0xfd, 0x05, 0xb1, 0xc8, 0x4c, 0x4d,
-    0x8d, 0x57, 0x4e, 0xc1, 0x77, 0xa2, 0x47, 0x6e,
+    0x6e, 0xc6, 0xfd, 0x05, 0xb1, 0xc8, 0x4c, 0x4d, 0x8d, 0x57, 0x4e, 0xc1, 0x77, 0xa2, 0x47, 0x6e,
 ]);
 
 /// Derive a deterministic `arb_id` (UUIDv5) from the engine's free-form
@@ -362,7 +359,7 @@ fn u256_to_f64(val: U256) -> f64 {
     limbs[0] as f64
         + limbs[1] as f64 * 18_446_744_073_709_551_616.0 // 2^64
         + limbs[2] as f64 * 3.402_823_669_209_385e38      // 2^128
-        + limbs[3] as f64 * 1.157_920_892_373_162e77       // 2^192
+        + limbs[3] as f64 * 1.157_920_892_373_162e77 // 2^192
 }
 
 /// Whether an edge's `liquidity` field may be used as the optimizer's wei
@@ -602,11 +599,7 @@ impl AetherEngine {
     }
 
     /// Register newly promoted hot-cache pools and deregister evicted ones.
-    pub async fn sync_hot_cache_pools(
-        &self,
-        added: &[PoolInfo],
-        removed: &[Address],
-    ) {
+    pub async fn sync_hot_cache_pools(&self, added: &[PoolInfo], removed: &[Address]) {
         for addr in removed {
             self.remove_pool(*addr).await;
         }
@@ -688,9 +681,7 @@ impl AetherEngine {
         if !added.is_empty() && self.rpc_provider.is_some() {
             let addrs: Vec<Address> = added
                 .iter()
-                .filter(|p| {
-                    !require_prewarm || warmed_addrs.contains(&p.address)
-                })
+                .filter(|p| !require_prewarm || warmed_addrs.contains(&p.address))
                 .map(|p| p.address)
                 .collect();
             self.fetch_reserves_for_addresses(&addrs).await;
@@ -1055,9 +1046,14 @@ impl AetherEngine {
             }
 
             self.register_pool_with_tick_spacing(
-                pool_addr, token0, token1, protocol, entry.fee_bps, entry.tick_spacing,
+                pool_addr,
+                token0,
+                token1,
+                protocol,
+                entry.fee_bps,
+                entry.tick_spacing,
             )
-                .await;
+            .await;
             loaded += 1;
 
             info!(
@@ -1066,7 +1062,11 @@ impl AetherEngine {
             );
         }
 
-        info!(loaded, total = config.pools.len(), "Pool bootstrap complete");
+        info!(
+            loaded,
+            total = config.pools.len(),
+            "Pool bootstrap complete"
+        );
         loaded
     }
 
@@ -1253,9 +1253,7 @@ impl AetherEngine {
             .input(calldata.into());
         match provider.call(tx).await {
             // An address is the low 20 bytes of a right-aligned 32-byte word.
-            Ok(output) if output.len() >= 32 => {
-                Some(Address::from_slice(&output[12..32]))
-            }
+            Ok(output) if output.len() >= 32 => Some(Address::from_slice(&output[12..32])),
             Ok(output) => {
                 debug!(%pool_addr, len = output.len(), "token accessor output too short; cannot verify identity");
                 None
@@ -1364,17 +1362,43 @@ impl AetherEngine {
 
         // Result type for each concurrent RPC fetch.
         enum ReserveResult {
-            V2 { pool_addr: Address, meta: PoolMetadata, r0: U256, r1: U256 },
-            V3 { pool_addr: Address, meta: PoolMetadata, sqrt_price_x96: U256, tick: i32, liquidity: u128 },
-            Curve { pool_addr: Address, meta: PoolMetadata, a: U256, b0: U256, b1: U256 },
-            Balancer { pool_addr: Address, meta: PoolMetadata, b0: U256, b1: U256, w0: U256, w1: U256 },
+            V2 {
+                pool_addr: Address,
+                meta: PoolMetadata,
+                r0: U256,
+                r1: U256,
+            },
+            V3 {
+                pool_addr: Address,
+                meta: PoolMetadata,
+                sqrt_price_x96: U256,
+                tick: i32,
+                liquidity: u128,
+            },
+            Curve {
+                pool_addr: Address,
+                meta: PoolMetadata,
+                a: U256,
+                b0: U256,
+                b1: U256,
+            },
+            Balancer {
+                pool_addr: Address,
+                meta: PoolMetadata,
+                b0: U256,
+                b1: U256,
+                w0: U256,
+                w1: U256,
+            },
             // Carry the meta so the consumer can mark the placeholder graph
             // edges filtered. Without this Bellman-Ford can traverse the dead
             // edge at the boot-seeded rate=1.0 and synthesise phantom cycles
             // (e.g. WETH --(real V3)--> COMP --(dead Sushi)--> WETH at ~108x).
             // `meta` is `None` for branches that fail before metadata is
             // bound (none today — keep the variant tolerant for future safety).
-            Skipped { meta: Option<PoolMetadata> },
+            Skipped {
+                meta: Option<PoolMetadata>,
+            },
         }
 
         // Fire off all RPC calls concurrently.
@@ -1618,7 +1642,12 @@ impl AetherEngine {
             let mut graph = self.working_graph.lock().await;
             for reserve in all_results {
                 match reserve {
-                    ReserveResult::V2 { pool_addr, meta, r0, r1 } => {
+                    ReserveResult::V2 {
+                        pool_addr,
+                        meta,
+                        r0,
+                        r1,
+                    } => {
                         if quarantined.contains(&pool_addr) {
                             // Token identity disagrees with chain — leave the
                             // neutral placeholder edge in place (no live rate)
@@ -1631,12 +1660,20 @@ impl AetherEngine {
                         if r0_f > 0.0 && r1_f > 0.0 {
                             let fee = meta.fee_factor();
                             graph.update_edge_from_reserves(
-                                meta.token0_idx, meta.token1_idx,
-                                meta.pool_id, r0_f, r1_f, fee,
+                                meta.token0_idx,
+                                meta.token1_idx,
+                                meta.pool_id,
+                                r0_f,
+                                r1_f,
+                                fee,
                             );
                             graph.update_edge_from_reserves(
-                                meta.token1_idx, meta.token0_idx,
-                                meta.pool_id, r1_f, r0_f, fee,
+                                meta.token1_idx,
+                                meta.token0_idx,
+                                meta.pool_id,
+                                r1_f,
+                                r0_f,
+                                fee,
                             );
                             // Mirror the reserves into the pool-state cache so
                             // the mempool post-state simulator has live state
@@ -1647,7 +1684,13 @@ impl AetherEngine {
                             debug!(%pool_addr, reserve0 = %r0, reserve1 = %r1, "V2 reserves fetched");
                         }
                     }
-                    ReserveResult::V3 { pool_addr, meta, sqrt_price_x96, tick, liquidity } => {
+                    ReserveResult::V3 {
+                        pool_addr,
+                        meta,
+                        sqrt_price_x96,
+                        tick,
+                        liquidity,
+                    } => {
                         if quarantined.contains(&pool_addr) {
                             // Token identity disagrees with chain — skip both
                             // the graph-edge seeding and the pool-state cache
@@ -1662,24 +1705,30 @@ impl AetherEngine {
                         // units derived from L + sqrtPrice. They make the
                         // optimizer's constant-product profit function model V3
                         // depth exactly (see `uniswap_v3::virtual_reserves`).
-                        let vr = aether_pools::uniswap_v3::virtual_reserves(
-                            sqrt_price_x96,
-                            liquidity,
-                        );
+                        let vr =
+                            aether_pools::uniswap_v3::virtual_reserves(sqrt_price_x96, liquidity);
                         if price > 0.0 {
                             let fee = meta.fee_factor();
                             // Carry L as the edge's `liquidity` so the optimizer
                             // input-range cap reflects real pool depth.
                             let liq = U256::from(liquidity);
                             graph.add_edge(
-                                meta.token0_idx, meta.token1_idx,
-                                price * fee, meta.pool_id, pool_addr,
-                                meta.protocol, liq,
+                                meta.token0_idx,
+                                meta.token1_idx,
+                                price * fee,
+                                meta.pool_id,
+                                pool_addr,
+                                meta.protocol,
+                                liq,
                             );
                             graph.add_edge(
-                                meta.token1_idx, meta.token0_idx,
-                                (1.0 / price) * fee, meta.pool_id, pool_addr,
-                                meta.protocol, liq,
+                                meta.token1_idx,
+                                meta.token0_idx,
+                                (1.0 / price) * fee,
+                                meta.pool_id,
+                                pool_addr,
+                                meta.protocol,
+                                liq,
                             );
                             // Seed the edge with virtual reserves when L is
                             // known. `update_edge_from_reserves` derives the
@@ -1693,12 +1742,20 @@ impl AetherEngine {
                             // the first live V3 swap event re-seeds real depth.
                             if let Some((x_v, y_v)) = vr {
                                 graph.update_edge_from_reserves(
-                                    meta.token0_idx, meta.token1_idx,
-                                    meta.pool_id, x_v, y_v, fee,
+                                    meta.token0_idx,
+                                    meta.token1_idx,
+                                    meta.pool_id,
+                                    x_v,
+                                    y_v,
+                                    fee,
                                 );
                                 graph.update_edge_from_reserves(
-                                    meta.token1_idx, meta.token0_idx,
-                                    meta.pool_id, y_v, x_v, fee,
+                                    meta.token1_idx,
+                                    meta.token0_idx,
+                                    meta.pool_id,
+                                    y_v,
+                                    x_v,
+                                    fee,
                                 );
                             } else {
                                 warn!(
@@ -1726,7 +1783,13 @@ impl AetherEngine {
                             debug!(%pool_addr, %sqrt_price_x96, tick, liquidity, "V3 slot0 + liquidity fetched");
                         }
                     }
-                    ReserveResult::Curve { pool_addr, meta, a, b0, b1 } => {
+                    ReserveResult::Curve {
+                        pool_addr,
+                        meta,
+                        a,
+                        b0,
+                        b1,
+                    } => {
                         // Bootstrap-only Curve cache populate. The graph
                         // edge for Curve isn't seeded here — the existing
                         // engine code path doesn't fetch / construct Curve
@@ -1753,7 +1816,14 @@ impl AetherEngine {
                         fetched += 1;
                         debug!(%pool_addr, %a, %b0, %b1, "Curve state fetched");
                     }
-                    ReserveResult::Balancer { pool_addr, meta, b0, b1, w0, w1 } => {
+                    ReserveResult::Balancer {
+                        pool_addr,
+                        meta,
+                        b0,
+                        b1,
+                        w0,
+                        w1,
+                    } => {
                         // Bootstrap-only Balancer cache populate. Same
                         // graph-edge caveat as the Curve branch: this
                         // commit only fills `pool_states`.
@@ -1762,9 +1832,7 @@ impl AetherEngine {
                         // V2 weights are e18-fixed (1.0 = 1e18). Saturate
                         // on overflow — real weights are below 1e18 and
                         // fit in u64 fine.
-                        let to_u64 = |x: U256| -> u64 {
-                            x.try_into().unwrap_or(u64::MAX)
-                        };
+                        let to_u64 = |x: U256| -> u64 { x.try_into().unwrap_or(u64::MAX) };
                         let mut bal = aether_pools::balancer::BalancerPool::new(
                             pool_addr,
                             meta.token0,
@@ -1811,7 +1879,11 @@ impl AetherEngine {
                 .publish(graph.clone(), block.number, block.timestamp as i64);
         }
 
-        info!(fetched, total = pools.len(), "Initial reserve fetch complete");
+        info!(
+            fetched,
+            total = pools.len(),
+            "Initial reserve fetch complete"
+        );
     }
 
     /// Main engine loop: processes events, detects arbs, simulates, publishes.
@@ -1878,7 +1950,8 @@ impl AetherEngine {
                 // and stay on the existing RPC path.
                 if matches!(protocol, ProtocolType::UniswapV2 | ProtocolType::SushiSwap) {
                     let block = self.current_block.load().number;
-                    self.v2_reserves_cache.record(pool, reserve0, reserve1, block);
+                    self.v2_reserves_cache
+                        .record(pool, reserve0, reserve1, block);
                 }
 
                 // Look up pool metadata to get graph vertex indices.
@@ -1917,8 +1990,7 @@ impl AetherEngine {
                             meta.protocol,
                             ProtocolType::UniswapV2 | ProtocolType::SushiSwap
                         ) {
-                            let state =
-                                self.build_v2_pool_state(pool, &meta, reserve0, reserve1);
+                            let state = self.build_v2_pool_state(pool, &meta, reserve0, reserve1);
                             self.pool_states.insert(pool, Arc::new(state));
                         }
                     }
@@ -1993,10 +2065,9 @@ impl AetherEngine {
                         // `unified_to_post_reserves`. When L is zero the edge is
                         // left unpriced (the cycle-gating V3 reserve guard then
                         // skips it).
-                        if let Some((x_v, y_v)) = aether_pools::uniswap_v3::virtual_reserves(
-                            sqrt_price_x96,
-                            liquidity,
-                        ) {
+                        if let Some((x_v, y_v)) =
+                            aether_pools::uniswap_v3::virtual_reserves(sqrt_price_x96, liquidity)
+                        {
                             graph.update_edge_from_reserves(
                                 meta.token0_idx,
                                 meta.token1_idx,
@@ -2102,11 +2173,7 @@ impl AetherEngine {
             };
             let detect_us = t_detect.elapsed().as_micros();
             self.metrics.observe_detection_latency_us(detect_us);
-            info!(
-                detect_us,
-                block_number,
-                "Bellman-Ford detection complete"
-            );
+            info!(detect_us, block_number, "Bellman-Ford detection complete");
             self.metrics.inc_cycles_detected(cycles.len() as u64);
 
             if cycles.is_empty() {
@@ -2127,8 +2194,7 @@ impl AetherEngine {
             // batch, which dominates the detection budget on dense
             // graphs.
             let gating_config = self.config.gating;
-            let fingerprint_index =
-                cycle_gating::build_fingerprint_index(&cycles, &gating_config);
+            let fingerprint_index = cycle_gating::build_fingerprint_index(&cycles, &gating_config);
 
             for cycle in &cycles {
                 if !cycle.is_profitable() {
@@ -2191,8 +2257,7 @@ impl AetherEngine {
                     let best_edge = match cycle_gating::select_best_edge_for_hop(
                         graph.edges_from(from_idx),
                         to_idx,
-                    )
-                    {
+                    ) {
                         Some(edge) => edge,
                         None => {
                             valid = false;
@@ -2219,9 +2284,7 @@ impl AetherEngine {
                     // contribute (see `edge_caps_optimizer_input`): zero-liq
                     // placeholders and UniswapV3 (sqrt-liquidity L, not wei) are
                     // excluded.
-                    if edge_caps_optimizer_input(best_edge)
-                        && best_edge.liquidity < min_liquidity
-                    {
+                    if edge_caps_optimizer_input(best_edge) && best_edge.liquidity < min_liquidity {
                         min_liquidity = best_edge.liquidity;
                     }
 
@@ -2233,8 +2296,8 @@ impl AetherEngine {
                         pool_address: best_edge.pool_address,
                         token_in: from_addr,
                         token_out: to_addr,
-                        amount_in: U256::ZERO,    // Placeholder — optimizer fills this
-                        expected_out: U256::ZERO,  // Placeholder — optimizer fills this
+                        amount_in: U256::ZERO, // Placeholder — optimizer fills this
+                        expected_out: U256::ZERO, // Placeholder — optimizer fills this
                         estimated_gas,
                     });
 
@@ -2299,20 +2362,18 @@ impl AetherEngine {
         let sim_inputs: Vec<SimInput> = candidates
             .iter()
             .filter_map(|candidate| {
-                let total_gas =
-                    estimate_total_gas(&candidate.protocols, &candidate.tick_counts);
+                let total_gas = estimate_total_gas(&candidate.protocols, &candidate.tick_counts);
                 let gas_cost = gas_cost_wei(total_gas, self.config.gas_price_gwei);
 
                 // ── Optimizer: find the optimal input amount ──
                 let min_input = U256::from(10_000_000_000_000_000u128); // 0.01 ETH
                 let max_trade = U256::from(50_000_000_000_000_000_000u128); // 50 ETH
-                let max_input = if candidate.min_liquidity < max_trade
-                    && !candidate.min_liquidity.is_zero()
-                {
-                    candidate.min_liquidity
-                } else {
-                    max_trade
-                };
+                let max_input =
+                    if candidate.min_liquidity < max_trade && !candidate.min_liquidity.is_zero() {
+                        candidate.min_liquidity
+                    } else {
+                        max_trade
+                    };
 
                 let hop_reserves = &candidate.reserves;
                 let hop_fee_factors = &candidate.fee_factors;
@@ -2778,9 +2839,7 @@ impl AetherEngine {
     /// Borrow the persistent bytecode cache handle. `None` when the cache is
     /// disabled (no `AETHER_BYTECODE_CACHE_PATH`). Cheap to `Arc::clone` for
     /// downstream consumers (mempool `SimContext`).
-    pub fn bytecode_cache(
-        &self,
-    ) -> Option<&Arc<aether_simulator::bytecode_cache::BytecodeCache>> {
+    pub fn bytecode_cache(&self) -> Option<&Arc<aether_simulator::bytecode_cache::BytecodeCache>> {
         self.bytecode_cache.as_ref()
     }
 
@@ -3298,10 +3357,7 @@ mod tests {
         };
         assert!((meta.fee_factor() - 0.997).abs() < 1e-10);
 
-        let meta_v3 = PoolMetadata {
-            fee_bps: 5,
-            ..meta
-        };
+        let meta_v3 = PoolMetadata { fee_bps: 5, ..meta };
         assert!((meta_v3.fee_factor() - 0.9995).abs() < 1e-10);
     }
 
@@ -3487,13 +3543,35 @@ mod tests {
         //   y_v = 1e6 * (2*2^96) / 2^96 = 2_000_000 (token1)
         // The invariant that matters for detection is the ratio (= price):
         //   fwd reserve_out/reserve_in = 4.0,  rev = 0.25.
-        assert!((fwd.reserve_in - 500_000.0).abs() < 1e-3, "fwd reserve_in {}", fwd.reserve_in);
-        assert!((fwd.reserve_out - 2_000_000.0).abs() < 1e-3, "fwd reserve_out {}", fwd.reserve_out);
-        assert!((rev.reserve_in - 2_000_000.0).abs() < 1e-3, "rev reserve_in {}", rev.reserve_in);
-        assert!((rev.reserve_out - 500_000.0).abs() < 1e-3, "rev reserve_out {}", rev.reserve_out);
+        assert!(
+            (fwd.reserve_in - 500_000.0).abs() < 1e-3,
+            "fwd reserve_in {}",
+            fwd.reserve_in
+        );
+        assert!(
+            (fwd.reserve_out - 2_000_000.0).abs() < 1e-3,
+            "fwd reserve_out {}",
+            fwd.reserve_out
+        );
+        assert!(
+            (rev.reserve_in - 2_000_000.0).abs() < 1e-3,
+            "rev reserve_in {}",
+            rev.reserve_in
+        );
+        assert!(
+            (rev.reserve_out - 500_000.0).abs() < 1e-3,
+            "rev reserve_out {}",
+            rev.reserve_out
+        );
         // Ratio (price) — the quantity that sets the edge weight — preserved.
-        assert!((fwd.reserve_out / fwd.reserve_in - 4.0).abs() < 1e-9, "fwd ratio");
-        assert!((rev.reserve_out / rev.reserve_in - 0.25).abs() < 1e-9, "rev ratio");
+        assert!(
+            (fwd.reserve_out / fwd.reserve_in - 4.0).abs() < 1e-9,
+            "fwd ratio"
+        );
+        assert!(
+            (rev.reserve_out / rev.reserve_in - 0.25).abs() < 1e-9,
+            "rev ratio"
+        );
     }
 
     #[tokio::test]
@@ -3623,11 +3701,21 @@ mod tests {
 
         // Real mainnet pool addresses from config/pools.toml.
         // Real mainnet token and pool addresses.
-        let _usdc: Address = "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48".parse().unwrap();
-        let _weth: Address = "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2".parse().unwrap();
-        let uni_v2_pool: Address = "0xB4e16d0168e52d35CaCD2c6185b44281Ec28C9Dc".parse().unwrap();
-        let sushi_pool: Address = "0x397FF1542f962076d0BFE58eA045FfA2d347ACa0".parse().unwrap();
-        let uni_v3_pool: Address = "0x88e6A0c2dDD26FEEb64F039a2c41296FcB3f5640".parse().unwrap();
+        let _usdc: Address = "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"
+            .parse()
+            .unwrap();
+        let _weth: Address = "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2"
+            .parse()
+            .unwrap();
+        let uni_v2_pool: Address = "0xB4e16d0168e52d35CaCD2c6185b44281Ec28C9Dc"
+            .parse()
+            .unwrap();
+        let sushi_pool: Address = "0x397FF1542f962076d0BFE58eA045FfA2d347ACa0"
+            .parse()
+            .unwrap();
+        let uni_v3_pool: Address = "0x88e6A0c2dDD26FEEb64F039a2c41296FcB3f5640"
+            .parse()
+            .unwrap();
 
         // 1. Create engine and bootstrap from the real config file.
         let (tx, mut rx) = broadcast::channel(100);
@@ -3656,15 +3744,21 @@ mod tests {
             let registry = engine.pool_registry.load();
             assert!(registry.len() >= 3);
 
-            let meta_v2 = registry.get(&uni_v2_pool).expect("Uniswap V2 pool should be registered");
+            let meta_v2 = registry
+                .get(&uni_v2_pool)
+                .expect("Uniswap V2 pool should be registered");
             assert_eq!(meta_v2.protocol, ProtocolType::UniswapV2);
             assert_eq!(meta_v2.fee_bps, 30);
 
-            let meta_sushi = registry.get(&sushi_pool).expect("SushiSwap pool should be registered");
+            let meta_sushi = registry
+                .get(&sushi_pool)
+                .expect("SushiSwap pool should be registered");
             assert_eq!(meta_sushi.protocol, ProtocolType::SushiSwap);
             assert_eq!(meta_sushi.fee_bps, 30);
 
-            let meta_v3 = registry.get(&uni_v3_pool).expect("Uniswap V3 pool should be registered");
+            let meta_v3 = registry
+                .get(&uni_v3_pool)
+                .expect("Uniswap V3 pool should be registered");
             assert_eq!(meta_v3.protocol, ProtocolType::UniswapV3);
             assert_eq!(meta_v3.fee_bps, 5);
         }
@@ -3686,38 +3780,62 @@ mod tests {
 
             // Uni V2: USDC→WETH at 1/2000, WETH→USDC at 2000
             graph.add_edge(
-                meta_v2.token0_idx, meta_v2.token1_idx,
-                0.0005, meta_v2.pool_id, uni_v2_pool,
-                ProtocolType::UniswapV2, U256::from(1_000_000u64),
+                meta_v2.token0_idx,
+                meta_v2.token1_idx,
+                0.0005,
+                meta_v2.pool_id,
+                uni_v2_pool,
+                ProtocolType::UniswapV2,
+                U256::from(1_000_000u64),
             );
             graph.add_edge(
-                meta_v2.token1_idx, meta_v2.token0_idx,
-                2000.0, meta_v2.pool_id, uni_v2_pool,
-                ProtocolType::UniswapV2, U256::from(1_000_000u64),
+                meta_v2.token1_idx,
+                meta_v2.token0_idx,
+                2000.0,
+                meta_v2.pool_id,
+                uni_v2_pool,
+                ProtocolType::UniswapV2,
+                U256::from(1_000_000u64),
             );
 
             // Sushi: USDC→WETH at 1/2100, WETH→USDC at 2100
             graph.add_edge(
-                meta_sushi.token0_idx, meta_sushi.token1_idx,
-                0.000476, meta_sushi.pool_id, sushi_pool,
-                ProtocolType::SushiSwap, U256::from(1_000_000u64),
+                meta_sushi.token0_idx,
+                meta_sushi.token1_idx,
+                0.000476,
+                meta_sushi.pool_id,
+                sushi_pool,
+                ProtocolType::SushiSwap,
+                U256::from(1_000_000u64),
             );
             graph.add_edge(
-                meta_sushi.token1_idx, meta_sushi.token0_idx,
-                2100.0, meta_sushi.pool_id, sushi_pool,
-                ProtocolType::SushiSwap, U256::from(1_000_000u64),
+                meta_sushi.token1_idx,
+                meta_sushi.token0_idx,
+                2100.0,
+                meta_sushi.pool_id,
+                sushi_pool,
+                ProtocolType::SushiSwap,
+                U256::from(1_000_000u64),
             );
 
             // V3: USDC→WETH at 1/2050, WETH→USDC at 2050
             graph.add_edge(
-                meta_v3.token0_idx, meta_v3.token1_idx,
-                0.000488, meta_v3.pool_id, uni_v3_pool,
-                ProtocolType::UniswapV3, U256::from(1_000_000u64),
+                meta_v3.token0_idx,
+                meta_v3.token1_idx,
+                0.000488,
+                meta_v3.pool_id,
+                uni_v3_pool,
+                ProtocolType::UniswapV3,
+                U256::from(1_000_000u64),
             );
             graph.add_edge(
-                meta_v3.token1_idx, meta_v3.token0_idx,
-                2050.0, meta_v3.pool_id, uni_v3_pool,
-                ProtocolType::UniswapV3, U256::from(1_000_000u64),
+                meta_v3.token1_idx,
+                meta_v3.token0_idx,
+                2050.0,
+                meta_v3.pool_id,
+                uni_v3_pool,
+                ProtocolType::UniswapV3,
+                U256::from(1_000_000u64),
             );
         }
 
@@ -3737,7 +3855,7 @@ mod tests {
         //    Bellman-Ford should detect.
         let arb = rx.try_recv().expect(
             "should receive a published arb — price divergence between \
-             Uniswap V2 (2000) and SushiSwap (2100) should be detected"
+             Uniswap V2 (2000) and SushiSwap (2100) should be detected",
         );
         assert!(!arb.id.is_empty(), "arb should have an ID");
         assert!(!arb.hops.is_empty(), "arb should have at least one hop");
@@ -3917,7 +4035,9 @@ fee_bps = 30
         // Publish the working graph as a snapshot so run_detection_cycle can read it.
         {
             let graph = engine.working_graph.lock().await;
-            engine.snapshot_manager.publish(graph.clone(), 18_000_000, 1_700_000_000_000_000_000);
+            engine
+                .snapshot_manager
+                .publish(graph.clone(), 18_000_000, 1_700_000_000_000_000_000);
         }
 
         engine.run_detection_cycle().await;
@@ -3928,7 +4048,10 @@ fee_bps = 30
     #[test]
     fn test_engine_config_slippage_default() {
         let config = EngineConfig::default();
-        assert_eq!(config.slippage_bps, 100, "Default slippage should be 100 bps (1%)");
+        assert_eq!(
+            config.slippage_bps, 100,
+            "Default slippage should be 100 bps (1%)"
+        );
     }
 
     fn cap_edge(protocol: ProtocolType, liquidity: U256) -> aether_state::price_graph::PriceEdge {
@@ -3936,7 +4059,10 @@ fee_bps = 30
             from: 0,
             to: 1,
             weight: 0.0,
-            pool_id: PoolId { address: Address::ZERO, protocol },
+            pool_id: PoolId {
+                address: Address::ZERO,
+                protocol,
+            },
             pool_address: Address::ZERO,
             protocol,
             liquidity,
@@ -3956,7 +4082,10 @@ fee_bps = 30
             "V3 edge must be excluded from the wei input-size cap"
         );
         // Even with a large L the exclusion holds — units, not magnitude.
-        let v3_big = cap_edge(ProtocolType::UniswapV3, U256::from(10_000_000_000_000_000_000u128));
+        let v3_big = cap_edge(
+            ProtocolType::UniswapV3,
+            U256::from(10_000_000_000_000_000_000u128),
+        );
         assert!(!edge_caps_optimizer_input(&v3_big));
     }
 
@@ -4089,14 +4218,21 @@ fee_bps = 30
         .await
         .expect("profitable cycle should produce an arb");
 
-        assert!(arb.hops.len() >= 2, "need at least 2 hops for chaining test");
+        assert!(
+            arb.hops.len() >= 2,
+            "need at least 2 hops for chaining test"
+        );
         for i in 1..arb.hops.len() {
             let prev_out = bytes_to_u256(&arb.hops[i - 1].expected_out);
             let curr_in = bytes_to_u256(&arb.hops[i].amount_in);
             assert_eq!(
-                prev_out, curr_in,
+                prev_out,
+                curr_in,
                 "Hop {} amount_in ({}) should equal hop {} expected_out ({})",
-                i, curr_in, i - 1, prev_out
+                i,
+                curr_in,
+                i - 1,
+                prev_out
             );
         }
     }
@@ -4197,9 +4333,15 @@ fee_bps = 30
         let pool_ca = Address::repeat_byte(0x33);
         let liq = U256::from(500_000_000_000_000_000_000u128); // 500 ETH
 
-        engine.register_pool(pool_ab, token_a, token_b, ProtocolType::UniswapV2, 30).await;
-        engine.register_pool(pool_bc, token_b, token_c, ProtocolType::SushiSwap, 30).await;
-        engine.register_pool(pool_ca, token_c, token_a, ProtocolType::Curve, 30).await;
+        engine
+            .register_pool(pool_ab, token_a, token_b, ProtocolType::UniswapV2, 30)
+            .await;
+        engine
+            .register_pool(pool_bc, token_b, token_c, ProtocolType::SushiSwap, 30)
+            .await;
+        engine
+            .register_pool(pool_ca, token_c, token_a, ProtocolType::Curve, 30)
+            .await;
 
         // Reserves that create a profitable cycle: rate product > 1.
         // Pool AB: 1000 A / 1500 B → rate ~1.5 (after fee ~1.4955)
@@ -4224,26 +4366,59 @@ fee_bps = 30
             let mut graph = engine.working_graph.lock().await;
 
             // Set rates from reserves and populate reserve fields.
-            graph.add_edge(meta_ab.token0_idx, meta_ab.token1_idx,
-                (r_ab_out / r_ab_in) * fee, meta_ab.pool_id, pool_ab,
-                ProtocolType::UniswapV2, liq);
+            graph.add_edge(
+                meta_ab.token0_idx,
+                meta_ab.token1_idx,
+                (r_ab_out / r_ab_in) * fee,
+                meta_ab.pool_id,
+                pool_ab,
+                ProtocolType::UniswapV2,
+                liq,
+            );
             graph.update_edge_from_reserves(
-                meta_ab.token0_idx, meta_ab.token1_idx, meta_ab.pool_id,
-                r_ab_in, r_ab_out, fee);
+                meta_ab.token0_idx,
+                meta_ab.token1_idx,
+                meta_ab.pool_id,
+                r_ab_in,
+                r_ab_out,
+                fee,
+            );
 
-            graph.add_edge(meta_bc.token0_idx, meta_bc.token1_idx,
-                (r_bc_out / r_bc_in) * fee, meta_bc.pool_id, pool_bc,
-                ProtocolType::SushiSwap, liq);
+            graph.add_edge(
+                meta_bc.token0_idx,
+                meta_bc.token1_idx,
+                (r_bc_out / r_bc_in) * fee,
+                meta_bc.pool_id,
+                pool_bc,
+                ProtocolType::SushiSwap,
+                liq,
+            );
             graph.update_edge_from_reserves(
-                meta_bc.token0_idx, meta_bc.token1_idx, meta_bc.pool_id,
-                r_bc_in, r_bc_out, fee);
+                meta_bc.token0_idx,
+                meta_bc.token1_idx,
+                meta_bc.pool_id,
+                r_bc_in,
+                r_bc_out,
+                fee,
+            );
 
-            graph.add_edge(meta_ca.token0_idx, meta_ca.token1_idx,
-                (r_ca_out / r_ca_in) * fee, meta_ca.pool_id, pool_ca,
-                ProtocolType::Curve, liq);
+            graph.add_edge(
+                meta_ca.token0_idx,
+                meta_ca.token1_idx,
+                (r_ca_out / r_ca_in) * fee,
+                meta_ca.pool_id,
+                pool_ca,
+                ProtocolType::Curve,
+                liq,
+            );
             graph.update_edge_from_reserves(
-                meta_ca.token0_idx, meta_ca.token1_idx, meta_ca.pool_id,
-                r_ca_in, r_ca_out, fee);
+                meta_ca.token0_idx,
+                meta_ca.token1_idx,
+                meta_ca.pool_id,
+                r_ca_in,
+                r_ca_out,
+                fee,
+            );
         }
 
         {
@@ -4257,7 +4432,9 @@ fee_bps = 30
         // Publish the working graph as a snapshot so run_detection_cycle can read it.
         {
             let graph = engine.working_graph.lock().await;
-            engine.snapshot_manager.publish(graph.clone(), 18_000_000, 1_700_000_000_000_000_000);
+            engine
+                .snapshot_manager
+                .publish(graph.clone(), 18_000_000, 1_700_000_000_000_000_000);
         }
 
         engine.run_detection_cycle().await;
@@ -4270,7 +4447,11 @@ fee_bps = 30
         // Compute what fixed 1 ETH would yield through the same AMM path.
         let one_eth = 1_000_000_000_000_000_000.0_f64;
         let mut current = one_eth;
-        let reserves = [(r_ab_in, r_ab_out), (r_bc_in, r_bc_out), (r_ca_in, r_ca_out)];
+        let reserves = [
+            (r_ab_in, r_ab_out),
+            (r_bc_in, r_bc_out),
+            (r_ca_in, r_ca_out),
+        ];
         for (x, y) in &reserves {
             current = (current * 0.997 * y) / (x + current * 0.997);
         }
@@ -4280,13 +4461,16 @@ fee_bps = 30
         assert!(
             optimizer_profit >= fixed_profit,
             "Optimizer profit ({}) should be >= fixed 1 ETH profit ({})",
-            optimizer_profit, fixed_profit
+            optimizer_profit,
+            fixed_profit
         );
 
         // The optimizer should NOT have chosen exactly 1 ETH.
         let one_eth_u256 = U256::from(1_000_000_000_000_000_000u128);
-        assert_ne!(optimizer_input, one_eth_u256,
-            "Optimizer should find a different amount than hardcoded 1 ETH");
+        assert_ne!(
+            optimizer_input, one_eth_u256,
+            "Optimizer should find a different amount than hardcoded 1 ETH"
+        );
     }
 
     #[test]
@@ -4300,7 +4484,11 @@ fee_bps = 30
         let denom = U256::from(10_000u32);
         let clamped = config.slippage_bps.min(9999);
         let factor = denom - U256::from(clamped);
-        assert_eq!(factor, U256::from(1u32), "Clamped factor should be 1 (not underflow)");
+        assert_eq!(
+            factor,
+            U256::from(1u32),
+            "Clamped factor should be 1 (not underflow)"
+        );
     }
 
     fn sample_pool_info(addr_byte: u8) -> PoolInfo {
@@ -4323,9 +4511,7 @@ fee_bps = 30
     async fn test_sync_hot_cache_pools_awaits_bytecode_prewarm() {
         let (tx, _rx) = broadcast::channel(100);
         let engine = AetherEngine::new(EngineConfig::default(), tx);
-        let pools: Vec<PoolInfo> = (0x40u8..0x48)
-            .map(sample_pool_info)
-            .collect();
+        let pools: Vec<PoolInfo> = (0x40u8..0x48).map(sample_pool_info).collect();
         // Returns only after prewarm completes (or times out) — no background spawn.
         engine.sync_hot_cache_pools(&pools, &[]).await;
     }
@@ -4336,7 +4522,9 @@ fee_bps = 30
         let engine = AetherEngine::new(EngineConfig::default(), tx);
         let pool = sample_pool_info(0x11);
 
-        engine.sync_hot_cache_pools(std::slice::from_ref(&pool), &[]).await;
+        engine
+            .sync_hot_cache_pools(std::slice::from_ref(&pool), &[])
+            .await;
 
         assert!(
             engine.pool_registry().load().contains_key(&pool.address),
@@ -4410,7 +4598,9 @@ fee_bps = 30
         let (tx, _rx) = broadcast::channel(100);
         let engine = AetherEngine::new(EngineConfig::default(), tx);
         let pool = sample_pool_info(0x55);
-        engine.sync_hot_cache_pools(std::slice::from_ref(&pool), &[]).await;
+        engine
+            .sync_hot_cache_pools(std::slice::from_ref(&pool), &[])
+            .await;
         assert!(engine.pool_ready_for_simulation(pool.address));
     }
 
@@ -4419,7 +4609,9 @@ fee_bps = 30
         let (tx, _rx) = broadcast::channel(100);
         let engine = AetherEngine::new(EngineConfig::default(), tx);
         let pool = sample_pool_info(0x66);
-        engine.sync_hot_cache_pools(std::slice::from_ref(&pool), &[]).await;
+        engine
+            .sync_hot_cache_pools(std::slice::from_ref(&pool), &[])
+            .await;
         engine.mark_pool_bytecode_warmed(pool.address).await;
         let reg = engine.pool_registry().load();
         let meta = reg.get(&pool.address).unwrap();
@@ -4489,12 +4681,30 @@ fee_bps = 30
     #[test]
     fn test_token_label_known_tokens() {
         use alloy::primitives::address;
-        assert_eq!(token_label(&address!("C02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2")), "WETH");
-        assert_eq!(token_label(&address!("A0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48")), "USDC");
-        assert_eq!(token_label(&address!("dAC17F958D2ee523a2206206994597C13D831ec7")), "USDT");
-        assert_eq!(token_label(&address!("6B175474E89094C44Da98b954EedeAC495271d0F")), "DAI");
-        assert_eq!(token_label(&address!("2260FAC5E5542a773Aa44fBCfeDf7C193bc2C599")), "WBTC");
-        assert_eq!(token_label(&address!("7Fc66500c84A76Ad7e9c93437bFc5Ac33E2DDaE9")), "AAVE");
+        assert_eq!(
+            token_label(&address!("C02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2")),
+            "WETH"
+        );
+        assert_eq!(
+            token_label(&address!("A0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48")),
+            "USDC"
+        );
+        assert_eq!(
+            token_label(&address!("dAC17F958D2ee523a2206206994597C13D831ec7")),
+            "USDT"
+        );
+        assert_eq!(
+            token_label(&address!("6B175474E89094C44Da98b954EedeAC495271d0F")),
+            "DAI"
+        );
+        assert_eq!(
+            token_label(&address!("2260FAC5E5542a773Aa44fBCfeDf7C193bc2C599")),
+            "WBTC"
+        );
+        assert_eq!(
+            token_label(&address!("7Fc66500c84A76Ad7e9c93437bFc5Ac33E2DDaE9")),
+            "AAVE"
+        );
     }
 
     #[test]
@@ -4672,7 +4882,9 @@ fee_bps = 30
         let pool = Address::repeat_byte(0x55);
         let token0 = Address::repeat_byte(0x01);
         let token1 = Address::repeat_byte(0x02);
-        engine.register_pool(pool, token0, token1, ProtocolType::UniswapV2, 30).await;
+        engine
+            .register_pool(pool, token0, token1, ProtocolType::UniswapV2, 30)
+            .await;
         // Without bytecode cache, bytecode_warmed starts true
         assert!(engine.pool_ready_for_simulation(pool));
 
@@ -4685,7 +4897,9 @@ fee_bps = 30
         let (tx, _rx) = broadcast::channel(100);
         let engine = AetherEngine::new(EngineConfig::default(), tx);
         // Should not panic
-        engine.mark_pool_bytecode_warmed(Address::repeat_byte(0xFF)).await;
+        engine
+            .mark_pool_bytecode_warmed(Address::repeat_byte(0xFF))
+            .await;
     }
 
     // ---- hot_cache tests ----
@@ -4949,7 +5163,10 @@ fee_bps = 30
             })
             .await;
         assert!(
-            !engine.pool_registry().load().contains_key(&Address::repeat_byte(0xFF)),
+            !engine
+                .pool_registry()
+                .load()
+                .contains_key(&Address::repeat_byte(0xFF)),
             "unregistered pool must not be added by V3Update"
         );
     }
@@ -5027,7 +5244,9 @@ fee_bps = 30
     async fn test_bootstrap_pools_invalid_toml() {
         let dir = tempfile::tempdir().unwrap();
         let config_path = dir.path().join("bad.toml");
-        tokio::fs::write(&config_path, "{{{{invalid toml").await.unwrap();
+        tokio::fs::write(&config_path, "{{{{invalid toml")
+            .await
+            .unwrap();
 
         let (tx, _rx) = broadcast::channel(100);
         let engine = AetherEngine::new(EngineConfig::default(), tx);
@@ -5153,7 +5372,9 @@ fee_bps = 4
         let engine = AetherEngine::new(EngineConfig::default(), tx);
         let loaded = engine.bootstrap_pools(config_path.to_str().unwrap()).await;
         assert_eq!(loaded, 1, "Curve should be accepted");
-        let addr: Address = "0x1111111111111111111111111111111111111111".parse().unwrap();
+        let addr: Address = "0x1111111111111111111111111111111111111111"
+            .parse()
+            .unwrap();
         assert_eq!(
             engine.pool_registry().load().get(&addr).unwrap().protocol,
             ProtocolType::Curve
@@ -5206,7 +5427,10 @@ fee_bps = 20
     fn test_token_label_short_unknown() {
         let addr = Address::repeat_byte(0x01);
         let label = token_label(&addr);
-        assert!(label.contains("…"), "unknown address should be truncated with ellipsis");
+        assert!(
+            label.contains("…"),
+            "unknown address should be truncated with ellipsis"
+        );
         assert!(label.starts_with("0x"), "label should be hex-formatted");
     }
 
@@ -5356,7 +5580,11 @@ fee_bps = 20
 
         {
             let graph = engine.working_graph.lock().await;
-            assert_eq!(graph.num_edges(), 0, "Bancor V3 should not create graph edges");
+            assert_eq!(
+                graph.num_edges(),
+                0,
+                "Bancor V3 should not create graph edges"
+            );
         }
     }
 
@@ -5434,7 +5662,10 @@ fee_bps = 20
 
         let meta = engine.pool_registry().load().get(&pool).cloned().unwrap();
         assert_eq!(meta.tick_spacing, None);
-        assert!(meta.bytecode_warmed, "with no bytecode cache, warmed should be true");
+        assert!(
+            meta.bytecode_warmed,
+            "with no bytecode cache, warmed should be true"
+        );
     }
 
     // ---- handle_pool_update V3Update with sqrt_price=0 ----
@@ -5503,7 +5734,10 @@ fee_bps = 20
 
         {
             let graph = engine.working_graph.lock().await;
-            assert!(graph.has_dirty_edges(), "nonzero price should still dirty edges");
+            assert!(
+                graph.has_dirty_edges(),
+                "nonzero price should still dirty edges"
+            );
         }
     }
 
@@ -5582,12 +5816,22 @@ fee_bps = 20
 
             let mut graph = engine.working_graph.lock().await;
             graph.add_edge(
-                meta_in.token0_idx, meta_in.token1_idx, 2.0,
-                meta_in.pool_id, pool_in, ProtocolType::UniswapV2, U256::from(1_000_000u64),
+                meta_in.token0_idx,
+                meta_in.token1_idx,
+                2.0,
+                meta_in.pool_id,
+                pool_in,
+                ProtocolType::UniswapV2,
+                U256::from(1_000_000u64),
             );
             graph.add_edge(
-                meta_out.token0_idx, meta_out.token1_idx, 0.6,
-                meta_out.pool_id, pool_out, ProtocolType::UniswapV2, U256::from(1_000_000u64),
+                meta_out.token0_idx,
+                meta_out.token1_idx,
+                0.6,
+                meta_out.pool_id,
+                pool_out,
+                ProtocolType::UniswapV2,
+                U256::from(1_000_000u64),
             );
         }
 
@@ -5635,7 +5879,9 @@ tick_spacing = 10
         let loaded = engine.bootstrap_pools(config_path.to_str().unwrap()).await;
         assert_eq!(loaded, 1);
 
-        let addr: Address = "0x1111111111111111111111111111111111111111".parse().unwrap();
+        let addr: Address = "0x1111111111111111111111111111111111111111"
+            .parse()
+            .unwrap();
         let meta = engine.pool_registry().load().get(&addr).cloned().unwrap();
         assert_eq!(meta.tick_spacing, Some(10));
         assert_eq!(meta.fee_bps, 5);
@@ -5727,9 +5973,15 @@ tier = "hot"
         let token_a = Address::repeat_byte(0x01);
         let token_c = Address::repeat_byte(0x03);
 
-        engine.register_pool(pool_ab, token_a, token_b, ProtocolType::UniswapV2, 30).await;
-        engine.register_pool(pool_bc, token_b, token_c, ProtocolType::UniswapV2, 30).await;
-        engine.register_pool(pool_ca, token_c, token_a, ProtocolType::UniswapV2, 30).await;
+        engine
+            .register_pool(pool_ab, token_a, token_b, ProtocolType::UniswapV2, 30)
+            .await;
+        engine
+            .register_pool(pool_bc, token_b, token_c, ProtocolType::UniswapV2, 30)
+            .await;
+        engine
+            .register_pool(pool_ca, token_c, token_a, ProtocolType::UniswapV2, 30)
+            .await;
 
         {
             let reg = engine.pool_registry.load();
@@ -5740,16 +5992,31 @@ tier = "hot"
 
             let mut graph = engine.working_graph.lock().await;
             graph.add_edge(
-                meta_ab.token0_idx, meta_ab.token1_idx, 1.5,
-                meta_ab.pool_id, pool_ab, ProtocolType::UniswapV2, U256::from(1_000_000u64),
+                meta_ab.token0_idx,
+                meta_ab.token1_idx,
+                1.5,
+                meta_ab.pool_id,
+                pool_ab,
+                ProtocolType::UniswapV2,
+                U256::from(1_000_000u64),
             );
             graph.add_edge(
-                meta_bc.token0_idx, meta_bc.token1_idx, 1.5,
-                meta_bc.pool_id, pool_bc, ProtocolType::UniswapV2, U256::from(1_000_000u64),
+                meta_bc.token0_idx,
+                meta_bc.token1_idx,
+                1.5,
+                meta_bc.pool_id,
+                pool_bc,
+                ProtocolType::UniswapV2,
+                U256::from(1_000_000u64),
             );
             graph.add_edge(
-                meta_ca.token0_idx, meta_ca.token1_idx, 1.5,
-                meta_ca.pool_id, pool_ca, ProtocolType::UniswapV2, U256::from(1_000_000u64),
+                meta_ca.token0_idx,
+                meta_ca.token1_idx,
+                1.5,
+                meta_ca.pool_id,
+                pool_ca,
+                ProtocolType::UniswapV2,
+                U256::from(1_000_000u64),
             );
         }
 
@@ -5782,7 +6049,10 @@ tier = "hot"
             })
             .await;
 
-        assert!(!engine.pool_registry().load().contains_key(&Address::repeat_byte(0xFF)));
+        assert!(!engine
+            .pool_registry()
+            .load()
+            .contains_key(&Address::repeat_byte(0xFF)));
     }
 
     // ---- sync_hot_cache_pools with both added and removed ----
@@ -5795,12 +6065,25 @@ tier = "hot"
         let pool_old = sample_pool_info(0xA0);
         let pool_new = sample_pool_info(0xB0);
 
-        engine.sync_hot_cache_pools(std::slice::from_ref(&pool_old), &[]).await;
-        assert!(engine.pool_registry().load().contains_key(&pool_old.address));
+        engine
+            .sync_hot_cache_pools(std::slice::from_ref(&pool_old), &[])
+            .await;
+        assert!(engine
+            .pool_registry()
+            .load()
+            .contains_key(&pool_old.address));
 
-        engine.sync_hot_cache_pools(&[pool_new], &[pool_old.address]).await;
-        assert!(!engine.pool_registry().load().contains_key(&pool_old.address));
-        assert!(engine.pool_registry().load().contains_key(&Address::from([0xB0u8; 20])));
+        engine
+            .sync_hot_cache_pools(&[pool_new], &[pool_old.address])
+            .await;
+        assert!(!engine
+            .pool_registry()
+            .load()
+            .contains_key(&pool_old.address));
+        assert!(engine
+            .pool_registry()
+            .load()
+            .contains_key(&Address::from([0xB0u8; 20])));
     }
 
     // ---- register_pool multiple times idempotent (re-register same address) ----
@@ -5814,8 +6097,12 @@ tier = "hot"
         let t0 = Address::repeat_byte(0x01);
         let t1 = Address::repeat_byte(0x02);
 
-        engine.register_pool(pool, t0, t1, ProtocolType::UniswapV2, 30).await;
-        engine.register_pool(pool, t0, t1, ProtocolType::SushiSwap, 20).await;
+        engine
+            .register_pool(pool, t0, t1, ProtocolType::UniswapV2, 30)
+            .await;
+        engine
+            .register_pool(pool, t0, t1, ProtocolType::SushiSwap, 20)
+            .await;
 
         let meta = engine.pool_registry().load().get(&pool).cloned().unwrap();
         assert_eq!(meta.protocol, ProtocolType::SushiSwap);

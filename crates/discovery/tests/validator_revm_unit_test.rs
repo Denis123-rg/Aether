@@ -12,7 +12,15 @@ const USDC: Address = address!("A0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48");
 
 #[test]
 fn curve_balances_zero_is_low_liquidity() {
-    let r = validate_curve_balances(WETH, USDC, 4, U256::from(100u64), U256::ZERO, U256::ZERO, 0.001);
+    let r = validate_curve_balances(
+        WETH,
+        USDC,
+        4,
+        U256::from(100u64),
+        U256::ZERO,
+        U256::ZERO,
+        0.001,
+    );
     assert!(matches!(r, ValidationResult::LowLiquidity));
 }
 

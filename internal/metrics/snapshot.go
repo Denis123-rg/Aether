@@ -9,42 +9,42 @@ import (
 
 // TopPool is a ranked hot pool entry for dashboard display.
 type TopPool struct {
-	Address string  `json:"address"`
-	Protocol string `json:"protocol"`
-	Score   float64 `json:"score"`
-	TVLUSD  float64 `json:"tvl_usd,omitempty"`
+	Address  string  `json:"address"`
+	Protocol string  `json:"protocol"`
+	Score    float64 `json:"score"`
+	TVLUSD   float64 `json:"tvl_usd,omitempty"`
 }
 
 // TradeRecord is a recent trade for the /trades command.
 type TradeRecord struct {
-	Timestamp time.Time `json:"timestamp"`
-	ProfitETH float64   `json:"profit_eth"`
-	GasETH    float64   `json:"gas_eth"`
-	Builder   string    `json:"builder"`
-	BundleHash string   `json:"bundle_hash,omitempty"`
+	Timestamp  time.Time `json:"timestamp"`
+	ProfitETH  float64   `json:"profit_eth"`
+	GasETH     float64   `json:"gas_eth"`
+	Builder    string    `json:"builder"`
+	BundleHash string    `json:"bundle_hash,omitempty"`
 }
 
 // Snapshot is the GET /metrics/json response body.
 type Snapshot struct {
-	PnLToday           float64     `json:"pnl_today"`
-	PnLTotal           float64     `json:"pnl_total"`
-	WinRate            float64     `json:"winrate"`
-	LastBundleProfit   float64     `json:"last_bundle_profit"`
-	LastBundleGas      float64     `json:"last_bundle_gas"`
-	LastBuilder        string      `json:"last_builder"`
-	BreakerOpen        bool        `json:"breaker_open"`
-	BreakerReason      string      `json:"breaker_reason,omitempty"`
-	SignerHealthy      bool        `json:"signer_healthy"`
-	RPCHealthy         bool        `json:"rpc_healthy"`
-	DiscoveryHealthy   bool        `json:"discovery_healthy"`
-	TimescaleHealthy   bool        `json:"timescale_healthy"`
-	RedisHealthy       bool        `json:"redis_healthy"`
-	SystemState        string      `json:"system_state"`
-	MinProfitETH       float64     `json:"min_profit_eth"`
-	TopPools           []TopPool   `json:"top_pools"`
-	RecentTrades       []TradeRecord `json:"recent_trades,omitempty"`
-	ExecutorReachable  bool        `json:"executor_reachable"`
-	UpdatedAt          time.Time   `json:"updated_at"`
+	PnLToday          float64       `json:"pnl_today"`
+	PnLTotal          float64       `json:"pnl_total"`
+	WinRate           float64       `json:"winrate"`
+	LastBundleProfit  float64       `json:"last_bundle_profit"`
+	LastBundleGas     float64       `json:"last_bundle_gas"`
+	LastBuilder       string        `json:"last_builder"`
+	BreakerOpen       bool          `json:"breaker_open"`
+	BreakerReason     string        `json:"breaker_reason,omitempty"`
+	SignerHealthy     bool          `json:"signer_healthy"`
+	RPCHealthy        bool          `json:"rpc_healthy"`
+	DiscoveryHealthy  bool          `json:"discovery_healthy"`
+	TimescaleHealthy  bool          `json:"timescale_healthy"`
+	RedisHealthy      bool          `json:"redis_healthy"`
+	SystemState       string        `json:"system_state"`
+	MinProfitETH      float64       `json:"min_profit_eth"`
+	TopPools          []TopPool     `json:"top_pools"`
+	RecentTrades      []TradeRecord `json:"recent_trades,omitempty"`
+	ExecutorReachable bool          `json:"executor_reachable"`
+	UpdatedAt         time.Time     `json:"updated_at"`
 }
 
 // Store holds the live executor metrics snapshot (thread-safe).
@@ -57,13 +57,13 @@ type Store struct {
 func NewStore() *Store {
 	return &Store{
 		snapshot: Snapshot{
-			SignerHealthy:    true,
-			RPCHealthy:       true,
-			DiscoveryHealthy: true,
-			TimescaleHealthy: true,
+			SignerHealthy:     true,
+			RPCHealthy:        true,
+			DiscoveryHealthy:  true,
+			TimescaleHealthy:  true,
 			ExecutorReachable: true,
-			TopPools:         []TopPool{},
-			RecentTrades:     []TradeRecord{},
+			TopPools:          []TopPool{},
+			RecentTrades:      []TradeRecord{},
 		},
 	}
 }

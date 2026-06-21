@@ -7,8 +7,8 @@ pub mod post_state_replay;
 pub mod slot_prefetch;
 pub mod v2_reserves_cache;
 
-use alloy::primitives::{Address, U256};
 use aether_common::types::SimulationResult;
+use alloy::primitives::{Address, U256};
 use fork::{ForkedState, RpcDB, RpcForkedState, SimConfig};
 use revm::context::result::ExecutionResult;
 use revm::context::{BlockEnv, TxEnv};
@@ -76,12 +76,15 @@ impl EvmSimulator {
             .build_fill();
 
         // Build the context and EVM
-        let ctx = Context::<BlockEnv, TxEnv, _, SimDB, revm::context::Journal<SimDB>, ()>::new(db, SpecId::CANCUN)
-            .with_block(block)
-            .modify_cfg_chained(|cfg| {
-                cfg.chain_id = state.chain_id;
-                cfg.disable_nonce_check = true;
-            });
+        let ctx = Context::<BlockEnv, TxEnv, _, SimDB, revm::context::Journal<SimDB>, ()>::new(
+            db,
+            SpecId::CANCUN,
+        )
+        .with_block(block)
+        .modify_cfg_chained(|cfg| {
+            cfg.chain_id = state.chain_id;
+            cfg.disable_nonce_check = true;
+        });
 
         let mut evm = ctx.build_mainnet();
 
@@ -90,7 +93,9 @@ impl EvmSimulator {
             Ok(result_and_state) => {
                 match result_and_state.result {
                     ExecutionResult::Success {
-                        gas_used, output: _, ..
+                        gas_used,
+                        output: _,
+                        ..
                     } => {
                         debug!(gas_used, "Simulation succeeded");
                         SimulationResult {
@@ -177,12 +182,15 @@ impl EvmSimulator {
             .build_fill();
 
         // Build the context and EVM
-        let ctx = Context::<BlockEnv, TxEnv, _, SimDB, revm::context::Journal<SimDB>, ()>::new(db, SpecId::CANCUN)
-            .with_block(block)
-            .modify_cfg_chained(|cfg| {
-                cfg.chain_id = state.chain_id;
-                cfg.disable_nonce_check = true;
-            });
+        let ctx = Context::<BlockEnv, TxEnv, _, SimDB, revm::context::Journal<SimDB>, ()>::new(
+            db,
+            SpecId::CANCUN,
+        )
+        .with_block(block)
+        .modify_cfg_chained(|cfg| {
+            cfg.chain_id = state.chain_id;
+            cfg.disable_nonce_check = true;
+        });
 
         let mut evm = ctx.build_mainnet();
 
@@ -286,7 +294,9 @@ impl EvmSimulator {
         match evm.transact(tx) {
             Ok(result_and_state) => match result_and_state.result {
                 ExecutionResult::Success {
-                    gas_used, output: _, ..
+                    gas_used,
+                    output: _,
+                    ..
                 } => {
                     debug!(gas_used, "RPC simulation succeeded");
                     SimulationResult {
@@ -399,7 +409,8 @@ impl EvmSimulator {
             .build_fill();
 
         let ctx = Context::<BlockEnv, TxEnv, _, RpcDB, revm::context::Journal<RpcDB>, ()>::new(
-            db, SpecId::CANCUN,
+            db,
+            SpecId::CANCUN,
         )
         .with_block(block.clone())
         .modify_cfg_chained(|cfg| {
@@ -425,8 +436,14 @@ impl EvmSimulator {
         };
 
         let deployed_addr = match create_result.result {
-            ExecutionResult::Success { output: Output::Create(_, Some(addr)), .. } => addr,
-            ExecutionResult::Success { output: Output::Create(_, None), .. } => {
+            ExecutionResult::Success {
+                output: Output::Create(_, Some(addr)),
+                ..
+            } => addr,
+            ExecutionResult::Success {
+                output: Output::Create(_, None),
+                ..
+            } => {
                 return SimulationResult {
                     success: false,
                     profit_wei: U256::ZERO,
@@ -489,9 +506,7 @@ impl EvmSimulator {
         let mut key_input = [0u8; 64];
         key_input[12..32].copy_from_slice(profit_recipient.as_slice());
         key_input[32..64].copy_from_slice(&balance_slot.to_be_bytes::<32>());
-        let storage_key = U256::from_be_slice(
-            alloy::primitives::keccak256(key_input).as_slice(),
-        );
+        let storage_key = U256::from_be_slice(alloy::primitives::keccak256(key_input).as_slice());
         let pre_balance = db
             .storage_ref(profit_token, storage_key)
             .unwrap_or_default();
@@ -509,7 +524,8 @@ impl EvmSimulator {
             .build_fill();
 
         let ctx2 = Context::<BlockEnv, TxEnv, _, RpcDB, revm::context::Journal<RpcDB>, ()>::new(
-            db, SpecId::CANCUN,
+            db,
+            SpecId::CANCUN,
         )
         .with_block(block)
         .modify_cfg_chained(|cfg| {
@@ -604,9 +620,7 @@ impl EvmSimulator {
         let mut key_input = [0u8; 64];
         key_input[12..32].copy_from_slice(profit_recipient.as_slice());
         key_input[32..64].copy_from_slice(&balance_slot.to_be_bytes::<32>());
-        let storage_key = U256::from_be_slice(
-            alloy::primitives::keccak256(key_input).as_slice(),
-        );
+        let storage_key = U256::from_be_slice(alloy::primitives::keccak256(key_input).as_slice());
 
         // Pre-sim balance via DatabaseRef::storage_ref (fetches from RPC on
         // first access, then serves from cache). `state.db` implements
@@ -643,7 +657,8 @@ impl EvmSimulator {
             .build_fill();
 
         let ctx = Context::<BlockEnv, TxEnv, _, RpcDB, revm::context::Journal<RpcDB>, ()>::new(
-            db, SpecId::CANCUN,
+            db,
+            SpecId::CANCUN,
         )
         .with_block(block)
         .modify_cfg_chained(|cfg| {
@@ -762,7 +777,11 @@ mod tests {
         // Empty calldata = simple transfer
         let result = sim.simulate(&state, recipient, vec![]);
 
-        assert!(result.success, "ETH transfer should succeed: {:?}", result.revert_reason);
+        assert!(
+            result.success,
+            "ETH transfer should succeed: {:?}",
+            result.revert_reason
+        );
         assert!(result.gas_used > 0, "Gas should be consumed");
         assert!(result.revert_reason.is_none());
     }
@@ -787,7 +806,11 @@ mod tests {
         let result = sim.simulate(&state, target, vec![0x12, 0x34, 0x56, 0x78]);
 
         // Call to account without code with calldata succeeds (it's a noop)
-        assert!(result.success, "Call to empty address should succeed: {:?}", result.revert_reason);
+        assert!(
+            result.success,
+            "Call to empty address should succeed: {:?}",
+            result.revert_reason
+        );
     }
 
     #[test]
@@ -818,7 +841,11 @@ mod tests {
         let sim = EvmSimulator::new(config);
         let result = sim.simulate(&state, contract, vec![]);
 
-        assert!(result.success, "Contract call should succeed: {:?}", result.revert_reason);
+        assert!(
+            result.success,
+            "Contract call should succeed: {:?}",
+            result.revert_reason
+        );
         assert!(result.gas_used > 0);
         assert!(result.revert_reason.is_none());
     }
@@ -892,9 +919,17 @@ mod tests {
 
         let result = sim.simulate(&state, contract, calldata);
 
-        assert!(result.success, "Storage write should succeed: {:?}", result.revert_reason);
+        assert!(
+            result.success,
+            "Storage write should succeed: {:?}",
+            result.revert_reason
+        );
         // SSTORE costs significant gas
-        assert!(result.gas_used > 20_000, "SSTORE should cost significant gas, got {}", result.gas_used);
+        assert!(
+            result.gas_used > 20_000,
+            "SSTORE should cost significant gas, got {}",
+            result.gas_used
+        );
     }
 
     #[test]
@@ -961,7 +996,9 @@ mod tests {
         let _ = sim.simulate(&state, contract, vec![]);
 
         // Original state should be unchanged
-        let info = state.get_account(&caller).expect("Caller should still exist");
+        let info = state
+            .get_account(&caller)
+            .expect("Caller should still exist");
         assert_eq!(
             info.balance, initial_balance,
             "Original state should not be mutated"
@@ -999,7 +1036,11 @@ mod tests {
         let sim = EvmSimulator::new(config);
         let result = sim.simulate(&state, contract, vec![]);
 
-        assert!(result.success, "Block number contract should succeed: {:?}", result.revert_reason);
+        assert!(
+            result.success,
+            "Block number contract should succeed: {:?}",
+            result.revert_reason
+        );
     }
 
     #[test]
@@ -1030,7 +1071,11 @@ mod tests {
         // Simulate multiple times
         for _ in 0..5 {
             let result = sim.simulate(&state, contract, vec![]);
-            assert!(result.success, "Each simulation should succeed: {:?}", result.revert_reason);
+            assert!(
+                result.success,
+                "Each simulation should succeed: {:?}",
+                result.revert_reason
+            );
         }
     }
 
@@ -1059,15 +1104,13 @@ mod tests {
         };
 
         let sim = EvmSimulator::new(config);
-        let result = sim.simulate_with_profit(
-            &state,
-            contract,
-            vec![],
-            Address::ZERO,
-            caller,
-        );
+        let result = sim.simulate_with_profit(&state, contract, vec![], Address::ZERO, caller);
 
-        assert!(result.success, "Simulation should succeed: {:?}", result.revert_reason);
+        assert!(
+            result.success,
+            "Simulation should succeed: {:?}",
+            result.revert_reason
+        );
     }
 
     #[test]
@@ -1206,7 +1249,10 @@ mod tests {
         assert!(!result.success);
         assert!(result.revert_reason.is_some());
         let reason = result.revert_reason.unwrap();
-        assert!(reason.contains("Halt") || reason.contains("Invalid"), "halt reason should mention Invalid or Halt: {reason}");
+        assert!(
+            reason.contains("Halt") || reason.contains("Invalid"),
+            "halt reason should mention Invalid or Halt: {reason}"
+        );
     }
 
     #[test]
@@ -1220,7 +1266,11 @@ mod tests {
             value: U256::ZERO,
         };
         let sim = EvmSimulator::new(config);
-        let result = sim.simulate(&state, address!("2222222222222222222222222222222222222222"), vec![]);
+        let result = sim.simulate(
+            &state,
+            address!("2222222222222222222222222222222222222222"),
+            vec![],
+        );
         assert!(result.success);
     }
 
@@ -1305,7 +1355,11 @@ mod tests {
             value: U256::ZERO,
         };
         let sim = EvmSimulator::new(config);
-        let result = sim.simulate(&state, address!("b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0"), vec![]);
+        let result = sim.simulate(
+            &state,
+            address!("b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0"),
+            vec![],
+        );
         assert!(!result.success, "zero gas limit should fail");
     }
 
@@ -1346,7 +1400,10 @@ mod tests {
         let sim = EvmSimulator::with_defaults();
         let result = sim.simulate(&state, contract, vec![]);
         let reason = result.revert_reason.unwrap();
-        assert!(reason.starts_with("0x"), "revert reason should start with 0x: {reason}");
+        assert!(
+            reason.starts_with("0x"),
+            "revert reason should start with 0x: {reason}"
+        );
     }
 
     #[test]
@@ -1370,7 +1427,11 @@ mod tests {
         let mut state = ForkedState::new_empty(18_000_000, 1_700_000_000, 0);
         state.insert_account_balance(caller, U256::from(10_000_000_000_000_000_000u128));
         let sim = EvmSimulator::with_defaults();
-        let result = sim.simulate(&state, address!("3434343434343434343434343434343434343434"), vec![]);
+        let result = sim.simulate(
+            &state,
+            address!("3434343434343434343434343434343434343434"),
+            vec![],
+        );
         assert!(result.success);
         assert!(result.gas_used > 0);
         assert!(result.gas_used < 100_000);

@@ -162,6 +162,6 @@ type recordingLedger struct {
 	bundleInserted bool
 }
 
-func (r *recordingLedger) InsertBundle(_ db.NewBundle) { r.bundleInserted = true }
+func (r *recordingLedger) InsertBundle(_ db.NewBundle)       { r.bundleInserted = true }
 func (r *recordingLedger) InsertInclusion(_ db.NewInclusion) {}
 func (r *recordingLedger) UpsertPnLDaily(_ db.PnLDailyDelta) {}

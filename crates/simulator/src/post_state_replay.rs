@@ -20,12 +20,12 @@
 //! so callers can run it on `spawn_blocking` workers without leaking
 //! async dependencies.
 
-use alloy::primitives::{address, Address, FixedBytes, U256};
-use alloy::sol;
-use alloy::sol_types::SolCall;
 use aether_pools::balancer::BalancerPostState;
 use aether_pools::curve::CurvePostState;
 use aether_pools::uniswap_v3::V3PostState;
+use alloy::primitives::{address, Address, FixedBytes, U256};
+use alloy::sol;
+use alloy::sol_types::SolCall;
 use revm::context::result::ExecutionResult;
 use revm::context::{BlockEnv, TxEnv};
 use revm::database::CacheDB;
@@ -248,16 +248,18 @@ where
         ..Default::default()
     };
 
-    let ctx = Context::<BlockEnv, TxEnv, _, CacheDB<DB>, revm::context::Journal<CacheDB<DB>>, ()>::new(
-        db, SpecId::CANCUN,
-    )
-    .with_block(block)
-    .modify_cfg_chained(|cfg| {
-        cfg.chain_id = params.chain_id;
-        cfg.disable_nonce_check = true;
-        cfg.disable_balance_check = true;
-        cfg.disable_base_fee = true;
-    });
+    let ctx =
+        Context::<BlockEnv, TxEnv, _, CacheDB<DB>, revm::context::Journal<CacheDB<DB>>, ()>::new(
+            db,
+            SpecId::CANCUN,
+        )
+        .with_block(block)
+        .modify_cfg_chained(|cfg| {
+            cfg.chain_id = params.chain_id;
+            cfg.disable_nonce_check = true;
+            cfg.disable_balance_check = true;
+            cfg.disable_base_fee = true;
+        });
 
     let mut evm = ctx.build_mainnet();
 
@@ -355,16 +357,18 @@ where
         basefee: params.base_fee,
         ..Default::default()
     };
-    let ctx = Context::<BlockEnv, TxEnv, _, CacheDB<DB>, revm::context::Journal<CacheDB<DB>>, ()>::new(
-        db, SpecId::CANCUN,
-    )
-    .with_block(block)
-    .modify_cfg_chained(|cfg| {
-        cfg.chain_id = params.chain_id;
-        cfg.disable_nonce_check = true;
-        cfg.disable_balance_check = true;
-        cfg.disable_base_fee = true;
-    });
+    let ctx =
+        Context::<BlockEnv, TxEnv, _, CacheDB<DB>, revm::context::Journal<CacheDB<DB>>, ()>::new(
+            db,
+            SpecId::CANCUN,
+        )
+        .with_block(block)
+        .modify_cfg_chained(|cfg| {
+            cfg.chain_id = params.chain_id;
+            cfg.disable_nonce_check = true;
+            cfg.disable_balance_check = true;
+            cfg.disable_base_fee = true;
+        });
     let mut evm = ctx.build_mainnet();
 
     let victim_env = TxEnv::builder()
@@ -389,7 +393,10 @@ where
     }
 
     // Read `balances(i)` against post-victim state for both coin indices.
-    let in_data = ICurvePoolReader::balancesCall { i: U256::from(coin_idx_in) }.abi_encode();
+    let in_data = ICurvePoolReader::balancesCall {
+        i: U256::from(coin_idx_in),
+    }
+    .abi_encode();
     let in_env = build_view_env(pool, in_data, params.chain_id);
     let in_output = match evm.transact(in_env) {
         Ok(rs) => match rs.result {
@@ -401,7 +408,10 @@ where
     let new_balance_in = ICurvePoolReader::balancesCall::abi_decode_returns(&in_output)
         .map_err(|_| ReplayError::DecodeFailed("balances"))?;
 
-    let out_data = ICurvePoolReader::balancesCall { i: U256::from(coin_idx_out) }.abi_encode();
+    let out_data = ICurvePoolReader::balancesCall {
+        i: U256::from(coin_idx_out),
+    }
+    .abi_encode();
     let out_env = build_view_env(pool, out_data, params.chain_id);
     let out_output = match evm.transact(out_env) {
         Ok(rs) => match rs.result {
@@ -452,16 +462,18 @@ where
         basefee: params.base_fee,
         ..Default::default()
     };
-    let ctx = Context::<BlockEnv, TxEnv, _, CacheDB<DB>, revm::context::Journal<CacheDB<DB>>, ()>::new(
-        db, SpecId::CANCUN,
-    )
-    .with_block(block)
-    .modify_cfg_chained(|cfg| {
-        cfg.chain_id = params.chain_id;
-        cfg.disable_nonce_check = true;
-        cfg.disable_balance_check = true;
-        cfg.disable_base_fee = true;
-    });
+    let ctx =
+        Context::<BlockEnv, TxEnv, _, CacheDB<DB>, revm::context::Journal<CacheDB<DB>>, ()>::new(
+            db,
+            SpecId::CANCUN,
+        )
+        .with_block(block)
+        .modify_cfg_chained(|cfg| {
+            cfg.chain_id = params.chain_id;
+            cfg.disable_nonce_check = true;
+            cfg.disable_balance_check = true;
+            cfg.disable_base_fee = true;
+        });
     let mut evm = ctx.build_mainnet();
 
     let victim_env = TxEnv::builder()
@@ -495,8 +507,9 @@ where
         },
         Err(_) => return Err(ReplayError::ReadCallFailed("getPoolId")),
     };
-    let pool_id: FixedBytes<32> = IBalancerPoolReader::getPoolIdCall::abi_decode_returns(&pool_id_output)
-        .map_err(|_| ReplayError::DecodeFailed("getPoolId"))?;
+    let pool_id: FixedBytes<32> =
+        IBalancerPoolReader::getPoolIdCall::abi_decode_returns(&pool_id_output)
+            .map_err(|_| ReplayError::DecodeFailed("getPoolId"))?;
 
     // Step 2: call `getPoolTokens(poolId)` on the Vault.
     let tokens_data = IBalancerVaultReader::getPoolTokensCall { poolId: pool_id }.abi_encode();
@@ -609,14 +622,8 @@ mod tests {
         // StableSwap pool.
         let state = ForkedState::new_empty(18_000_000, 1_700_000_000, 1_000_000_000);
         let pool = address!("bEbc44782C7dB0a1A60Cb6fe97d0b483032FF1C7");
-        let result = replay_curve_post_state_cache(
-            state,
-            &default_victim(),
-            pool,
-            0,
-            1,
-            &default_params(),
-        );
+        let result =
+            replay_curve_post_state_cache(state, &default_victim(), pool, 0, 1, &default_params());
         assert!(
             matches!(result, Err(ReplayError::DecodeFailed("balances"))),
             "expected DecodeFailed(balances), got {result:?}"
@@ -681,20 +688,17 @@ mod tests {
         // recipient; the replay path commits the victim before the
         // balances() reads.
         state.insert_account_balance(default_victim().from, U256::from(10u128.pow(18)));
-        let result = replay_curve_post_state_cache(
-            state,
-            &default_victim(),
-            pool,
-            0,
-            1,
-            &default_params(),
-        );
+        let result =
+            replay_curve_post_state_cache(state, &default_victim(), pool, 0, 1, &default_params());
         let post = result.expect("replay should succeed against const-returner bytecode");
         assert_eq!(post.new_balance_in, constant);
         assert_eq!(post.new_balance_out, constant);
         assert_eq!(post.i, 0);
         assert_eq!(post.j, 1);
-        assert!(!post.analytical, "revm-derived post-state must mark analytical=false");
+        assert!(
+            !post.analytical,
+            "revm-derived post-state must mark analytical=false"
+        );
     }
 
     #[test]
@@ -711,14 +715,8 @@ mod tests {
         );
         state.insert_account_balance(default_victim().from, U256::from(10u128.pow(18)));
         let pool = address!("bEbc44782C7dB0a1A60Cb6fe97d0b483032FF1C7");
-        let result = replay_curve_post_state_cache(
-            state,
-            &default_victim(),
-            pool,
-            0,
-            1,
-            &default_params(),
-        );
+        let result =
+            replay_curve_post_state_cache(state, &default_victim(), pool, 0, 1, &default_params());
         assert!(matches!(result, Err(ReplayError::VictimReverted)));
     }
 
@@ -765,7 +763,10 @@ mod tests {
         // `metrics.rs` pre-touches these exact strings.
         assert_eq!(ReplayError::VictimReverted.as_str(), "victim_reverted");
         assert_eq!(ReplayError::VictimHalted.as_str(), "victim_halted");
-        assert_eq!(ReplayError::ReadCallFailed("slot0").as_str(), "read_call_failed");
+        assert_eq!(
+            ReplayError::ReadCallFailed("slot0").as_str(),
+            "read_call_failed"
+        );
         assert_eq!(ReplayError::DecodeFailed("slot0").as_str(), "decode_failed");
         assert_eq!(ReplayError::SimError.as_str(), "sim_error");
     }
@@ -784,7 +785,11 @@ mod tests {
     fn v3_victim_revert_path() {
         let mut state = ForkedState::new_empty(18_000_000, 1_700_000_000, 1_000_000_000);
         let victim_target = address!("3333333333333333333333333333333333333333");
-        state.insert_account(victim_target, U256::ZERO, vec![0x60, 0x00, 0x60, 0x00, 0xfd].into());
+        state.insert_account(
+            victim_target,
+            U256::ZERO,
+            vec![0x60, 0x00, 0x60, 0x00, 0xfd].into(),
+        );
         let pool = address!("88e6A0c2dDD26FEEb64F039a2c41296FcB3f5640");
         let result = replay_v3_post_state_cache(state, &default_victim(), pool, &default_params());
         assert!(matches!(result, Err(ReplayError::VictimReverted)));
@@ -810,9 +815,8 @@ mod tests {
         let victim_target = address!("3333333333333333333333333333333333333333");
         state.insert_account(victim_target, U256::ZERO, vec![0xfe].into());
         let pool = address!("bEbc44782C7dB0a1A60Cb6fe97d0b483032FF1C7");
-        let result = replay_curve_post_state_cache(
-            state, &default_victim(), pool, 0, 1, &default_params(),
-        );
+        let result =
+            replay_curve_post_state_cache(state, &default_victim(), pool, 0, 1, &default_params());
         assert!(matches!(result, Err(ReplayError::VictimHalted)));
     }
 
@@ -822,9 +826,8 @@ mod tests {
         let pool = address!("bEbc44782C7dB0a1A60Cb6fe97d0b483032FF1C7");
         let mut state = state;
         state.insert_account(pool, U256::ZERO, vec![0x60, 0x00, 0x60, 0x00, 0xfd].into());
-        let result = replay_curve_post_state_cache(
-            state, &default_victim(), pool, 0, 1, &default_params(),
-        );
+        let result =
+            replay_curve_post_state_cache(state, &default_victim(), pool, 0, 1, &default_params());
         assert!(
             matches!(result, Err(ReplayError::ReadCallFailed("balances"))),
             "expected ReadCallFailed(balances), got {result:?}"
@@ -841,7 +844,13 @@ mod tests {
         let t0 = address!("C02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2");
         let t1 = address!("ba100000625a3754423978a60c9317c58a424e3D");
         let result = replay_balancer_post_state_cache(
-            state, &default_victim(), pool, vault, t0, t1, &default_params(),
+            state,
+            &default_victim(),
+            pool,
+            vault,
+            t0,
+            t1,
+            &default_params(),
         );
         assert!(matches!(result, Err(ReplayError::VictimHalted)));
     }
@@ -856,7 +865,13 @@ mod tests {
         let mut state = state;
         state.insert_account(pool, U256::ZERO, vec![0x60, 0x00, 0x60, 0x00, 0xfd].into());
         let result = replay_balancer_post_state_cache(
-            state, &default_victim(), pool, vault, t0, t1, &default_params(),
+            state,
+            &default_victim(),
+            pool,
+            vault,
+            t0,
+            t1,
+            &default_params(),
         );
         assert!(
             matches!(result, Err(ReplayError::ReadCallFailed("getPoolId"))),
@@ -936,9 +951,8 @@ mod tests {
         let mut state = ForkedState::new_empty(18_000_000, 1_700_000_000, 1_000_000_000);
         state.insert_account(pool, U256::ZERO, const_uint256_returner(constant).into());
         state.insert_account_balance(default_victim().from, U256::from(10u128.pow(18)));
-        let result = replay_curve_post_state_cache(
-            state, &default_victim(), pool, 0, 1, &default_params(),
-        );
+        let result =
+            replay_curve_post_state_cache(state, &default_victim(), pool, 0, 1, &default_params());
         let post = result.expect("curve replay should succeed");
         assert_eq!(post.new_balance_in, constant);
         assert_eq!(post.new_balance_out, constant);
@@ -959,7 +973,13 @@ mod tests {
         let t0 = address!("C02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2");
         let t1 = address!("ba100000625a3754423978a60c9317c58a424e3D");
         let result = replay_balancer_post_state_cache(
-            state, &default_victim(), pool, BALANCER_V2_VAULT, t0, t1, &default_params(),
+            state,
+            &default_victim(),
+            pool,
+            BALANCER_V2_VAULT,
+            t0,
+            t1,
+            &default_params(),
         );
         assert!(matches!(result, Err(ReplayError::VictimReverted)));
     }
@@ -984,9 +1004,8 @@ mod tests {
         let mut state = ForkedState::new_empty(18_000_000, 1_700_000_000, 1_000_000_000);
         state.insert_account(pool, U256::ZERO, const_uint256_returner(constant).into());
         state.insert_account_balance(default_victim().from, U256::from(10u128.pow(18)));
-        let result = replay_curve_post_state_cache(
-            state, &default_victim(), pool, 1, 0, &default_params(),
-        );
+        let result =
+            replay_curve_post_state_cache(state, &default_victim(), pool, 1, 0, &default_params());
         let post = result.expect("curve replay should succeed");
         assert_eq!(post.i, 1);
         assert_eq!(post.j, 0);
@@ -1013,7 +1032,13 @@ mod tests {
         let t0 = address!("C02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2");
         let t1 = address!("ba100000625a3754423978a60c9317c58a424e3D");
         let result = replay_balancer_post_state_cache(
-            state, &default_victim(), pool, BALANCER_V2_VAULT, t0, t1, &default_params(),
+            state,
+            &default_victim(),
+            pool,
+            BALANCER_V2_VAULT,
+            t0,
+            t1,
+            &default_params(),
         );
         assert!(matches!(result, Err(ReplayError::VictimHalted)));
     }
@@ -1081,10 +1106,16 @@ mod tests {
     fn replay_error_as_str_all_variants() {
         assert_eq!(ReplayError::VictimReverted.as_str(), "victim_reverted");
         assert_eq!(ReplayError::VictimHalted.as_str(), "victim_halted");
-        assert_eq!(ReplayError::ReadCallFailed("foo").as_str(), "read_call_failed");
+        assert_eq!(
+            ReplayError::ReadCallFailed("foo").as_str(),
+            "read_call_failed"
+        );
         assert_eq!(ReplayError::DecodeFailed("bar").as_str(), "decode_failed");
         assert_eq!(ReplayError::SimError.as_str(), "sim_error");
-        assert_eq!(ReplayError::UnimplementedProtocol("curve").as_str(), "unimplemented_protocol");
+        assert_eq!(
+            ReplayError::UnimplementedProtocol("curve").as_str(),
+            "unimplemented_protocol"
+        );
     }
 
     #[test]
@@ -1092,10 +1123,19 @@ mod tests {
         for val in [1u64, 100, 1_000_000, u64::MAX] {
             let pool = address!("bEbc44782C7dB0a1A60Cb6fe97d0b483032FF1C7");
             let mut state = ForkedState::new_empty(18_000_000, 1_700_000_000, 1_000_000_000);
-            state.insert_account(pool, U256::ZERO, const_uint256_returner(U256::from(val)).into());
+            state.insert_account(
+                pool,
+                U256::ZERO,
+                const_uint256_returner(U256::from(val)).into(),
+            );
             state.insert_account_balance(default_victim().from, U256::from(10u128.pow(18)));
             let result = replay_curve_post_state_cache(
-                state, &default_victim(), pool, 0, 1, &default_params(),
+                state,
+                &default_victim(),
+                pool,
+                0,
+                1,
+                &default_params(),
             );
             let post = result.expect("curve replay should succeed");
             assert_eq!(post.new_balance_in, U256::from(val));
@@ -1117,9 +1157,8 @@ mod tests {
     fn curve_pool_no_code_returns_decode_failed() {
         let pool = address!("bEbc44782C7dB0a1A60Cb6fe97d0b483032FF1C7");
         let state = ForkedState::new_empty(18_000_000, 1_700_000_000, 1_000_000_000);
-        let result = replay_curve_post_state_cache(
-            state, &default_victim(), pool, 0, 1, &default_params(),
-        );
+        let result =
+            replay_curve_post_state_cache(state, &default_victim(), pool, 0, 1, &default_params());
         assert!(
             matches!(result, Err(ReplayError::DecodeFailed("balances"))),
             "expected DecodeFailed(balances), got {result:?}"
@@ -1214,13 +1253,18 @@ mod tests {
         state.insert_account_balance(default_victim().from, U256::from(10u128.pow(18)));
 
         // Pool bytecode: return 32 bytes (poolId as uint256 → bytes32)
-        state.insert_account(pool, U256::ZERO, {
-            let mut c = Vec::with_capacity(38);
-            c.push(0x7f);
-            c.extend_from_slice(&pool_id_val.to_be_bytes::<32>());
-            c.extend_from_slice(&[0x60, 0x00, 0x52, 0x60, 0x20, 0x60, 0x00, 0xf3]);
-            c
-        }.into());
+        state.insert_account(
+            pool,
+            U256::ZERO,
+            {
+                let mut c = Vec::with_capacity(38);
+                c.push(0x7f);
+                c.extend_from_slice(&pool_id_val.to_be_bytes::<32>());
+                c.extend_from_slice(&[0x60, 0x00, 0x52, 0x60, 0x20, 0x60, 0x00, 0xf3]);
+                c
+            }
+            .into(),
+        );
 
         // Vault bytecode: return getPoolTokens ABI (tokens array, balances array, lastChangeBlock)
         //
@@ -1235,21 +1279,27 @@ mod tests {
             bal1_word[12..32].copy_from_slice(t1.as_slice());
 
             let vault_words = vec![
-                U256::from(0x60u64),         // offset to tokens array (= 96 = 3 head words)
-                U256::from(0xC0u64),         // offset to balances array (= 192 = 96 + tokens_len word + 2 tokens)
-                U256::ZERO,                  // lastChangeBlock
-                U256::from(2u64),            // tokens length
+                U256::from(0x60u64),            // offset to tokens array (= 96 = 3 head words)
+                U256::from(0xC0u64), // offset to balances array (= 192 = 96 + tokens_len word + 2 tokens)
+                U256::ZERO,          // lastChangeBlock
+                U256::from(2u64),    // tokens length
                 U256::from_be_bytes(bal0_word), // token0
                 U256::from_be_bytes(bal1_word), // token1
-                U256::from(2u64),            // balances length
-                U256::from(1_000_000u64),    // balance0
-                U256::from(2_000_000u64),    // balance1
+                U256::from(2u64),    // balances length
+                U256::from(1_000_000u64), // balance0
+                U256::from(2_000_000u64), // balance1
             ];
             state.insert_account(vault, U256::ZERO, multiword_returner(&vault_words).into());
         }
 
         let result = replay_balancer_post_state_cache(
-            state, &default_victim(), pool, vault, t0, t1, &default_params(),
+            state,
+            &default_victim(),
+            pool,
+            vault,
+            t0,
+            t1,
+            &default_params(),
         );
         let post = result.expect("Balancer replay should succeed with mock pool+vault");
         assert_eq!(post.new_balance0, U256::from(1_000_000u64));
@@ -1269,19 +1319,30 @@ mod tests {
         state.insert_account_balance(default_victim().from, U256::from(10u128.pow(18)));
 
         // Pool returns valid poolId
-        state.insert_account(pool, U256::ZERO, {
-            let mut c = Vec::with_capacity(38);
-            c.push(0x7f);
-            c.extend_from_slice(&U256::from(1u64).to_be_bytes::<32>());
-            c.extend_from_slice(&[0x60, 0x00, 0x52, 0x60, 0x20, 0x60, 0x00, 0xf3]);
-            c
-        }.into());
+        state.insert_account(
+            pool,
+            U256::ZERO,
+            {
+                let mut c = Vec::with_capacity(38);
+                c.push(0x7f);
+                c.extend_from_slice(&U256::from(1u64).to_be_bytes::<32>());
+                c.extend_from_slice(&[0x60, 0x00, 0x52, 0x60, 0x20, 0x60, 0x00, 0xf3]);
+                c
+            }
+            .into(),
+        );
 
         // Vault reverts
         state.insert_account(vault, U256::ZERO, vec![0x60, 0x00, 0x60, 0x00, 0xfd].into());
 
         let result = replay_balancer_post_state_cache(
-            state, &default_victim(), pool, vault, t0, t1, &default_params(),
+            state,
+            &default_victim(),
+            pool,
+            vault,
+            t0,
+            t1,
+            &default_params(),
         );
         assert!(
             matches!(result, Err(ReplayError::ReadCallFailed("getPoolTokens"))),
@@ -1297,7 +1358,13 @@ mod tests {
         let t1 = address!("ba100000625a3754423978a60c9317c58a424e3D");
         let state = ForkedState::new_empty(18_000_000, 1_700_000_000, 1_000_000_000);
         let result = replay_balancer_post_state_cache(
-            state, &default_victim(), pool, vault, t0, t1, &default_params(),
+            state,
+            &default_victim(),
+            pool,
+            vault,
+            t0,
+            t1,
+            &default_params(),
         );
         assert!(
             matches!(result, Err(ReplayError::DecodeFailed("getPoolId"))),
@@ -1313,7 +1380,13 @@ mod tests {
         let t1 = address!("ba100000625a3754423978a60c9317c58a424e3D");
         let state = ForkedState::new_empty(18_000_000, 1_700_000_000, 1_000_000_000);
         let result = replay_balancer_post_state_cache(
-            state, &default_victim(), pool, vault, t0, t1, &default_params(),
+            state,
+            &default_victim(),
+            pool,
+            vault,
+            t0,
+            t1,
+            &default_params(),
         );
         assert!(
             matches!(result, Err(ReplayError::DecodeFailed("getPoolId"))),
@@ -1333,13 +1406,18 @@ mod tests {
         state.insert_account_balance(default_victim().from, U256::from(10u128.pow(18)));
 
         // Pool bytecode: return 32 bytes (poolId as uint256 → bytes32)
-        state.insert_account(pool, U256::ZERO, {
-            let mut c = Vec::with_capacity(38);
-            c.push(0x7f);
-            c.extend_from_slice(&pool_id_val.to_be_bytes::<32>());
-            c.extend_from_slice(&[0x60, 0x00, 0x52, 0x60, 0x20, 0x60, 0x00, 0xf3]);
-            c
-        }.into());
+        state.insert_account(
+            pool,
+            U256::ZERO,
+            {
+                let mut c = Vec::with_capacity(38);
+                c.push(0x7f);
+                c.extend_from_slice(&pool_id_val.to_be_bytes::<32>());
+                c.extend_from_slice(&[0x60, 0x00, 0x52, 0x60, 0x20, 0x60, 0x00, 0xf3]);
+                c
+            }
+            .into(),
+        );
 
         // Vault bytecode: return getPoolTokens ABI with a token not matching
         // token0 or token1, so the loop never sets bal0/bal1 and the
@@ -1362,7 +1440,13 @@ mod tests {
         }
 
         let result = replay_balancer_post_state_cache(
-            state, &default_victim(), pool, vault, t0, t1, &default_params(),
+            state,
+            &default_victim(),
+            pool,
+            vault,
+            t0,
+            t1,
+            &default_params(),
         );
         assert!(
             matches!(result, Err(ReplayError::DecodeFailed("getPoolTokens"))),

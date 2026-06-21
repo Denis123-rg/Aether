@@ -2,15 +2,17 @@
 
 use std::collections::HashSet;
 
+use aether_common::types::PoolId;
 use aether_common::types::ProtocolType;
 use aether_discovery::config::DiscoveryConfig;
-use aether_discovery::events::{decode_pair_created_log, mock_pair_created_log, FactoryPoolCreated};
+use aether_discovery::events::{
+    decode_pair_created_log, mock_pair_created_log, FactoryPoolCreated,
+};
 use aether_discovery::types::{PoolInfo, PoolScoreInputs};
 use aether_discovery::DiscoveryService;
 use aether_state::hot_cache::{HotCache, HotCacheMetrics, HotCacheUpdater, HotCacheUpdaterConfig};
 use aether_state::price_graph::PriceGraph;
 use alloy::primitives::{address, Address, U256};
-use aether_common::types::PoolId;
 
 fn weth() -> Address {
     address!("C02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2")
@@ -76,10 +78,42 @@ fn graph_filters_to_hot_cache_only() {
         protocol: ProtocolType::UniswapV2,
     };
 
-    graph.add_edge(0, 1, 1.5, pool_hot, pool_hot.address, ProtocolType::UniswapV2, U256::from(1000));
-    graph.add_edge(1, 0, 0.67, pool_hot, pool_hot.address, ProtocolType::UniswapV2, U256::from(1000));
-    graph.add_edge(0, 2, 2.0, pool_cold, pool_cold.address, ProtocolType::UniswapV2, U256::from(500));
-    graph.add_edge(2, 0, 0.5, pool_cold, pool_cold.address, ProtocolType::UniswapV2, U256::from(500));
+    graph.add_edge(
+        0,
+        1,
+        1.5,
+        pool_hot,
+        pool_hot.address,
+        ProtocolType::UniswapV2,
+        U256::from(1000),
+    );
+    graph.add_edge(
+        1,
+        0,
+        0.67,
+        pool_hot,
+        pool_hot.address,
+        ProtocolType::UniswapV2,
+        U256::from(1000),
+    );
+    graph.add_edge(
+        0,
+        2,
+        2.0,
+        pool_cold,
+        pool_cold.address,
+        ProtocolType::UniswapV2,
+        U256::from(500),
+    );
+    graph.add_edge(
+        2,
+        0,
+        0.5,
+        pool_cold,
+        pool_cold.address,
+        ProtocolType::UniswapV2,
+        U256::from(500),
+    );
 
     let mut allowed = HashSet::new();
     allowed.insert(pool_hot.address);
@@ -184,11 +218,7 @@ fn hot_cache_metrics_after_refresh() {
     seed_pool(&discovery, 1, 1e6);
     let metrics = HotCacheMetrics::noop();
     let hot_cache = std::sync::Arc::new(HotCache::new(metrics.clone()));
-    let updater = HotCacheUpdater::new(
-        discovery,
-        hot_cache,
-        HotCacheUpdaterConfig::default(),
-    );
+    let updater = HotCacheUpdater::new(discovery, hot_cache, HotCacheUpdaterConfig::default());
     updater.refresh_once();
     assert_eq!(metrics.size.get(), 1);
     assert_eq!(metrics.updates_total.get(), 1);

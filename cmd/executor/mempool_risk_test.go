@@ -252,7 +252,7 @@ func TestMempoolRiskGate_OrderIsStable(t *testing.T) {
 	now := time.Unix(1_700_000_000, 0)
 	res := MempoolRiskGate(cfg, MempoolPreflightArgs{
 		GrossProfitWei:  big.NewInt(1), // below floor
-		TipShareBps:     9999,           // also above cap
+		TipShareBps:     9999,          // also above cap
 		VictimSeenAt:    now.Add(-time.Hour),
 		TargetBlock:     18_000_000,
 		VictimTxHashHex: "0xa",
@@ -358,9 +358,9 @@ func TestDumpMempoolShadowBundle_Schema(t *testing.T) {
 		RevertingTxHashes: []string{"0xarbtx"},
 	}
 	gasFees := GasFees{
-		BaseFee:        new(big.Int).SetUint64(20_000_000_000),  // 20 gwei
-		MaxFeePerGas:   new(big.Int).SetUint64(40_000_000_000),  // 40 gwei
-		MaxPriorityFee: new(big.Int).SetUint64(2_000_000_000),   // 2 gwei
+		BaseFee:        new(big.Int).SetUint64(20_000_000_000), // 20 gwei
+		MaxFeePerGas:   new(big.Int).SetUint64(40_000_000_000), // 40 gwei
+		MaxPriorityFee: new(big.Int).SetUint64(2_000_000_000),  // 2 gwei
 		GasPriceGwei:   20.0,
 	}
 	decision := MempoolPreflightResult{

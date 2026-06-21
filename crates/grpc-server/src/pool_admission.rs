@@ -156,7 +156,10 @@ pub fn evaluate(
 pub fn format_pool_entry(e: &PoolEntryToml) -> String {
     let mut s = String::new();
     s.push_str("[[pools]]\n");
-    s.push_str(&format!("protocol = \"{}\"\n", protocol_toml_str(e.protocol)));
+    s.push_str(&format!(
+        "protocol = \"{}\"\n",
+        protocol_toml_str(e.protocol)
+    ));
     s.push_str(&format!("address = \"{}\"\n", e.address.to_checksum(None)));
     s.push_str(&format!("token0 = \"{}\"\n", e.token0.to_checksum(None)));
     s.push_str(&format!("token1 = \"{}\"\n", e.token1.to_checksum(None)));
@@ -267,7 +270,13 @@ mod tests {
             venue(ProtocolType::UniswapV2, 1, 100_000.0),
             venue(ProtocolType::SushiSwap, 2, 1_000.0),
         ];
-        let out = evaluate(&venues, &FotVerdict::Clean { observed_tax_bps: 0 }, &cfg());
+        let out = evaluate(
+            &venues,
+            &FotVerdict::Clean {
+                observed_tax_bps: 0,
+            },
+            &cfg(),
+        );
         assert!(matches!(out, AdmissionOutcome::Reject { .. }));
     }
 
@@ -277,7 +286,13 @@ mod tests {
             venue(ProtocolType::UniswapV2, 1, 100_000.0),
             venue(ProtocolType::SushiSwap, 2, 50_000.0),
         ];
-        let out = evaluate(&venues, &FotVerdict::Clean { observed_tax_bps: 0 }, &cfg());
+        let out = evaluate(
+            &venues,
+            &FotVerdict::Clean {
+                observed_tax_bps: 0,
+            },
+            &cfg(),
+        );
         match out {
             AdmissionOutcome::Admit(entries) => {
                 assert_eq!(entries.len(), 2);
@@ -423,7 +438,13 @@ mod tests {
             venue(ProtocolType::UniswapV2, 1, 100_000.0),
             venue(ProtocolType::SushiSwap, 2, 100_000.0),
         ];
-        let out = evaluate(&venues, &FotVerdict::Honeypot { reason: "transfer failed".into() }, &cfg());
+        let out = evaluate(
+            &venues,
+            &FotVerdict::Honeypot {
+                reason: "transfer failed".into(),
+            },
+            &cfg(),
+        );
         assert!(matches!(out, AdmissionOutcome::Reject { .. }));
     }
 
@@ -435,7 +456,9 @@ mod tests {
         ];
         let out = evaluate(
             &venues,
-            &FotVerdict::Inconclusive { reason: "slot not found".into() },
+            &FotVerdict::Inconclusive {
+                reason: "slot not found".into(),
+            },
             &cfg(),
         );
         assert!(matches!(out, AdmissionOutcome::Reject { .. }));
@@ -460,7 +483,13 @@ mod tests {
 
     #[test]
     fn evaluate_zero_venues() {
-        let out = evaluate(&[], &FotVerdict::Clean { observed_tax_bps: 0 }, &cfg());
+        let out = evaluate(
+            &[],
+            &FotVerdict::Clean {
+                observed_tax_bps: 0,
+            },
+            &cfg(),
+        );
         match out {
             AdmissionOutcome::Reject { reason } => {
                 assert!(reason.contains("0 venue"));
@@ -476,7 +505,13 @@ mod tests {
             venue(ProtocolType::SushiSwap, 2, 200.0),
             venue(ProtocolType::Curve, 3, 50.0),
         ];
-        let out = evaluate(&venues, &FotVerdict::Clean { observed_tax_bps: 0 }, &cfg());
+        let out = evaluate(
+            &venues,
+            &FotVerdict::Clean {
+                observed_tax_bps: 0,
+            },
+            &cfg(),
+        );
         match out {
             AdmissionOutcome::Reject { reason } => {
                 assert!(reason.contains("0 venue"));
@@ -495,7 +530,13 @@ mod tests {
             venue(ProtocolType::UniswapV2, 1, 10_000.0),
             venue(ProtocolType::SushiSwap, 2, 5_000.0),
         ];
-        let out = evaluate(&venues, &FotVerdict::Clean { observed_tax_bps: 0 }, &c);
+        let out = evaluate(
+            &venues,
+            &FotVerdict::Clean {
+                observed_tax_bps: 0,
+            },
+            &c,
+        );
         // Only 1 venue exactly at the floor qualifies.
         match out {
             AdmissionOutcome::Admit(entries) => assert_eq!(entries.len(), 1),
@@ -626,7 +667,8 @@ mod tests {
 
     #[test]
     fn read_existing_addresses_nonexistent_file() {
-        let set = read_existing_addresses(Path::new("/tmp/nonexistent_pools_file_aether_test.toml"));
+        let set =
+            read_existing_addresses(Path::new("/tmp/nonexistent_pools_file_aether_test.toml"));
         assert!(set.is_empty());
     }
 
@@ -657,7 +699,9 @@ mod tests {
             venue(ProtocolType::UniswapV2, 1, 100_000.0),
             venue(ProtocolType::SushiSwap, 2, 100_000.0),
         ];
-        let fot = FotVerdict::Clean { observed_tax_bps: 15 };
+        let fot = FotVerdict::Clean {
+            observed_tax_bps: 15,
+        };
         let out = evaluate(&venues, &fot, &cfg());
         assert!(matches!(out, AdmissionOutcome::Admit(_)));
     }
@@ -668,11 +712,7 @@ mod tests {
             venue(ProtocolType::UniswapV2, 1, 100_000.0),
             venue(ProtocolType::SushiSwap, 2, 100_000.0),
         ];
-        let out = evaluate(
-            &venues,
-            &FotVerdict::FeeOnTransfer { tax_bps: 300 },
-            &cfg(),
-        );
+        let out = evaluate(&venues, &FotVerdict::FeeOnTransfer { tax_bps: 300 }, &cfg());
         match out {
             AdmissionOutcome::Reject { reason } => {
                 assert!(reason.contains("fee-on-transfer"));
@@ -692,7 +732,13 @@ mod tests {
             venue(ProtocolType::Curve, 3, 10_000.0),
             venue(ProtocolType::BalancerV2, 4, 5_000.0),
         ];
-        let out = evaluate(&venues, &FotVerdict::Clean { observed_tax_bps: 0 }, &c);
+        let out = evaluate(
+            &venues,
+            &FotVerdict::Clean {
+                observed_tax_bps: 0,
+            },
+            &c,
+        );
         match out {
             AdmissionOutcome::Admit(entries) => assert_eq!(entries.len(), 3),
             other => panic!("expected admit with 3, got {other:?}"),

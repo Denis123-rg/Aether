@@ -325,8 +325,12 @@ fn decode_swap_v3(topics: &[B256], data: &[u8], pool: Address) -> Result<PoolEve
 
     // tick is int24, stored in last 3 bytes of the 32-byte word
     let tick_bytes = &data[128..160];
-    let tick_i256 =
-        i32::from_be_bytes([tick_bytes[28], tick_bytes[29], tick_bytes[30], tick_bytes[31]]);
+    let tick_i256 = i32::from_be_bytes([
+        tick_bytes[28],
+        tick_bytes[29],
+        tick_bytes[30],
+        tick_bytes[31],
+    ]);
     // Sign extend from 24 bits
     let tick = if tick_i256 & 0x800000 != 0 {
         tick_i256 | !0xFFFFFF_i32
@@ -415,7 +419,10 @@ pub fn v3_fee_bps_from_topic(fee_topic: &B256) -> u32 {
 
 /// Decode a Curve `PlainPoolDeployed` factory log into pool + first two coins.
 /// Returns `(pool, token0, token1, fee_bps)` when at least two coins are present.
-pub fn decode_plain_pool_deployed(topics: &[B256], data: &[u8]) -> Option<(Address, Address, Address, u32)> {
+pub fn decode_plain_pool_deployed(
+    topics: &[B256],
+    data: &[u8],
+) -> Option<(Address, Address, Address, u32)> {
     if topics.is_empty() || topics[0] != EventSignatures::plain_pool_deployed_topic() {
         return None;
     }
@@ -429,7 +436,10 @@ pub fn decode_plain_pool_deployed(topics: &[B256], data: &[u8]) -> Option<(Addre
 
 /// Decode a Balancer V3 `PoolRegistered` vault log.
 /// Returns `(pool, token0, token1, fee_bps)` when at least two tokens are configured.
-pub fn decode_pool_registered_v3(topics: &[B256], data: &[u8]) -> Option<(Address, Address, Address, u32)> {
+pub fn decode_pool_registered_v3(
+    topics: &[B256],
+    data: &[u8],
+) -> Option<(Address, Address, Address, u32)> {
     if topics.len() < 3 || topics[0] != EventSignatures::pool_registered_v3_topic() {
         return None;
     }
@@ -624,11 +634,7 @@ mod tests {
 
     #[test]
     fn test_decode_v2_swap_insufficient_data() {
-        let topics = vec![
-            EventSignatures::swap_v2_topic(),
-            B256::ZERO,
-            B256::ZERO,
-        ];
+        let topics = vec![EventSignatures::swap_v2_topic(), B256::ZERO, B256::ZERO];
         // 96 bytes instead of 128
         let data = vec![0u8; 96];
         assert_eq!(
@@ -652,9 +658,7 @@ mod tests {
         let mut data = Vec::new();
 
         // amount0 = 1e18 (positive)
-        data.extend_from_slice(&u256_to_be_bytes(U256::from(
-            1_000_000_000_000_000_000u64,
-        )));
+        data.extend_from_slice(&u256_to_be_bytes(U256::from(1_000_000_000_000_000_000u64)));
         // amount1 = -2000e6 (negative, as two's complement)
         let neg_amount1 = U256::MAX - U256::from(2_000_000_000u64) + U256::from(1u64);
         data.extend_from_slice(&u256_to_be_bytes(neg_amount1));
@@ -709,11 +713,7 @@ mod tests {
         let neg_tick = U256::MAX - U256::from(99u64); // two's complement for -100
         data.extend_from_slice(&u256_to_be_bytes(neg_tick));
 
-        let topics = vec![
-            EventSignatures::swap_v3_topic(),
-            B256::ZERO,
-            B256::ZERO,
-        ];
+        let topics = vec![EventSignatures::swap_v3_topic(), B256::ZERO, B256::ZERO];
 
         let event = decode_log(&topics, &data, pool_addr, None);
         let got = event.unwrap();
@@ -725,11 +725,7 @@ mod tests {
 
     #[test]
     fn test_decode_v3_swap_too_short_data() {
-        let topics = vec![
-            EventSignatures::swap_v3_topic(),
-            B256::ZERO,
-            B256::ZERO,
-        ];
+        let topics = vec![EventSignatures::swap_v3_topic(), B256::ZERO, B256::ZERO];
         // Only 128 bytes instead of 160
         let data = vec![0u8; 128];
         let event = decode_log(&topics, &data, Address::ZERO, None);
@@ -969,6 +965,9 @@ mod tests {
         // dashboards and alerts.
         assert_eq!(DecodeReason::UnknownTopic.as_str(), "unknown_topic");
         assert_eq!(DecodeReason::MalformedPayload.as_str(), "malformed_payload");
-        assert_eq!(DecodeReason::InsufficientTopics.as_str(), "insufficient_topics");
+        assert_eq!(
+            DecodeReason::InsufficientTopics.as_str(),
+            "insufficient_topics"
+        );
     }
 }

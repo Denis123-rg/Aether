@@ -7,8 +7,8 @@
 //! on-chain router calldata are handled by the discovery validator and
 //! executor `step.data` respectively.
 
-use alloy::primitives::{Address, U256};
 use aether_common::types::ProtocolType;
+use alloy::primitives::{Address, U256};
 
 use crate::balancer::{BalancerPool, BalancerPostState};
 use crate::swap_encode;
@@ -133,8 +133,11 @@ mod tests {
     #[test]
     fn safety_margin_reduces_output() {
         let pool = sample_pool();
-        let raw = pool.inner.get_amount_out(pool.inner.token0, U256::from(1_000_000_000_000_000_000u64));
-        let margined = pool.get_amount_out(pool.inner.token0, U256::from(1_000_000_000_000_000_000u64));
+        let raw = pool
+            .inner
+            .get_amount_out(pool.inner.token0, U256::from(1_000_000_000_000_000_000u64));
+        let margined =
+            pool.get_amount_out(pool.inner.token0, U256::from(1_000_000_000_000_000_000u64));
         assert!(raw.is_some() && margined.is_some());
         assert!(margined.unwrap() < raw.unwrap());
     }

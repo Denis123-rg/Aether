@@ -6,9 +6,9 @@ use alloy::primitives::Address;
 use dashmap::DashMap;
 use tokio::sync::broadcast;
 
+use crate::config::{DiscoverySettings, ScoringSettings};
 use crate::scorer::{normalise_score, raw_score};
 use crate::types::{CachedPool, DiscoveryEvent, PoolInfo, PoolScoreInputs};
-use crate::config::{DiscoverySettings, ScoringSettings};
 
 /// Thread-safe ranked pool cache backed by `DashMap`.
 pub struct DiscoveryCache {
@@ -89,11 +89,8 @@ impl DiscoveryCache {
 
     /// Return top-N pools sorted by score descending.
     pub fn get_top_n(&self, n: usize) -> Vec<PoolInfo> {
-        let mut entries: Vec<PoolInfo> = self
-            .pools
-            .iter()
-            .map(|e| e.value().info.clone())
-            .collect();
+        let mut entries: Vec<PoolInfo> =
+            self.pools.iter().map(|e| e.value().info.clone()).collect();
         entries.sort_by(|a, b| {
             b.score
                 .partial_cmp(&a.score)
@@ -109,9 +106,7 @@ impl DiscoveryCache {
         let to_remove: Vec<Address> = self
             .pools
             .iter()
-            .filter(|e| {
-                e.value().age() > self.prune_max_age || e.value().info.score < min_score
-            })
+            .filter(|e| e.value().age() > self.prune_max_age || e.value().info.score < min_score)
             .map(|e| *e.key())
             .collect();
 

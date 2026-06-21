@@ -28,15 +28,15 @@ use aether_common::types::{known_token_decimals, PoolId, ProtocolType, SwapStep}
 use aether_detector::bellman_ford::BellmanFord;
 use aether_detector::gas as gas_model;
 use aether_detector::opportunity::DetectedCycle;
+use aether_detector::optimizer::ternary_search_optimal_input;
 use aether_grpc_server::cycle_gating::{
     build_fingerprint_index, gate_pre_sim, GatingConfig, PreSimGateVerdict,
 };
-use aether_grpc_server::EngineMetrics;
-use aether_detector::optimizer::ternary_search_optimal_input;
 use aether_grpc_server::historical::{
-    fetch_pool_state_at, getReservesCall, liquidityCall, load_executor_init_bytecode, load_pools, slot0Call,
-    u256_to_f64, uniswap_v2_get_amount_out, LoadedPool, PoolState,
+    fetch_pool_state_at, getReservesCall, liquidityCall, load_executor_init_bytecode, load_pools,
+    slot0Call, u256_to_f64, uniswap_v2_get_amount_out, LoadedPool, PoolState,
 };
+use aether_grpc_server::EngineMetrics;
 use aether_simulator::calldata::{
     build_execute_arb_calldata, build_univ2_swap_calldata, build_univ3_swap_calldata,
 };
@@ -153,7 +153,10 @@ struct Args {
 
     /// Path to the compiled `AetherExecutor.json` (forge artifact). Only read
     /// when `--sim-on-chain` is set.
-    #[arg(long, default_value = "contracts/out/AetherExecutor.sol/AetherExecutor.json")]
+    #[arg(
+        long,
+        default_value = "contracts/out/AetherExecutor.sol/AetherExecutor.json"
+    )]
     executor_artifact: PathBuf,
 
     /// Builder tip share in basis points. When > 0, the revm sim calls
@@ -195,38 +198,161 @@ fn default_pool_set() -> Vec<LoadedPool> {
     };
     vec![
         // ── V2 / Sushi ────────────────────────────────────────────────
-        mk(address!("B4e16d0168e52d35CaCD2c6185b44281Ec28C9Dc"), USDC, WETH, ProtocolType::UniswapV2, 30),
-        mk(address!("0d4a11d5EEaaC28EC3F61d100daF4d40471f1852"), WETH, USDT, ProtocolType::UniswapV2, 30),
-        mk(address!("397FF1542f962076d0BFE58eA045FfA2d347ACa0"), USDC, WETH, ProtocolType::SushiSwap, 30),
-        mk(address!("06da0fd433C1A5d7a4faa01111c044910A184553"), WETH, USDT, ProtocolType::SushiSwap, 30),
+        mk(
+            address!("B4e16d0168e52d35CaCD2c6185b44281Ec28C9Dc"),
+            USDC,
+            WETH,
+            ProtocolType::UniswapV2,
+            30,
+        ),
+        mk(
+            address!("0d4a11d5EEaaC28EC3F61d100daF4d40471f1852"),
+            WETH,
+            USDT,
+            ProtocolType::UniswapV2,
+            30,
+        ),
+        mk(
+            address!("397FF1542f962076d0BFE58eA045FfA2d347ACa0"),
+            USDC,
+            WETH,
+            ProtocolType::SushiSwap,
+            30,
+        ),
+        mk(
+            address!("06da0fd433C1A5d7a4faa01111c044910A184553"),
+            WETH,
+            USDT,
+            ProtocolType::SushiSwap,
+            30,
+        ),
         // WETH-DAI: on-chain token0 = DAI (lower address), token1 = WETH.
-        mk(address!("A478c2975Ab1Ea89e8196811F51A7B7Ade33eB11"), DAI, WETH, ProtocolType::UniswapV2, 30),
-        mk(address!("C3D03e4F041Fd4cD388c549Ee2A29a9E5075882f"), DAI, WETH, ProtocolType::SushiSwap, 30),
-        mk(address!("3041CbD36888bECc7bbCBc0045E3B1f144466f5f"), USDC, USDT, ProtocolType::UniswapV2, 30),
+        mk(
+            address!("A478c2975Ab1Ea89e8196811F51A7B7Ade33eB11"),
+            DAI,
+            WETH,
+            ProtocolType::UniswapV2,
+            30,
+        ),
+        mk(
+            address!("C3D03e4F041Fd4cD388c549Ee2A29a9E5075882f"),
+            DAI,
+            WETH,
+            ProtocolType::SushiSwap,
+            30,
+        ),
+        mk(
+            address!("3041CbD36888bECc7bbCBc0045E3B1f144466f5f"),
+            USDC,
+            USDT,
+            ProtocolType::UniswapV2,
+            30,
+        ),
         // ── V3 majors (fee in bps; UniV3 fee tiers: 5, 30, 100 bps) ───
-        mk(address!("88e6A0c2dDD26FEEb64F039a2c41296FcB3f5640"), USDC, WETH, ProtocolType::UniswapV3, 5),
-        mk(address!("8ad599c3A0ff1De082011EFDDc58f1908eb6e6D8"), USDC, WETH, ProtocolType::UniswapV3, 30),
-        mk(address!("11b815efB8f581194ae79006d24E0d814B7697F6"), WETH, USDT, ProtocolType::UniswapV3, 5),
-        mk(address!("4e68Ccd3E89f51C3074ca5072bbAC773960dFa36"), WETH, USDT, ProtocolType::UniswapV3, 30),
-        mk(address!("C2e9F25Be6257c210d7Adf0D4Cd6E3E881ba25f8"), DAI, WETH, ProtocolType::UniswapV3, 30),
-        mk(address!("60594a405d53811d3BC4766596EFD80fd545A270"), DAI, WETH, ProtocolType::UniswapV3, 5),
-        mk(address!("3416cF6C708Da44DB2624D63ea0AAef7113527C6"), USDC, USDT, ProtocolType::UniswapV3, 1),
+        mk(
+            address!("88e6A0c2dDD26FEEb64F039a2c41296FcB3f5640"),
+            USDC,
+            WETH,
+            ProtocolType::UniswapV3,
+            5,
+        ),
+        mk(
+            address!("8ad599c3A0ff1De082011EFDDc58f1908eb6e6D8"),
+            USDC,
+            WETH,
+            ProtocolType::UniswapV3,
+            30,
+        ),
+        mk(
+            address!("11b815efB8f581194ae79006d24E0d814B7697F6"),
+            WETH,
+            USDT,
+            ProtocolType::UniswapV3,
+            5,
+        ),
+        mk(
+            address!("4e68Ccd3E89f51C3074ca5072bbAC773960dFa36"),
+            WETH,
+            USDT,
+            ProtocolType::UniswapV3,
+            30,
+        ),
+        mk(
+            address!("C2e9F25Be6257c210d7Adf0D4Cd6E3E881ba25f8"),
+            DAI,
+            WETH,
+            ProtocolType::UniswapV3,
+            30,
+        ),
+        mk(
+            address!("60594a405d53811d3BC4766596EFD80fd545A270"),
+            DAI,
+            WETH,
+            ProtocolType::UniswapV3,
+            5,
+        ),
+        mk(
+            address!("3416cF6C708Da44DB2624D63ea0AAef7113527C6"),
+            USDC,
+            USDT,
+            ProtocolType::UniswapV3,
+            1,
+        ),
         // ── WBTC pairs (8 decimals — cross-decimal with WETH) ─────────
-        mk(address!("Bb2b8038a1640196FbE3e38816F3e67Cba72D940"), WBTC, WETH, ProtocolType::UniswapV2, 30),
-        mk(address!("CEfF51756c56CeFFCA006cD410B03FFC46dd3a58"), WBTC, WETH, ProtocolType::SushiSwap, 30),
-        mk(address!("4585FE77225b41b697C938B018E2Ac67Ac5a20c0"), WBTC, WETH, ProtocolType::UniswapV3, 5),
-        mk(address!("CBCdF9626bC03E24f779434178A73a0B4bad62eD"), WBTC, WETH, ProtocolType::UniswapV3, 30),
+        mk(
+            address!("Bb2b8038a1640196FbE3e38816F3e67Cba72D940"),
+            WBTC,
+            WETH,
+            ProtocolType::UniswapV2,
+            30,
+        ),
+        mk(
+            address!("CEfF51756c56CeFFCA006cD410B03FFC46dd3a58"),
+            WBTC,
+            WETH,
+            ProtocolType::SushiSwap,
+            30,
+        ),
+        mk(
+            address!("4585FE77225b41b697C938B018E2Ac67Ac5a20c0"),
+            WBTC,
+            WETH,
+            ProtocolType::UniswapV3,
+            5,
+        ),
+        mk(
+            address!("CBCdF9626bC03E24f779434178A73a0B4bad62eD"),
+            WBTC,
+            WETH,
+            ProtocolType::UniswapV3,
+            30,
+        ),
         // ── AAVE pairs (18 decimals, token0 = AAVE by address order) ──
-        mk(address!("DFC14d2Af169B0D36C4EFF567Ada9b2E0CAE044f"), AAVE, WETH, ProtocolType::UniswapV2, 30),
-        mk(address!("D75EA151a61d06868E31F8988D28DFE5E9df57B4"), AAVE, WETH, ProtocolType::SushiSwap, 30),
-        mk(address!("5aB53EE1d50eeF2C1DD3d5402789cd27bB52c1bB"), AAVE, WETH, ProtocolType::UniswapV3, 30),
+        mk(
+            address!("DFC14d2Af169B0D36C4EFF567Ada9b2E0CAE044f"),
+            AAVE,
+            WETH,
+            ProtocolType::UniswapV2,
+            30,
+        ),
+        mk(
+            address!("D75EA151a61d06868E31F8988D28DFE5E9df57B4"),
+            AAVE,
+            WETH,
+            ProtocolType::SushiSwap,
+            30,
+        ),
+        mk(
+            address!("5aB53EE1d50eeF2C1DD3d5402789cd27bB52c1bB"),
+            AAVE,
+            WETH,
+            ProtocolType::UniswapV3,
+            30,
+        ),
     ]
 }
 
-fn build_graph(
-    pools: &[LoadedPool],
-    states: &[(usize, PoolState)],
-) -> (PriceGraph, TokenIndex) {
+fn build_graph(pools: &[LoadedPool], states: &[(usize, PoolState)]) -> (PriceGraph, TokenIndex) {
     let mut token_index = TokenIndex::new();
     let mut graph = PriceGraph::new(10);
 
@@ -284,7 +410,10 @@ fn build_graph(
                 graph.update_edge_from_reserves(t0, t1, pool_id, r0f, r1f, fee);
                 graph.update_edge_from_reserves(t1, t0, pool_id, r1f, r0f, fee);
             }
-            PoolState::V3 { sqrt_price_x96, liquidity } => {
+            PoolState::V3 {
+                sqrt_price_x96,
+                liquidity,
+            } => {
                 // Virtual constant-product reserves (x_v, y_v) = (token0,
                 // token1) raw units from sqrtPrice + L (`virtual_reserves`).
                 // `y_v/x_v == spot`, so the detection edge weight matches the
@@ -391,7 +520,10 @@ async fn main() -> Result<()> {
             .collect::<std::result::Result<_, _>>()
             .with_context(|| format!("parse --blocks-file {}", path.display()))?;
         if blocks.is_empty() {
-            anyhow::bail!("--blocks-file {} contained no block numbers", path.display());
+            anyhow::bail!(
+                "--blocks-file {} contained no block numbers",
+                path.display()
+            );
         }
         return run_batch_replay(&args, &rpc_url, &blocks).await;
     }
@@ -424,7 +556,12 @@ async fn main() -> Result<()> {
     };
     let v2_count = pools
         .iter()
-        .filter(|p| matches!(p.protocol, ProtocolType::UniswapV2 | ProtocolType::SushiSwap))
+        .filter(|p| {
+            matches!(
+                p.protocol,
+                ProtocolType::UniswapV2 | ProtocolType::SushiSwap
+            )
+        })
         .count();
     let v3_count = pools
         .iter()
@@ -579,10 +716,7 @@ async fn wait_for_anvil(url: &str, timeout: Duration) -> Result<()> {
 }
 
 /// Query reserves / sqrtPriceX96 for a single pool at "latest" against an RPC.
-async fn fetch_one_state_latest(
-    provider: &impl Provider,
-    pool: &LoadedPool,
-) -> Option<PoolState> {
+async fn fetch_one_state_latest(provider: &impl Provider, pool: &LoadedPool) -> Option<PoolState> {
     let block_id = BlockId::Number(BlockNumberOrTag::Latest);
     match pool.protocol {
         ProtocolType::UniswapV2 | ProtocolType::SushiSwap => {
@@ -615,9 +749,9 @@ async fn fetch_one_state_latest(
                     .to(pool.address)
                     .input(liq_calldata.into());
                 let liquidity: u128 = match provider.call(liq_tx).block(block_id).await {
-                    Ok(lout) if lout.len() >= 32 => {
-                        U256::from_be_slice(&lout[0..32]).try_into().unwrap_or(0u128)
-                    }
+                    Ok(lout) if lout.len() >= 32 => U256::from_be_slice(&lout[0..32])
+                        .try_into()
+                        .unwrap_or(0u128),
                     _ => 0u128,
                 };
                 Some(PoolState::V3 {
@@ -649,9 +783,7 @@ async fn fetch_all_states_latest(
 /// Build a `TransactionRequest` from a historical `Transaction` for replay via
 /// impersonation on Anvil. Drops the signature — `--auto-impersonate` accepts
 /// any `from` without a valid signature.
-fn build_impersonation_request(
-    tx: &alloy::rpc::types::Transaction,
-) -> Option<TransactionRequest> {
+fn build_impersonation_request(tx: &alloy::rpc::types::Transaction) -> Option<TransactionRequest> {
     use alloy::consensus::{Transaction as TxTrait, Typed2718};
 
     let inner = tx.inner.inner();
@@ -708,7 +840,11 @@ fn protocols_along_cycle(cycle: &DetectedCycle, graph: &PriceGraph) -> Vec<Proto
             .edges_from(from)
             .iter()
             .filter(|e| e.to == to)
-            .min_by(|a, b| a.weight.partial_cmp(&b.weight).unwrap_or(std::cmp::Ordering::Equal));
+            .min_by(|a, b| {
+                a.weight
+                    .partial_cmp(&b.weight)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            });
         if let Some(e) = best {
             protocols.push(e.protocol);
         }
@@ -782,7 +918,11 @@ fn optimize_cycle_input(
             .edges_from(from_v)
             .iter()
             .filter(|e| e.to == to_v)
-            .min_by(|a, b| a.weight.partial_cmp(&b.weight).unwrap_or(std::cmp::Ordering::Equal))?;
+            .min_by(|a, b| {
+                a.weight
+                    .partial_cmp(&b.weight)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            })?;
 
         let token_in = *token_index.get_address(from_v)?;
 
@@ -827,7 +967,11 @@ fn optimize_cycle_input(
     let max_input = match min_liquidity_wei {
         Some(liq) if liq > 0.0 => {
             let liq_u256 = U256::from(liq as u128);
-            if liq_u256 < hard_max { liq_u256 } else { hard_max }
+            if liq_u256 < hard_max {
+                liq_u256
+            } else {
+                hard_max
+            }
         }
         _ => hard_max,
     };
@@ -902,9 +1046,16 @@ fn estimate_opp(
 async fn run_batch_replay(args: &Args, rpc_url: &str, blocks: &[u64]) -> Result<()> {
     println!("== Aether Batch Replay ==");
     println!("  Blocks:          {}", blocks.len());
-    println!("  First / last:    {} .. {}", blocks[0], blocks[blocks.len() - 1]);
+    println!(
+        "  First / last:    {} .. {}",
+        blocks[0],
+        blocks[blocks.len() - 1]
+    );
     if let Some(path) = &args.csv {
-        println!("  CSV:             {} (appended across all blocks)", path.display());
+        println!(
+            "  CSV:             {} (appended across all blocks)",
+            path.display()
+        );
     }
     if args.no_seed_state {
         println!("  State seeding:   DISABLED (--no-seed-state)");
@@ -913,30 +1064,25 @@ async fn run_batch_replay(args: &Args, rpc_url: &str, blocks: &[u64]) -> Result<
     }
 
     // Open the shared CSV once so all per-block runs append to the same file.
-    let shared_csv: Option<std::cell::RefCell<std::io::BufWriter<std::fs::File>>> =
-        match &args.csv {
-            Some(path) => {
-                let mut f = std::io::BufWriter::new(std::fs::File::create(path)?);
-                use std::io::Write;
-                writeln!(
+    let shared_csv: Option<std::cell::RefCell<std::io::BufWriter<std::fs::File>>> = match &args.csv
+    {
+        Some(path) => {
+            let mut f = std::io::BufWriter::new(std::fs::File::create(path)?);
+            use std::io::Write;
+            writeln!(
                     f,
                     "block,tx_index,tx_hash,cycles,top_profit_factor,hops,path,est_gas,base_fee_gwei,gas_cost_eth,sim_gross_profit_eth,sim_net_profit_eth,sim_success,sim_profit_eth,sim_gas_used,sim_revert_reason,optimal_input_weth,opt_net_profit_eth,revm_gross_profit_eth,revm_owner_net_eth,tip_bps"
                 )?;
-                Some(std::cell::RefCell::new(f))
-            }
-            None => None,
-        };
+            Some(std::cell::RefCell::new(f))
+        }
+        None => None,
+    };
 
     let t0 = Instant::now();
     let mut ok = 0usize;
     let mut failed = 0usize;
     for (i, block_num) in blocks.iter().enumerate() {
-        println!(
-            "\n── Block {}/{}  (#{}) ──",
-            i + 1,
-            blocks.len(),
-            block_num
-        );
+        println!("\n── Block {}/{}  (#{}) ──", i + 1, blocks.len(), block_num);
         let mut per_block_args = args.clone();
         per_block_args.block = *block_num;
         // The shared CSV is written externally; suppress the per-block header.
@@ -1021,17 +1167,17 @@ async fn seed_sender_state<P: Provider>(
         let balance: Option<U256> = match archive
             .raw_request::<_, B256>(
                 "eth_getStorageAt".into(),
-                (
-                    token,
-                    U256::from_be_bytes(key.0),
-                    BlockId::from(fork_block),
-                ),
+                (token, U256::from_be_bytes(key.0), BlockId::from(fork_block)),
             )
             .await
         {
             Ok(b256) => {
                 let v = U256::from_be_bytes(b256.0);
-                if v.is_zero() { None } else { Some(v) }
+                if v.is_zero() {
+                    None
+                } else {
+                    Some(v)
+                }
             }
             Err(_) => None,
         };
@@ -1047,10 +1193,7 @@ async fn seed_sender_state<P: Provider>(
             let val_hex = format!("0x{:064x}", val);
             let _ = anvil
                 .client()
-                .request::<_, bool>(
-                    "anvil_setStorageAt",
-                    (_token, key_hex, val_hex),
-                )
+                .request::<_, bool>("anvil_setStorageAt", (_token, key_hex, val_hex))
                 .await;
         }
     }
@@ -1081,7 +1224,12 @@ async fn run_full_block_replay(
     };
     let v2 = pools
         .iter()
-        .filter(|p| matches!(p.protocol, ProtocolType::UniswapV2 | ProtocolType::SushiSwap))
+        .filter(|p| {
+            matches!(
+                p.protocol,
+                ProtocolType::UniswapV2 | ProtocolType::SushiSwap
+            )
+        })
         .count();
     let v3 = pools
         .iter()
@@ -1169,7 +1317,10 @@ async fn run_full_block_replay(
                     Some(addr)
                 }
                 Err(e) => {
-                    println!("  Sim executor:    DEPLOY FAILED — on-chain sim disabled ({})", e);
+                    println!(
+                        "  Sim executor:    DEPLOY FAILED — on-chain sim disabled ({})",
+                        e
+                    );
                     None
                 }
             },
@@ -1190,23 +1341,22 @@ async fn run_full_block_replay(
     // instead and this stays None. New columns `sim_success / sim_profit_eth /
     // sim_gas_used / sim_revert_reason` surface the on-chain-sim verdict next
     // to the offline graph-math estimate.
-    let mut local_csv_writer: Option<std::io::BufWriter<std::fs::File>> =
-        if shared_csv.is_none() {
-            match &args.csv {
-                Some(path) => {
-                    let mut f = std::io::BufWriter::new(std::fs::File::create(path)?);
-                    use std::io::Write;
-                    writeln!(
+    let mut local_csv_writer: Option<std::io::BufWriter<std::fs::File>> = if shared_csv.is_none() {
+        match &args.csv {
+            Some(path) => {
+                let mut f = std::io::BufWriter::new(std::fs::File::create(path)?);
+                use std::io::Write;
+                writeln!(
                         f,
                         "block,tx_index,tx_hash,cycles,top_profit_factor,hops,path,est_gas,base_fee_gwei,gas_cost_eth,sim_gross_profit_eth,sim_net_profit_eth,sim_success,sim_profit_eth,sim_gas_used,sim_revert_reason,optimal_input_weth,opt_net_profit_eth,revm_gross_profit_eth,revm_owner_net_eth,tip_bps"
                     )?;
-                    Some(f)
-                }
-                None => None,
+                Some(f)
             }
-        } else {
-            None
-        };
+            None => None,
+        }
+    } else {
+        None
+    };
 
     // Archive RPC handle reused for balance reads during state seeding.
     let archive_for_seed: url::Url = rpc_url.parse().context("parse RPC URL")?;
@@ -1418,10 +1568,7 @@ async fn run_full_block_replay(
                         owner_net_eth, gross_eth, args.tip_bps, sim.gas_used,
                     );
                 } else {
-                    let reason = sim
-                        .revert_reason
-                        .as_deref()
-                        .unwrap_or("unknown revert");
+                    let reason = sim.revert_reason.as_deref().unwrap_or("unknown revert");
                     println!("           revm sim: ✗ REVERTED — {}", reason);
                 }
             }
@@ -1537,14 +1684,20 @@ async fn run_full_block_replay(
 
     // Summary.
     let input_label = if args.no_optimizer {
-        format!("fixed {:.2} WETH input (--no-optimizer)", args.sim_input_weth)
+        format!(
+            "fixed {:.2} WETH input (--no-optimizer)",
+            args.sim_input_weth
+        )
     } else {
         "per-cycle optimal input (ternary-search)".to_string()
     };
     println!("\n== Summary ==");
     println!("  Block:                     {}", args.block);
     println!("  Txs total:                 {}", txs.len());
-    println!("  Txs skipped:               {} (e.g. EIP-4844 blobs)", skipped);
+    println!(
+        "  Txs skipped:               {} (e.g. EIP-4844 blobs)",
+        skipped
+    );
     println!("  Txs reverted:              {}", reverted);
     println!("  Detection events:          {}", opp_events.len());
     println!(
@@ -1699,10 +1852,7 @@ async fn deploy_executor_on_anvil<P: Provider + Clone>(
 /// Fetch live pool state (reserves for V2/Sushi, sqrtPriceX96 for V3) at the
 /// current Anvil head. Used by `build_steps_from_cycle` to compute expected
 /// output amounts and thus each hop's chained `amount_in`.
-async fn fetch_state_at_head<P: Provider>(
-    provider: &P,
-    pool: &LoadedPool,
-) -> Option<PoolState> {
+async fn fetch_state_at_head<P: Provider>(provider: &P, pool: &LoadedPool) -> Option<PoolState> {
     fetch_one_state_latest(provider, pool).await
 }
 
@@ -1740,7 +1890,11 @@ async fn build_steps_from_cycle<P: Provider>(
             .edges_from(from_v)
             .iter()
             .filter(|e| e.to == to_v)
-            .min_by(|a, b| a.weight.partial_cmp(&b.weight).unwrap_or(std::cmp::Ordering::Equal))?;
+            .min_by(|a, b| {
+                a.weight
+                    .partial_cmp(&b.weight)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            })?;
 
         let token_in = *token_index.get_address(from_v)?;
         let token_out = *token_index.get_address(to_v)?;
@@ -1760,7 +1914,12 @@ async fn build_steps_from_cycle<P: Provider>(
                 } else {
                     (r1, r0, false)
                 };
-                let out = uniswap_v2_get_amount_out(current_amount, reserve_in, reserve_out, pool_entry.fee_bps)?;
+                let out = uniswap_v2_get_amount_out(
+                    current_amount,
+                    reserve_in,
+                    reserve_out,
+                    pool_entry.fee_bps,
+                )?;
                 if out.is_zero() {
                     return None;
                 }
@@ -1797,7 +1956,8 @@ async fn build_steps_from_cycle<P: Provider>(
                     (U256::from(1u8) << 160) - U256::from(2u8)
                 };
                 let amt_i128 = i128::try_from(current_amount.saturating_to::<u128>()).ok()?;
-                let cd = build_univ3_swap_calldata(executor_addr, zero_for_one, amt_i128, sqrt_limit);
+                let cd =
+                    build_univ3_swap_calldata(executor_addr, zero_for_one, amt_i128, sqrt_limit);
                 (approx_out, cd)
             }
             _ => return None, // Curve / Balancer / Bancor not encoded here (tracked in #97).
@@ -1917,7 +2077,10 @@ async fn sim_arb_with_evm_simulator<P: Provider + Clone + 'static>(
                 success: false,
                 profit_wei: U256::ZERO,
                 gas_used: 0,
-                revert_reason: Some(format!("anvil head fetch failed: {}", truncate_err(&e.to_string()))),
+                revert_reason: Some(format!(
+                    "anvil head fetch failed: {}",
+                    truncate_err(&e.to_string())
+                )),
             };
         }
     };
@@ -1946,7 +2109,9 @@ async fn sim_arb_with_evm_simulator<P: Provider + Clone + 'static>(
                 success: false,
                 profit_wei: U256::ZERO,
                 gas_used: 0,
-                revert_reason: Some("RpcForkedState construction failed (not in multi-thread runtime)".into()),
+                revert_reason: Some(
+                    "RpcForkedState construction failed (not in multi-thread runtime)".into(),
+                ),
             };
         }
     };
@@ -2000,7 +2165,13 @@ fn truncate_err(s: &str) -> String {
     if s.len() <= 240 {
         s.replace(['\n', ','], " ")
     } else {
-        format!("{}…", &s.chars().take(240).collect::<String>().replace(['\n', ','], " "))
+        format!(
+            "{}…",
+            &s.chars()
+                .take(240)
+                .collect::<String>()
+                .replace(['\n', ','], " ")
+        )
     }
 }
 
@@ -2043,7 +2214,10 @@ mod tests {
         assert_eq!(parse_protocol("sushiswap"), Some(ProtocolType::SushiSwap));
         assert_eq!(parse_protocol("uniswap_v3"), Some(ProtocolType::UniswapV3));
         assert_eq!(parse_protocol("curve"), Some(ProtocolType::Curve));
-        assert_eq!(parse_protocol("balancer_v2"), Some(ProtocolType::BalancerV2));
+        assert_eq!(
+            parse_protocol("balancer_v2"),
+            Some(ProtocolType::BalancerV2)
+        );
         assert_eq!(parse_protocol("bancor_v3"), Some(ProtocolType::BancorV3));
     }
 
@@ -2079,10 +2253,19 @@ mod tests {
     #[test]
     fn uniswap_v2_get_amount_out_rejects_degenerate_inputs() {
         // Zero reserves on either side = no liquidity
-        assert!(uniswap_v2_get_amount_out(U256::from(1u64), U256::ZERO, U256::from(100u64), 30).is_none());
-        assert!(uniswap_v2_get_amount_out(U256::from(1u64), U256::from(100u64), U256::ZERO, 30).is_none());
+        assert!(
+            uniswap_v2_get_amount_out(U256::from(1u64), U256::ZERO, U256::from(100u64), 30)
+                .is_none()
+        );
+        assert!(
+            uniswap_v2_get_amount_out(U256::from(1u64), U256::from(100u64), U256::ZERO, 30)
+                .is_none()
+        );
         // Zero input — nothing to swap
-        assert!(uniswap_v2_get_amount_out(U256::ZERO, U256::from(100u64), U256::from(100u64), 30).is_none());
+        assert!(
+            uniswap_v2_get_amount_out(U256::ZERO, U256::from(100u64), U256::from(100u64), 30)
+                .is_none()
+        );
     }
 
     #[test]
@@ -2133,16 +2316,25 @@ mod tests {
     #[test]
     fn default_pool_set_has_all_protocol_types() {
         let pools = default_pool_set();
-        assert!(pools.iter().any(|p| matches!(p.protocol, ProtocolType::UniswapV2)));
-        assert!(pools.iter().any(|p| matches!(p.protocol, ProtocolType::SushiSwap)));
-        assert!(pools.iter().any(|p| matches!(p.protocol, ProtocolType::UniswapV3)));
+        assert!(pools
+            .iter()
+            .any(|p| matches!(p.protocol, ProtocolType::UniswapV2)));
+        assert!(pools
+            .iter()
+            .any(|p| matches!(p.protocol, ProtocolType::SushiSwap)));
+        assert!(pools
+            .iter()
+            .any(|p| matches!(p.protocol, ProtocolType::UniswapV3)));
     }
 
     #[test]
     fn default_pool_set_has_weth_pairs() {
         let pools = default_pool_set();
         let weth = address!("C02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2");
-        let weth_pools: Vec<_> = pools.iter().filter(|p| p.token0 == weth || p.token1 == weth).collect();
+        let weth_pools: Vec<_> = pools
+            .iter()
+            .filter(|p| p.token0 == weth || p.token1 == weth)
+            .collect();
         assert!(weth_pools.len() >= 10);
     }
 
@@ -2166,8 +2358,12 @@ mod tests {
     fn default_pool_set_token0_before_token1() {
         let pools = default_pool_set();
         for pool in &pools {
-            assert!(pool.token0 <= pool.token1,
-                "token0 {:?} should be <= token1 {:?}", pool.token0, pool.token1);
+            assert!(
+                pool.token0 <= pool.token1,
+                "token0 {:?} should be <= token1 {:?}",
+                pool.token0,
+                pool.token1
+            );
         }
     }
 
@@ -2254,12 +2450,10 @@ mod tests {
         let mut ti = TokenIndex::new();
         let t0 = ti.get_or_insert(address!("C02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2"));
         let t1 = ti.get_or_insert(address!("A0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"));
-        let cycles = vec![
-            DetectedCycle {
-                path: vec![t0, t1, t0],
-                total_weight: 0.1, // positive = unprofitable
-            },
-        ];
+        let cycles = vec![DetectedCycle {
+            path: vec![t0, t1, t0],
+            total_weight: 0.1, // positive = unprofitable
+        }];
         print_cycles(&cycles, &ti, 5);
     }
 
@@ -2268,12 +2462,10 @@ mod tests {
         let mut ti = TokenIndex::new();
         let t0 = ti.get_or_insert(address!("C02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2"));
         let t1 = ti.get_or_insert(address!("A0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"));
-        let cycles = vec![
-            DetectedCycle {
-                path: vec![t0, t1, t0],
-                total_weight: -0.05,
-            },
-        ];
+        let cycles = vec![DetectedCycle {
+            path: vec![t0, t1, t0],
+            total_weight: -0.05,
+        }];
         print_cycles(&cycles, &ti, 5);
     }
 
@@ -2363,8 +2555,19 @@ mod tests {
         let mut graph = PriceGraph::new(10);
         graph.resize(ti.len());
         let pool_addr = address!("B4e16d0168e52d35CaCD2c6185b44281Ec28C9Dc");
-        let pid = PoolId { address: pool_addr, protocol: ProtocolType::UniswapV2 };
-        graph.add_edge(t0, t1, 0.5, pid, pool_addr, ProtocolType::UniswapV2, U256::ZERO);
+        let pid = PoolId {
+            address: pool_addr,
+            protocol: ProtocolType::UniswapV2,
+        };
+        graph.add_edge(
+            t0,
+            t1,
+            0.5,
+            pid,
+            pool_addr,
+            ProtocolType::UniswapV2,
+            U256::ZERO,
+        );
 
         let cycle = DetectedCycle {
             path: vec![t0, t1],
@@ -2427,8 +2630,20 @@ mod tests {
             },
         ];
         let states = vec![
-            (0usize, PoolState::V2 { r0: U256::from(20_000_000_000u64), r1: U256::from(10_000_000_000_000_000_000u128) }),
-            (1usize, PoolState::V2 { r0: U256::from(10_000_000_000_000_000_000u128), r1: U256::from(10_000_000_000u64) }),
+            (
+                0usize,
+                PoolState::V2 {
+                    r0: U256::from(20_000_000_000u64),
+                    r1: U256::from(10_000_000_000_000_000_000u128),
+                },
+            ),
+            (
+                1usize,
+                PoolState::V2 {
+                    r0: U256::from(10_000_000_000_000_000_000u128),
+                    r1: U256::from(10_000_000_000u64),
+                },
+            ),
         ];
         let (graph, token_index) = build_graph(&pools, &states);
         assert!(graph.num_edges() > 0);
@@ -2440,12 +2655,10 @@ mod tests {
         let mut ti = TokenIndex::new();
         let t0 = ti.get_or_insert(address!("C02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2"));
         let t1 = ti.get_or_insert(address!("A0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"));
-        let cycles = vec![
-            DetectedCycle {
-                path: vec![t0, t1, t0],
-                total_weight: -0.05,
-            },
-        ];
+        let cycles = vec![DetectedCycle {
+            path: vec![t0, t1, t0],
+            total_weight: -0.05,
+        }];
         print_cycles(&cycles, &ti, 0);
     }
 
@@ -2555,7 +2768,13 @@ mod tests {
         // sqrtPriceX96 ≈ 174070643065208788086831 (USDC/WETH ~2000)
         let sqrt_price_x96 = U256::from(174_070_643_065_208_788_086_831u128);
         let liquidity = 1_000_000_000_000u128; // 1T liquidity
-        let states = vec![(0usize, PoolState::V3 { sqrt_price_x96, liquidity })];
+        let states = vec![(
+            0usize,
+            PoolState::V3 {
+                sqrt_price_x96,
+                liquidity,
+            },
+        )];
         let (graph, token_index) = build_graph(&[pool], &states);
         assert!(graph.num_edges() > 0);
         assert!(token_index.len() >= 2);
@@ -2575,7 +2794,13 @@ mod tests {
         };
         let sqrt_price_x96 = U256::from(174_070_643_065_208_788_086_831u128);
         let liquidity = 0u128;
-        let states = vec![(0usize, PoolState::V3 { sqrt_price_x96, liquidity })];
+        let states = vec![(
+            0usize,
+            PoolState::V3 {
+                sqrt_price_x96,
+                liquidity,
+            },
+        )];
         let (graph, _token_index) = build_graph(&[pool], &states);
         // Zero liquidity → virtual_reserves returns None → edge skipped
         assert_eq!(graph.num_edges(), 0);
@@ -2603,14 +2828,20 @@ mod tests {
             },
         ];
         let states = vec![
-            (0usize, PoolState::V2 {
-                r0: U256::from(20_000_000_000u64),
-                r1: U256::from(10_000_000_000_000_000_000u128),
-            }),
-            (1usize, PoolState::V3 {
-                sqrt_price_x96: U256::from(174_070_643_065_208_788_086_831u128),
-                liquidity: 1_000_000_000_000u128,
-            }),
+            (
+                0usize,
+                PoolState::V2 {
+                    r0: U256::from(20_000_000_000u64),
+                    r1: U256::from(10_000_000_000_000_000_000u128),
+                },
+            ),
+            (
+                1usize,
+                PoolState::V3 {
+                    sqrt_price_x96: U256::from(174_070_643_065_208_788_086_831u128),
+                    liquidity: 1_000_000_000_000u128,
+                },
+            ),
         ];
         let (graph, token_index) = build_graph(&pools, &states);
         assert!(graph.num_edges() > 0);
@@ -2629,7 +2860,13 @@ mod tests {
             protocol: ProtocolType::UniswapV2,
             fee_bps: 30,
         };
-        let states = vec![(0usize, PoolState::V2 { r0: U256::ZERO, r1: U256::ZERO })];
+        let states = vec![(
+            0usize,
+            PoolState::V2 {
+                r0: U256::ZERO,
+                r1: U256::ZERO,
+            },
+        )];
         let (graph, _token_index) = build_graph(&[pool], &states);
         assert_eq!(graph.num_edges(), 0);
     }
@@ -2664,9 +2901,27 @@ mod tests {
             },
         ];
         let states = vec![
-            (0usize, PoolState::V2 { r0: U256::from(20_000_000_000u64), r1: U256::from(10_000_000_000_000_000_000u128) }),
-            (1usize, PoolState::V2 { r0: U256::from(10_000_000_000_000_000_000u128), r1: U256::from(10_000_000_000u64) }),
-            (2usize, PoolState::V2 { r0: U256::from(20_000_000_000u64), r1: U256::from(10_000_000_000u64) }),
+            (
+                0usize,
+                PoolState::V2 {
+                    r0: U256::from(20_000_000_000u64),
+                    r1: U256::from(10_000_000_000_000_000_000u128),
+                },
+            ),
+            (
+                1usize,
+                PoolState::V2 {
+                    r0: U256::from(10_000_000_000_000_000_000u128),
+                    r1: U256::from(10_000_000_000u64),
+                },
+            ),
+            (
+                2usize,
+                PoolState::V2 {
+                    r0: U256::from(20_000_000_000u64),
+                    r1: U256::from(10_000_000_000u64),
+                },
+            ),
         ];
         let (graph, token_index) = build_graph(&pools, &states);
         assert_eq!(token_index.len(), 3);
@@ -2688,10 +2943,13 @@ mod tests {
             protocol: ProtocolType::UniswapV2,
             fee_bps: 30,
         };
-        let states = vec![(0usize, PoolState::V2 {
-            r0: U256::from(10_000_000_000_000_000_000u128),
-            r1: U256::from(20_000_000_000u64),
-        })];
+        let states = vec![(
+            0usize,
+            PoolState::V2 {
+                r0: U256::from(10_000_000_000_000_000_000u128),
+                r1: U256::from(20_000_000_000u64),
+            },
+        )];
         let (graph, _ti) = build_graph(&[pool], &states);
         // WETH vertex is set — edges should have been created
         assert!(graph.num_edges() > 0);
@@ -2706,12 +2964,36 @@ mod tests {
         const USDT: Address = address!("dAC17F958D2ee523a2206206994597C13D831ec7");
 
         let pools = vec![
-            LoadedPool { address: address!("B4e16d0168e52d35CaCD2c6185b44281Ec28C9Dc"), token0: USDC, token1: WETH, protocol: ProtocolType::UniswapV2, fee_bps: 30 },
-            LoadedPool { address: address!("0d4a11d5EEaaC28EC3F61d100daF4d40471f1852"), token0: WETH, token1: USDT, protocol: ProtocolType::UniswapV2, fee_bps: 30 },
-            LoadedPool { address: address!("3041CbD36888bECc7bbCBc0045E3B1f144466f5f"), token0: USDC, token1: USDT, protocol: ProtocolType::UniswapV2, fee_bps: 30 },
+            LoadedPool {
+                address: address!("B4e16d0168e52d35CaCD2c6185b44281Ec28C9Dc"),
+                token0: USDC,
+                token1: WETH,
+                protocol: ProtocolType::UniswapV2,
+                fee_bps: 30,
+            },
+            LoadedPool {
+                address: address!("0d4a11d5EEaaC28EC3F61d100daF4d40471f1852"),
+                token0: WETH,
+                token1: USDT,
+                protocol: ProtocolType::UniswapV2,
+                fee_bps: 30,
+            },
+            LoadedPool {
+                address: address!("3041CbD36888bECc7bbCBc0045E3B1f144466f5f"),
+                token0: USDC,
+                token1: USDT,
+                protocol: ProtocolType::UniswapV2,
+                fee_bps: 30,
+            },
         ];
         // Only pool 0 has state
-        let states = vec![(0usize, PoolState::V2 { r0: U256::from(20_000_000_000u64), r1: U256::from(10_000_000_000_000_000_000u128) })];
+        let states = vec![(
+            0usize,
+            PoolState::V2 {
+                r0: U256::from(20_000_000_000u64),
+                r1: U256::from(10_000_000_000_000_000_000u128),
+            },
+        )];
         let (graph, token_index) = build_graph(&pools, &states);
         // Only 2 tokens from pool 0 (USDC + WETH), 2 edges
         assert_eq!(token_index.len(), 2);
@@ -2732,10 +3014,13 @@ mod tests {
             protocol: ProtocolType::UniswapV2,
             fee_bps: 30,
         };
-        let states = vec![(0usize, PoolState::V2 {
-            r0: U256::from(20_000_000_000u64),
-            r1: U256::from(10_000_000_000_000_000_000u128),
-        })];
+        let states = vec![(
+            0usize,
+            PoolState::V2 {
+                r0: U256::from(20_000_000_000u64),
+                r1: U256::from(10_000_000_000_000_000_000u128),
+            },
+        )];
         let (graph, _token_index) = build_graph(&[pool], &states);
 
         let detector = BellmanFord::new(4, 5_000_000);
@@ -2758,10 +3043,13 @@ mod tests {
             protocol: ProtocolType::UniswapV2,
             fee_bps: 30,
         };
-        let states = vec![(0usize, PoolState::V2 {
-            r0: U256::from(1_000_000_000_000_000_000_000u128),
-            r1: U256::from(1_000_000_000_000_000_000_000u128),
-        })];
+        let states = vec![(
+            0usize,
+            PoolState::V2 {
+                r0: U256::from(1_000_000_000_000_000_000_000u128),
+                r1: U256::from(1_000_000_000_000_000_000_000u128),
+            },
+        )];
         let (graph, _token_index) = build_graph(&[pool], &states);
         // A self-loop on balanced reserves won't be profitable
         let detector = BellmanFord::new(2, 5_000_000);
@@ -2794,10 +3082,13 @@ mod tests {
             protocol: ProtocolType::UniswapV2,
             fee_bps: 30,
         };
-        let states = vec![(0usize, PoolState::V2 {
-            r0: U256::from(20_000_000_000u64),
-            r1: U256::from(10_000_000_000_000_000_000u128),
-        })];
+        let states = vec![(
+            0usize,
+            PoolState::V2 {
+                r0: U256::from(20_000_000_000u64),
+                r1: U256::from(10_000_000_000_000_000_000u128),
+            },
+        )];
         let (graph, _ti) = build_graph(&[pool], &states);
         let detector = BellmanFord::new(4, 5_000_000);
         let cycles = detector.detect_negative_cycles(&graph);
@@ -2818,10 +3109,13 @@ mod tests {
             protocol: ProtocolType::UniswapV2,
             fee_bps: 30,
         };
-        let states = vec![(0usize, PoolState::V2 {
-            r0: U256::from(20_000_000_000u64),
-            r1: U256::from(10_000_000_000_000_000_000u128),
-        })];
+        let states = vec![(
+            0usize,
+            PoolState::V2 {
+                r0: U256::from(20_000_000_000u64),
+                r1: U256::from(10_000_000_000_000_000_000u128),
+            },
+        )];
         let (graph, _ti) = build_graph(&[pool], &states);
         let detector = BellmanFord::new(1, 5_000_000);
         let cycles = detector.detect_negative_cycles(&graph);
@@ -2836,9 +3130,10 @@ mod tests {
         let mut ti = TokenIndex::new();
         let t0 = ti.get_or_insert(address!("C02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2"));
         let t1 = ti.get_or_insert(address!("A0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"));
-        let cycles = vec![
-            DetectedCycle { path: vec![t0, t1, t0], total_weight: -0.05 },
-        ];
+        let cycles = vec![DetectedCycle {
+            path: vec![t0, t1, t0],
+            total_weight: -0.05,
+        }];
         print_cycles(&cycles, &ti, 100);
     }
 
@@ -2848,8 +3143,14 @@ mod tests {
         let t0 = ti.get_or_insert(address!("C02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2"));
         let t1 = ti.get_or_insert(address!("A0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"));
         let cycles = vec![
-            DetectedCycle { path: vec![t0, t1, t0], total_weight: 0.1 },
-            DetectedCycle { path: vec![t0, t1, t0], total_weight: 0.2 },
+            DetectedCycle {
+                path: vec![t0, t1, t0],
+                total_weight: 0.1,
+            },
+            DetectedCycle {
+                path: vec![t0, t1, t0],
+                total_weight: 0.2,
+            },
         ];
         print_cycles(&cycles, &ti, 5);
     }
@@ -2861,9 +3162,18 @@ mod tests {
         let t1 = ti.get_or_insert(address!("A0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"));
         let t2 = ti.get_or_insert(address!("dAC17F958D2ee523a2206206994597C13D831ec7"));
         let cycles = vec![
-            DetectedCycle { path: vec![t0, t1, t0], total_weight: -0.01 },
-            DetectedCycle { path: vec![t0, t2, t0], total_weight: -0.10 },
-            DetectedCycle { path: vec![t0, t1, t2, t0], total_weight: -0.05 },
+            DetectedCycle {
+                path: vec![t0, t1, t0],
+                total_weight: -0.01,
+            },
+            DetectedCycle {
+                path: vec![t0, t2, t0],
+                total_weight: -0.10,
+            },
+            DetectedCycle {
+                path: vec![t0, t1, t2, t0],
+                total_weight: -0.05,
+            },
         ];
         print_cycles(&cycles, &ti, 2);
     }
@@ -2887,7 +3197,10 @@ mod tests {
 
         let t0 = ti.get_index(&WETH).unwrap();
         let t1 = ti.get_index(&USDC).unwrap();
-        let cycle = DetectedCycle { path: vec![t0, t1, t0], total_weight: -0.05 };
+        let cycle = DetectedCycle {
+            path: vec![t0, t1, t0],
+            total_weight: -0.05,
+        };
         let base_fee_wei = 30_000_000_000u128;
         let est = estimate_opp(&cycle, &graph, base_fee_wei, 50.0);
         assert!(est.gross_profit_eth > 0.0);
@@ -2912,7 +3225,10 @@ mod tests {
 
         let t0 = ti.get_index(&WETH).unwrap();
         let t1 = ti.get_index(&USDC).unwrap();
-        let cycle = DetectedCycle { path: vec![t0, t1, t0], total_weight: -0.05 };
+        let cycle = DetectedCycle {
+            path: vec![t0, t1, t0],
+            total_weight: -0.05,
+        };
         let est = estimate_opp(&cycle, &graph, 0, 1.0);
         assert_eq!(est.base_fee_gwei, 0.0);
         // Gas cost with zero base fee is still positive (priority fee)
@@ -2934,12 +3250,37 @@ mod tests {
 
         let mut graph = PriceGraph::new(ti.len());
         graph.resize(ti.len());
-        let pid1 = PoolId { address: address!("B4e16d0168e52d35CaCD2c6185b44281Ec28C9Dc"), protocol: ProtocolType::UniswapV2 };
-        let pid2 = PoolId { address: address!("0d4a11d5EEaaC28EC3F61d100daF4d40471f1852"), protocol: ProtocolType::SushiSwap };
-        graph.add_edge(t0, t1, 0.5, pid1, pid1.address, ProtocolType::UniswapV2, U256::ZERO);
-        graph.add_edge(t1, t2, 0.3, pid2, pid2.address, ProtocolType::SushiSwap, U256::ZERO);
+        let pid1 = PoolId {
+            address: address!("B4e16d0168e52d35CaCD2c6185b44281Ec28C9Dc"),
+            protocol: ProtocolType::UniswapV2,
+        };
+        let pid2 = PoolId {
+            address: address!("0d4a11d5EEaaC28EC3F61d100daF4d40471f1852"),
+            protocol: ProtocolType::SushiSwap,
+        };
+        graph.add_edge(
+            t0,
+            t1,
+            0.5,
+            pid1,
+            pid1.address,
+            ProtocolType::UniswapV2,
+            U256::ZERO,
+        );
+        graph.add_edge(
+            t1,
+            t2,
+            0.3,
+            pid2,
+            pid2.address,
+            ProtocolType::SushiSwap,
+            U256::ZERO,
+        );
 
-        let cycle = DetectedCycle { path: vec![t0, t1, t2], total_weight: -0.5 };
+        let cycle = DetectedCycle {
+            path: vec![t0, t1, t2],
+            total_weight: -0.5,
+        };
         let protocols = protocols_along_cycle(&cycle, &graph);
         assert_eq!(protocols.len(), 2);
         assert!(matches!(protocols[0], ProtocolType::UniswapV2));
@@ -2951,7 +3292,10 @@ mod tests {
         let _ti = TokenIndex::new();
         let mut graph = PriceGraph::new(0);
         graph.resize(0);
-        let cycle = DetectedCycle { path: vec![], total_weight: 0.0 };
+        let cycle = DetectedCycle {
+            path: vec![],
+            total_weight: 0.0,
+        };
         let protocols = protocols_along_cycle(&cycle, &graph);
         assert!(protocols.is_empty());
     }
@@ -3047,7 +3391,9 @@ mod tests {
             csv: None,
             sim_input_weth: 1.0,
             sim_on_chain: false,
-            executor_artifact: PathBuf::from("contracts/out/AetherExecutor.sol/AetherExecutor.json"),
+            executor_artifact: PathBuf::from(
+                "contracts/out/AetherExecutor.sol/AetherExecutor.json",
+            ),
             tip_bps: 9000,
             no_optimizer: false,
         };
@@ -3091,23 +3437,35 @@ mod tests {
     fn args_parse_with_all_options() {
         let args = Args::try_parse_from([
             "aether-replay",
-            "--block", "100",
-            "--max-hops", "3",
-            "--max-time-us", "1000000",
-            "--top", "10",
+            "--block",
+            "100",
+            "--max-hops",
+            "3",
+            "--max-time-us",
+            "1000000",
+            "--top",
+            "10",
             "--full-block",
-            "--anvil-port", "9999",
+            "--anvil-port",
+            "9999",
             "--anvil-attach",
             "--no-seed-state",
             "--sim-on-chain",
             "--no-optimizer",
-            "--tip-bps", "5000",
-            "--sim-input-weth", "2.5",
-            "--rpc-url", "http://localhost:8545",
-            "--pools", "/tmp/pools.toml",
-            "--csv", "/tmp/out.csv",
-            "--executor-artifact", "/tmp/exec.json",
-        ]).unwrap();
+            "--tip-bps",
+            "5000",
+            "--sim-input-weth",
+            "2.5",
+            "--rpc-url",
+            "http://localhost:8545",
+            "--pools",
+            "/tmp/pools.toml",
+            "--csv",
+            "/tmp/out.csv",
+            "--executor-artifact",
+            "/tmp/exec.json",
+        ])
+        .unwrap();
         assert_eq!(args.block, 100);
         assert_eq!(args.max_hops, 3);
         assert_eq!(args.max_time_us, 1_000_000);
@@ -3121,17 +3479,21 @@ mod tests {
         assert_eq!(args.tip_bps, 5000);
         assert!((args.sim_input_weth - 2.5).abs() < f64::EPSILON);
         assert_eq!(args.rpc_url.as_deref(), Some("http://localhost:8545"));
-        assert_eq!(args.pools.as_deref(), Some(std::path::Path::new("/tmp/pools.toml")));
-        assert_eq!(args.csv.as_deref(), Some(std::path::Path::new("/tmp/out.csv")));
+        assert_eq!(
+            args.pools.as_deref(),
+            Some(std::path::Path::new("/tmp/pools.toml"))
+        );
+        assert_eq!(
+            args.csv.as_deref(),
+            Some(std::path::Path::new("/tmp/out.csv"))
+        );
         assert_eq!(args.executor_artifact, PathBuf::from("/tmp/exec.json"));
     }
 
     #[test]
     fn args_parse_blocks_file() {
-        let args = Args::try_parse_from([
-            "aether-replay",
-            "--blocks-file", "/tmp/blocks.txt",
-        ]).unwrap();
+        let args =
+            Args::try_parse_from(["aether-replay", "--blocks-file", "/tmp/blocks.txt"]).unwrap();
         assert!(args.blocks_file.is_some());
         assert_eq!(args.blocks_file.unwrap(), PathBuf::from("/tmp/blocks.txt"));
     }
@@ -3152,10 +3514,13 @@ mod tests {
     fn args_clone() {
         let args = Args::try_parse_from([
             "aether-replay",
-            "--block", "42",
-            "--max-hops", "2",
+            "--block",
+            "42",
+            "--max-hops",
+            "2",
             "--full-block",
-        ]).unwrap();
+        ])
+        .unwrap();
         let cloned = args.clone();
         assert_eq!(cloned.block, 42);
         assert_eq!(cloned.max_hops, 2);
@@ -3166,11 +3531,12 @@ mod tests {
     fn spawn_anvil_returns_error_when_anvil_missing() {
         let result = spawn_anvil("http://127.0.0.1:8545", 100, 8546);
         match result {
-            Ok(_) => {
-            }
+            Ok(_) => {}
             Err(e) => {
                 let msg = e.to_string();
-                assert!(msg.contains("anvil") || msg.contains("spawn") || msg.contains("No such file"));
+                assert!(
+                    msg.contains("anvil") || msg.contains("spawn") || msg.contains("No such file")
+                );
             }
         }
     }
@@ -3181,8 +3547,19 @@ mod tests {
         let graph = PriceGraph::new(token_index.len());
         let pools: Vec<LoadedPool> = vec![];
         let states = std::collections::HashMap::new();
-        let cycle = DetectedCycle { path: vec![ta], total_weight: 0.0 };
-        assert!(optimize_cycle_input(&cycle, &graph, &token_index, &pools, &states, 30_000_000_000).is_none());
+        let cycle = DetectedCycle {
+            path: vec![ta],
+            total_weight: 0.0,
+        };
+        assert!(optimize_cycle_input(
+            &cycle,
+            &graph,
+            &token_index,
+            &pools,
+            &states,
+            30_000_000_000
+        )
+        .is_none());
     }
 
     #[test]
@@ -3201,16 +3578,45 @@ mod tests {
 
         let mut graph = PriceGraph::new(token_index.len());
         graph.resize(token_index.len());
-        let pid = PoolId { address: pools[0].address, protocol: pools[0].protocol };
-        graph.add_edge(ta, tb, 0.5, pid, pools[0].address, pools[0].protocol, U256::ZERO);
-        graph.add_edge(tb, ta, 0.5, pid, pools[0].address, pools[0].protocol, U256::ZERO);
+        let pid = PoolId {
+            address: pools[0].address,
+            protocol: pools[0].protocol,
+        };
+        graph.add_edge(
+            ta,
+            tb,
+            0.5,
+            pid,
+            pools[0].address,
+            pools[0].protocol,
+            U256::ZERO,
+        );
+        graph.add_edge(
+            tb,
+            ta,
+            0.5,
+            pid,
+            pools[0].address,
+            pools[0].protocol,
+            U256::ZERO,
+        );
 
         let mut states = std::collections::HashMap::new();
         let r = U256::from(1_000_000_000_000_000_000_000u128);
         states.insert(0, PoolState::V2 { r0: r, r1: r });
 
-        let cycle = DetectedCycle { path: vec![ta, tb, ta], total_weight: -0.05 };
-        let result = optimize_cycle_input(&cycle, &graph, &token_index, &pools, &states, 30_000_000_000);
+        let cycle = DetectedCycle {
+            path: vec![ta, tb, ta],
+            total_weight: -0.05,
+        };
+        let result = optimize_cycle_input(
+            &cycle,
+            &graph,
+            &token_index,
+            &pools,
+            &states,
+            30_000_000_000,
+        );
         assert!(result.is_some());
         let opt = result.unwrap();
         assert!(opt.optimal_input_wei > U256::ZERO);
@@ -3232,20 +3638,47 @@ mod tests {
 
         let mut graph = PriceGraph::new(token_index.len());
         graph.resize(token_index.len());
-        let pid = PoolId { address: pools[0].address, protocol: pools[0].protocol };
-        graph.add_edge(ta, tb, 0.5, pid, pools[0].address, pools[0].protocol, U256::ZERO);
+        let pid = PoolId {
+            address: pools[0].address,
+            protocol: pools[0].protocol,
+        };
+        graph.add_edge(
+            ta,
+            tb,
+            0.5,
+            pid,
+            pools[0].address,
+            pools[0].protocol,
+            U256::ZERO,
+        );
 
         let mut states = std::collections::HashMap::new();
-        states.insert(0, PoolState::V2 {
-            r0: U256::from(100u64),
-            r1: U256::from(100u64),
-        });
+        states.insert(
+            0,
+            PoolState::V2 {
+                r0: U256::from(100u64),
+                r1: U256::from(100u64),
+            },
+        );
 
-        let cycle = DetectedCycle { path: vec![ta, tb], total_weight: -0.5 };
-        let result = optimize_cycle_input(&cycle, &graph, &token_index, &pools, &states, 30_000_000_000);
+        let cycle = DetectedCycle {
+            path: vec![ta, tb],
+            total_weight: -0.5,
+        };
+        let result = optimize_cycle_input(
+            &cycle,
+            &graph,
+            &token_index,
+            &pools,
+            &states,
+            30_000_000_000,
+        );
         assert!(result.is_some());
         let opt = result.unwrap();
-        assert_eq!(opt.optimal_input_wei, U256::from(10_000_000_000_000_000u128));
+        assert_eq!(
+            opt.optimal_input_wei,
+            U256::from(10_000_000_000_000_000u128)
+        );
     }
 
     #[test]
@@ -3264,15 +3697,50 @@ mod tests {
 
         let mut graph = PriceGraph::new(token_index.len());
         graph.resize(token_index.len());
-        let pid = PoolId { address: pools[0].address, protocol: pools[0].protocol };
-        graph.add_edge(ta, tb, 0.0, pid, pools[0].address, pools[0].protocol, U256::ZERO);
-        graph.add_edge(tb, ta, 0.0, pid, pools[0].address, pools[0].protocol, U256::ZERO);
+        let pid = PoolId {
+            address: pools[0].address,
+            protocol: pools[0].protocol,
+        };
+        graph.add_edge(
+            ta,
+            tb,
+            0.0,
+            pid,
+            pools[0].address,
+            pools[0].protocol,
+            U256::ZERO,
+        );
+        graph.add_edge(
+            tb,
+            ta,
+            0.0,
+            pid,
+            pools[0].address,
+            pools[0].protocol,
+            U256::ZERO,
+        );
 
         let mut states = std::collections::HashMap::new();
-        states.insert(0, PoolState::V3 { sqrt_price_x96: U256::from(174_070_643_065_208_788_086_831u128), liquidity: 1_000_000 });
+        states.insert(
+            0,
+            PoolState::V3 {
+                sqrt_price_x96: U256::from(174_070_643_065_208_788_086_831u128),
+                liquidity: 1_000_000,
+            },
+        );
 
-        let cycle = DetectedCycle { path: vec![ta, tb, ta], total_weight: -0.05 };
-        let result = optimize_cycle_input(&cycle, &graph, &token_index, &pools, &states, 30_000_000_000);
+        let cycle = DetectedCycle {
+            path: vec![ta, tb, ta],
+            total_weight: -0.05,
+        };
+        let result = optimize_cycle_input(
+            &cycle,
+            &graph,
+            &token_index,
+            &pools,
+            &states,
+            30_000_000_000,
+        );
         assert!(result.is_some());
     }
 
@@ -3292,29 +3760,64 @@ mod tests {
 
         let mut graph = PriceGraph::new(token_index.len());
         graph.resize(token_index.len());
-        let pid = PoolId { address: pools[0].address, protocol: pools[0].protocol };
-        graph.add_edge(ta, tb, 0.5, pid, pools[0].address, pools[0].protocol, U256::ZERO);
-        graph.add_edge(tb, ta, 0.5, pid, pools[0].address, pools[0].protocol, U256::ZERO);
+        let pid = PoolId {
+            address: pools[0].address,
+            protocol: pools[0].protocol,
+        };
+        graph.add_edge(
+            ta,
+            tb,
+            0.5,
+            pid,
+            pools[0].address,
+            pools[0].protocol,
+            U256::ZERO,
+        );
+        graph.add_edge(
+            tb,
+            ta,
+            0.5,
+            pid,
+            pools[0].address,
+            pools[0].protocol,
+            U256::ZERO,
+        );
 
         let states = std::collections::HashMap::new();
-        let cycle = DetectedCycle { path: vec![ta, tb, ta], total_weight: -0.05 };
-        let result = optimize_cycle_input(&cycle, &graph, &token_index, &pools, &states, 30_000_000_000);
+        let cycle = DetectedCycle {
+            path: vec![ta, tb, ta],
+            total_weight: -0.05,
+        };
+        let result = optimize_cycle_input(
+            &cycle,
+            &graph,
+            &token_index,
+            &pools,
+            &states,
+            30_000_000_000,
+        );
         assert!(result.is_some());
     }
 
     #[allow(clippy::too_many_arguments)]
     fn build_test_rpc_tx_eip1559(
-        nonce: u64, gas_limit: u64, max_fee: u128, max_tip: u128,
-        to_addr: Address, value: U256, input: Vec<u8>,
+        nonce: u64,
+        gas_limit: u64,
+        max_fee: u128,
+        max_tip: u128,
+        to_addr: Address,
+        value: U256,
+        input: Vec<u8>,
         access_list: alloy::rpc::types::AccessList,
     ) -> alloy::rpc::types::Transaction {
-        use alloy::consensus::{TxEip1559, TxEnvelope, SignableTransaction};
         use alloy::consensus::transaction::{Recovered, SignerRecoverable};
+        use alloy::consensus::{SignableTransaction, TxEip1559, TxEnvelope};
         use alloy::signers::{local::PrivateKeySigner, SignerSync};
 
-        let signer: PrivateKeySigner = "0x4c0883a69102937d6231471b5dbb6204fe512961708279f2e3e8a5d4b8e3e3e3"
-            .parse()
-            .expect("valid key");
+        let signer: PrivateKeySigner =
+            "0x4c0883a69102937d6231471b5dbb6204fe512961708279f2e3e8a5d4b8e3e3e3"
+                .parse()
+                .expect("valid key");
         let tx = TxEip1559 {
             chain_id: 1,
             nonce,
@@ -3340,16 +3843,22 @@ mod tests {
     }
 
     fn build_test_rpc_tx_legacy(
-        chain_id: Option<u64>, nonce: u64, gas_price: u128, gas_limit: u64,
-        to_addr: Address, value: U256, input: Vec<u8>,
+        chain_id: Option<u64>,
+        nonce: u64,
+        gas_price: u128,
+        gas_limit: u64,
+        to_addr: Address,
+        value: U256,
+        input: Vec<u8>,
     ) -> alloy::rpc::types::Transaction {
-        use alloy::consensus::{TxLegacy, TxEnvelope, SignableTransaction};
         use alloy::consensus::transaction::{Recovered, SignerRecoverable};
+        use alloy::consensus::{SignableTransaction, TxEnvelope, TxLegacy};
         use alloy::signers::{local::PrivateKeySigner, SignerSync};
 
-        let signer: PrivateKeySigner = "0x4c0883a69102937d6231471b5dbb6204fe512961708279f2e3e8a5d4b8e3e3e3"
-            .parse()
-            .expect("valid key");
+        let signer: PrivateKeySigner =
+            "0x4c0883a69102937d6231471b5dbb6204fe512961708279f2e3e8a5d4b8e3e3e3"
+                .parse()
+                .expect("valid key");
         let tx = TxLegacy {
             chain_id,
             nonce,
@@ -3374,14 +3883,15 @@ mod tests {
 
     #[test]
     fn build_impersonation_request_skips_blob_tx() {
-        use alloy::consensus::{TxEip4844, TxEnvelope, SignableTransaction};
         use alloy::consensus::transaction::{Recovered, SignerRecoverable};
-        use alloy::signers::{local::PrivateKeySigner, SignerSync};
+        use alloy::consensus::{SignableTransaction, TxEip4844, TxEnvelope};
         use alloy::primitives::B256;
+        use alloy::signers::{local::PrivateKeySigner, SignerSync};
 
-        let signer: PrivateKeySigner = "0x4c0883a69102937d6231471b5dbb6204fe512961708279f2e3e8a5d4b8e3e3e3"
-            .parse()
-            .expect("valid key");
+        let signer: PrivateKeySigner =
+            "0x4c0883a69102937d6231471b5dbb6204fe512961708279f2e3e8a5d4b8e3e3e3"
+                .parse()
+                .expect("valid key");
 
         let tx = TxEip4844 {
             chain_id: 1,
@@ -3415,8 +3925,13 @@ mod tests {
     fn build_impersonation_request_eip1559() {
         let to_addr = address!("7a250d5630B4cF539739dF2C5dAcb4c659F2488D");
         let rpc_tx = build_test_rpc_tx_eip1559(
-            5, 100_000, 50_000_000_000, 2_000_000_000,
-            to_addr, U256::from(1_000_000_000_000_000_000u128), vec![0xaa, 0xbb],
+            5,
+            100_000,
+            50_000_000_000,
+            2_000_000_000,
+            to_addr,
+            U256::from(1_000_000_000_000_000_000u128),
+            vec![0xaa, 0xbb],
             Default::default(),
         );
         let req = build_impersonation_request(&rpc_tx).expect("should succeed");
@@ -3427,8 +3942,13 @@ mod tests {
     fn build_impersonation_request_legacy() {
         let to_addr = address!("7a250d5630B4cF539739dF2C5dAcb4c659F2488D");
         let rpc_tx = build_test_rpc_tx_legacy(
-            Some(1), 0, 30_000_000_000, 21_000,
-            to_addr, U256::ZERO, vec![],
+            Some(1),
+            0,
+            30_000_000_000,
+            21_000,
+            to_addr,
+            U256::ZERO,
+            vec![],
         );
         let req = build_impersonation_request(&rpc_tx).expect("should succeed");
         assert_eq!(req.gas, Some(21_000));
@@ -3438,8 +3958,13 @@ mod tests {
     fn build_impersonation_request_legacy_no_chain_id() {
         let to_addr = address!("7a250d5630B4cF539739dF2C5dAcb4c659F2488D");
         let rpc_tx = build_test_rpc_tx_legacy(
-            None, 0, 20_000_000_000, 21_000,
-            to_addr, U256::from(42), vec![0xdd],
+            None,
+            0,
+            20_000_000_000,
+            21_000,
+            to_addr,
+            U256::from(42),
+            vec![0xdd],
         );
         let req = build_impersonation_request(&rpc_tx).expect("should succeed");
         assert_eq!(req.gas, Some(21_000));
@@ -3450,8 +3975,13 @@ mod tests {
         use alloy::rpc::types::AccessList;
         let to_addr = address!("7a250d5630B4cF539739dF2C5dAcb4c659F2488D");
         let rpc_tx = build_test_rpc_tx_eip1559(
-            0, 21_000, 30_000_000_000, 1_000_000_000,
-            to_addr, U256::ZERO, vec![],
+            0,
+            21_000,
+            30_000_000_000,
+            1_000_000_000,
+            to_addr,
+            U256::ZERO,
+            vec![],
             AccessList::default(),
         );
         let req = build_impersonation_request(&rpc_tx).expect("should succeed");
@@ -3460,13 +3990,14 @@ mod tests {
 
     #[test]
     fn build_impersonation_request_create_tx() {
-        use alloy::consensus::{TxEip1559, TxEnvelope, SignableTransaction};
         use alloy::consensus::transaction::{Recovered, SignerRecoverable};
+        use alloy::consensus::{SignableTransaction, TxEip1559, TxEnvelope};
         use alloy::signers::{local::PrivateKeySigner, SignerSync};
 
-        let signer: PrivateKeySigner = "0x4c0883a69102937d6231471b5dbb6204fe512961708279f2e3e8a5d4b8e3e3e3"
-            .parse()
-            .expect("valid key");
+        let signer: PrivateKeySigner =
+            "0x4c0883a69102937d6231471b5dbb6204fe512961708279f2e3e8a5d4b8e3e3e3"
+                .parse()
+                .expect("valid key");
 
         let tx = TxEip1559 {
             chain_id: 1,
@@ -3522,16 +4053,45 @@ mod tests {
 
         let mut graph = PriceGraph::new(token_index.len());
         graph.resize(token_index.len());
-        let pid = PoolId { address: pools[0].address, protocol: pools[0].protocol };
-        graph.add_edge(ta, tb, 0.5, pid, pools[0].address, pools[0].protocol, U256::ZERO);
-        graph.add_edge(tb, ta, 0.5, pid, pools[0].address, pools[0].protocol, U256::ZERO);
+        let pid = PoolId {
+            address: pools[0].address,
+            protocol: pools[0].protocol,
+        };
+        graph.add_edge(
+            ta,
+            tb,
+            0.5,
+            pid,
+            pools[0].address,
+            pools[0].protocol,
+            U256::ZERO,
+        );
+        graph.add_edge(
+            tb,
+            ta,
+            0.5,
+            pid,
+            pools[0].address,
+            pools[0].protocol,
+            U256::ZERO,
+        );
 
         let mut states = std::collections::HashMap::new();
         let r = U256::from(1_000_000_000_000_000_000_000u128);
         states.insert(0, PoolState::V2 { r0: r, r1: r });
 
-        let cycle = DetectedCycle { path: vec![ta, tb, ta], total_weight: -0.05 };
-        let result = optimize_cycle_input(&cycle, &graph, &token_index, &pools, &states, 300_000_000_000);
+        let cycle = DetectedCycle {
+            path: vec![ta, tb, ta],
+            total_weight: -0.05,
+        };
+        let result = optimize_cycle_input(
+            &cycle,
+            &graph,
+            &token_index,
+            &pools,
+            &states,
+            300_000_000_000,
+        );
         assert!(result.is_some());
         let opt = result.unwrap();
         assert!(opt.optimal_input_wei > U256::ZERO);
@@ -3544,12 +4104,34 @@ mod tests {
 
         let mut graph = PriceGraph::new(token_index.len());
         graph.resize(token_index.len());
-        let pid = PoolId { address: address!("B4e16d0168e52d35CaCD2c6185b44281Ec28C9Dc"), protocol: ProtocolType::UniswapV2 };
-        graph.add_edge(ta, tb, 0.5, pid, pid.address, ProtocolType::UniswapV2, U256::ZERO);
+        let pid = PoolId {
+            address: address!("B4e16d0168e52d35CaCD2c6185b44281Ec28C9Dc"),
+            protocol: ProtocolType::UniswapV2,
+        };
+        graph.add_edge(
+            ta,
+            tb,
+            0.5,
+            pid,
+            pid.address,
+            ProtocolType::UniswapV2,
+            U256::ZERO,
+        );
 
         let states = std::collections::HashMap::new();
-        let cycle = DetectedCycle { path: vec![ta, tb], total_weight: -0.5 };
-        assert!(optimize_cycle_input(&cycle, &graph, &token_index, &pools, &states, 30_000_000_000).is_none());
+        let cycle = DetectedCycle {
+            path: vec![ta, tb],
+            total_weight: -0.5,
+        };
+        assert!(optimize_cycle_input(
+            &cycle,
+            &graph,
+            &token_index,
+            &pools,
+            &states,
+            30_000_000_000
+        )
+        .is_none());
     }
 
     #[test]
@@ -3601,8 +4183,13 @@ mod tests {
             storage_keys: vec![alloy::primitives::B256::ZERO],
         };
         let rpc_tx = build_test_rpc_tx_eip1559(
-            3, 150_000, 40_000_000_000, 3_000_000_000,
-            to_addr, U256::from(100), vec![0xcc],
+            3,
+            150_000,
+            40_000_000_000,
+            3_000_000_000,
+            to_addr,
+            U256::from(100),
+            vec![0xcc],
             AccessList(vec![item]),
         );
         let req = build_impersonation_request(&rpc_tx).expect("should succeed");
@@ -3611,19 +4198,22 @@ mod tests {
 
     #[test]
     fn build_impersonation_request_eip2930() {
-        use alloy::consensus::{TxEip2930, TxEnvelope, SignableTransaction};
         use alloy::consensus::transaction::{Recovered, SignerRecoverable};
+        use alloy::consensus::{SignableTransaction, TxEip2930, TxEnvelope};
         use alloy::signers::{local::PrivateKeySigner, SignerSync};
 
-        let signer: PrivateKeySigner = "0x4c0883a69102937d6231471b5dbb6204fe512961708279f2e3e8a5d4b8e3e3e3"
-            .parse()
-            .expect("valid key");
+        let signer: PrivateKeySigner =
+            "0x4c0883a69102937d6231471b5dbb6204fe512961708279f2e3e8a5d4b8e3e3e3"
+                .parse()
+                .expect("valid key");
         let tx = TxEip2930 {
             chain_id: 1,
             nonce: 0,
             gas_price: 30_000_000_000,
             gas_limit: 21_000,
-            to: alloy::primitives::TxKind::Call(address!("7a250d5630B4cF539739dF2C5dAcb4c659F2488D")),
+            to: alloy::primitives::TxKind::Call(address!(
+                "7a250d5630B4cF539739dF2C5dAcb4c659F2488D"
+            )),
             value: U256::ZERO,
             access_list: Default::default(),
             input: vec![].into(),
@@ -3645,13 +4235,14 @@ mod tests {
 
     #[test]
     fn build_impersonation_request_create_legacy() {
-        use alloy::consensus::{TxLegacy, TxEnvelope, SignableTransaction};
         use alloy::consensus::transaction::{Recovered, SignerRecoverable};
+        use alloy::consensus::{SignableTransaction, TxEnvelope, TxLegacy};
         use alloy::signers::{local::PrivateKeySigner, SignerSync};
 
-        let signer: PrivateKeySigner = "0x4c0883a69102937d6231471b5dbb6204fe512961708279f2e3e8a5d4b8e3e3e3"
-            .parse()
-            .expect("valid key");
+        let signer: PrivateKeySigner =
+            "0x4c0883a69102937d6231471b5dbb6204fe512961708279f2e3e8a5d4b8e3e3e3"
+                .parse()
+                .expect("valid key");
         let tx = TxLegacy {
             chain_id: Some(1),
             nonce: 0,
@@ -3680,8 +4271,13 @@ mod tests {
     fn build_impersonation_request_verifies_from_address() {
         let to_addr = address!("7a250d5630B4cF539739dF2C5dAcb4c659F2488D");
         let rpc_tx = build_test_rpc_tx_eip1559(
-            10, 21_000, 30_000_000_000, 1_000_000_000,
-            to_addr, U256::ZERO, vec![],
+            10,
+            21_000,
+            30_000_000_000,
+            1_000_000_000,
+            to_addr,
+            U256::ZERO,
+            vec![],
             Default::default(),
         );
         let req = build_impersonation_request(&rpc_tx).expect("should succeed");
@@ -3692,8 +4288,13 @@ mod tests {
     fn build_impersonation_request_verifies_nonce_and_value() {
         let to_addr = address!("7a250d5630B4cF539739dF2C5dAcb4c659F2488D");
         let rpc_tx = build_test_rpc_tx_legacy(
-            Some(1), 42, 20_000_000_000, 21_000,
-            to_addr, U256::from(7_000_000_000_000_000_000u128), vec![0xab],
+            Some(1),
+            42,
+            20_000_000_000,
+            21_000,
+            to_addr,
+            U256::from(7_000_000_000_000_000_000u128),
+            vec![0xab],
         );
         let req = build_impersonation_request(&rpc_tx).expect("should succeed");
         assert_eq!(req.nonce, Some(42));

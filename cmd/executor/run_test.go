@@ -47,14 +47,14 @@ func testRunDeps(t *testing.T, grpcAddr string, grpcDial func(string) (*aethergr
 	t.Setenv("REDIS_URL", "redis://"+mr.Addr())
 
 	return &Dependencies{
-		Submitter:      submitter,
-		Ledger:         db.NewNoopLedger(),
-		MetricsStore:   db.NewNoopMetricsStore(),
-		EventPublisher: events.NewPublisherFromEnv(),
-		ExecutorAddr:   "0x0000000000000000000000000000000000000001",
-		ChainID:        1,
-		GRPCDial:       grpcDial,
-		SkipMigrations: true,
+		Submitter:       submitter,
+		Ledger:          db.NewNoopLedger(),
+		MetricsStore:    db.NewNoopMetricsStore(),
+		EventPublisher:  events.NewPublisherFromEnv(),
+		ExecutorAddr:    "0x0000000000000000000000000000000000000001",
+		ChainID:         1,
+		GRPCDial:        grpcDial,
+		SkipMigrations:  true,
 		SkipMetricsHTTP: true,
 		SkipAdminHTTP:   true,
 		ReconnectDelay:  50 * time.Millisecond,

@@ -1,6 +1,6 @@
-use alloy::primitives::{Address, U256};
-use aether_common::types::ProtocolType;
 use crate::Pool;
+use aether_common::types::ProtocolType;
+use alloy::primitives::{Address, U256};
 
 /// Tick data for concentrated liquidity
 #[derive(Debug, Clone)]
@@ -213,11 +213,7 @@ impl UniswapV3Pool {
     /// initialised tick boundary; in that case the returned values are a
     /// best-effort estimate and the caller MUST fall back to an EVM
     /// fork-replay before trusting them.
-    pub fn predict_post_state(
-        &self,
-        token_in: Address,
-        amount_in: U256,
-    ) -> Option<V3PostState> {
+    pub fn predict_post_state(&self, token_in: Address, amount_in: U256) -> Option<V3PostState> {
         if self.sqrt_price_x96.is_zero() || self.liquidity == 0 || amount_in.is_zero() {
             return None;
         }
@@ -231,8 +227,7 @@ impl UniswapV3Pool {
         // hundredths-of-a-bp lives outside this module. So 0.05% pool
         // → fee_bps=5, fee_complement=9995, dx_eff = dx * 0.9995.
         let fee_complement = 10_000u64 - self.fee_bps as u64;
-        let amount_in_after_fee =
-            amount_in * U256::from(fee_complement) / U256::from(10_000u64);
+        let amount_in_after_fee = amount_in * U256::from(fee_complement) / U256::from(10_000u64);
 
         let is_token0 = token_in == self.token0;
         let q96 = U256::from(Q96);
@@ -295,8 +290,7 @@ impl UniswapV3Pool {
 
         // Apply fee
         let fee_complement = 10000u64 - self.fee_bps as u64;
-        let amount_in_after_fee =
-            amount_in * U256::from(fee_complement) / U256::from(10000u64);
+        let amount_in_after_fee = amount_in * U256::from(fee_complement) / U256::from(10000u64);
 
         let is_token0 = token_in == self.token0;
         let q96 = U256::from(Q96);
@@ -419,7 +413,7 @@ mod tests {
             address!("88e6A0c2dDD26FEEb64F039a2c41296FcB3f5640"),
             address!("A0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"), // USDC
             address!("C02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2"), // WETH
-            5, // 0.05%
+            5,                                                    // 0.05%
             10,
         );
         // sqrt(2000) * 2^96 ~ 3.543 * 10^30
@@ -493,7 +487,9 @@ mod tests {
             5,
             10,
         );
-        assert!(pool.get_amount_out(Address::ZERO, U256::from(1000u64)).is_none());
+        assert!(pool
+            .get_amount_out(Address::ZERO, U256::from(1000u64))
+            .is_none());
     }
 
     #[test]
@@ -594,7 +590,11 @@ mod tests {
     fn sqrt_price_x96_to_tick_at_unity_is_zero() {
         // sqrt_price = 2^96 ↔ price = 1.0 ↔ tick = 0.
         let tick = sqrt_price_x96_to_tick(U256::from(Q96));
-        assert!(tick.abs() <= 1, "tick at price=1.0 must be ~0, got {}", tick);
+        assert!(
+            tick.abs() <= 1,
+            "tick at price=1.0 must be ~0, got {}",
+            tick
+        );
     }
 
     #[test]
@@ -710,14 +710,18 @@ mod tests {
             5,
             10,
         );
-        assert!(pool.get_amount_out(pool.token0, U256::from(1000u64)).is_none());
+        assert!(pool
+            .get_amount_out(pool.token0, U256::from(1000u64))
+            .is_none());
     }
 
     #[test]
     fn test_get_reserves_zero_liquidity_returns_none() {
         let mut pool = setup_v3_pool();
         pool.update_sqrt_price(pool.sqrt_price_x96, 0, pool.tick);
-        assert!(pool.get_amount_out(pool.token0, U256::from(1000u64)).is_none());
+        assert!(pool
+            .get_amount_out(pool.token0, U256::from(1000u64))
+            .is_none());
     }
 
     #[test]
@@ -743,8 +747,11 @@ mod tests {
         let raw = pool
             .compute_swap_within_tick(pool.token1, amount_in)
             .expect("raw");
-        let margined = pool.get_amount_out(pool.token1, amount_in).expect("margined");
-        let expected = raw * U256::from(10_000u32 - SIMULATION_SAFETY_MARGIN_BPS) / U256::from(10_000u32);
+        let margined = pool
+            .get_amount_out(pool.token1, amount_in)
+            .expect("margined");
+        let expected =
+            raw * U256::from(10_000u32 - SIMULATION_SAFETY_MARGIN_BPS) / U256::from(10_000u32);
         assert_eq!(margined, expected);
         assert!(margined < raw);
     }

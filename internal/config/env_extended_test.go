@@ -52,13 +52,13 @@ func TestValidateRiskConfig_AllCircuitBreakerEdges(t *testing.T) {
 		wantErr string
 	}{
 		{
-			name: "zero max gas",
-			mutate: func(c *RiskFileConfig) { c.CircuitBreakers.MaxGasGwei = 0 },
+			name:    "zero max gas",
+			mutate:  func(c *RiskFileConfig) { c.CircuitBreakers.MaxGasGwei = 0 },
 			wantErr: "max_gas_gwei",
 		},
 		{
-			name: "zero revert pause",
-			mutate: func(c *RiskFileConfig) { c.CircuitBreakers.ConsecutiveRevertsPause = 0 },
+			name:    "zero revert pause",
+			mutate:  func(c *RiskFileConfig) { c.CircuitBreakers.ConsecutiveRevertsPause = 0 },
 			wantErr: "consecutive_reverts_pause",
 		},
 		{
@@ -70,8 +70,8 @@ func TestValidateRiskConfig_AllCircuitBreakerEdges(t *testing.T) {
 			wantErr: "min_tip_share_pct",
 		},
 		{
-			name: "bundle miss rate over 100",
-			mutate: func(c *RiskFileConfig) { c.CircuitBreakers.BundleMissRateAlertPct = 101 },
+			name:    "bundle miss rate over 100",
+			mutate:  func(c *RiskFileConfig) { c.CircuitBreakers.BundleMissRateAlertPct = 101 },
 			wantErr: "bundle_miss_rate_alert_pct",
 		},
 	}

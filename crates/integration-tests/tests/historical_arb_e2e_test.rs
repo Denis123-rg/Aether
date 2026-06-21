@@ -26,9 +26,9 @@ use aether_simulator::fork::{RpcForkedState, SimConfig};
 use aether_simulator::EvmSimulator;
 
 use common::{
-    build_price_graph, check_prerequisites, cycle_to_swap_route,
-    default_pool_set, deploy_executor, fetch_all_reserves, is_flashloanable,
-    run_detection, spawn_anvil_at_block, wait_for_anvil, PoolDef, ANVIL_ACCOUNT0,
+    build_price_graph, check_prerequisites, cycle_to_swap_route, default_pool_set, deploy_executor,
+    fetch_all_reserves, is_flashloanable, run_detection, spawn_anvil_at_block, wait_for_anvil,
+    PoolDef, ANVIL_ACCOUNT0,
 };
 
 // ── Types ───────────────────────────────────────────────────────────
@@ -132,7 +132,11 @@ async fn run_historical_arb_inner(
     let reserves = fetch_all_reserves(&provider, &config.pools, None).await;
     latencies.push(("fetch reserves", t2.elapsed().as_millis()));
 
-    eprintln!("  Reserves fetched: {}/{} pools", reserves.len(), config.pools.len());
+    eprintln!(
+        "  Reserves fetched: {}/{} pools",
+        reserves.len(),
+        config.pools.len()
+    );
 
     if reserves.len() < 3 {
         return Err(format!(
@@ -361,8 +365,10 @@ async fn run_historical_arb_inner(
         .map_err(|e| format!("get block data: {e}"))?
         .ok_or("block not found")?;
     let current_ts = current_block_data.header.timestamp;
-    let current_base_fee =
-        current_block_data.header.base_fee_per_gas.unwrap_or(30_000_000_000);
+    let current_base_fee = current_block_data
+        .header
+        .base_fee_per_gas
+        .unwrap_or(30_000_000_000);
 
     let sim_parsed: url::Url = anvil_url.parse().expect("valid URL");
     let sim_provider = ProviderBuilder::new().connect_http(sim_parsed);
@@ -538,15 +544,14 @@ async fn test_historical_arb_at_block() {
 
             match find_best_arb_block(&provider, &pools, start, latest).await {
                 Some((bn, pf)) => {
-                    eprintln!(
-                        "Best block: {} with {:.4}% profit factor",
-                        bn,
-                        pf * 100.0
-                    );
+                    eprintln!("Best block: {} with {:.4}% profit factor", bn, pf * 100.0);
                     bn
                 }
                 None => {
-                    eprintln!("No arbs found in last {} blocks (expected on well-arbitraged mainnet)", scan_range);
+                    eprintln!(
+                        "No arbs found in last {} blocks (expected on well-arbitraged mainnet)",
+                        scan_range
+                    );
                     eprintln!("Test passes — the scanner works, mainnet is just well-arbitraged right now.");
                     return;
                 }
@@ -571,13 +576,19 @@ async fn test_historical_arb_at_block() {
                 eprintln!("  Optimized input:    {}", input);
             }
             if let Some(sim_ok) = r.simulation_success {
-                eprintln!("  Simulation:         {}", if sim_ok { "PASS" } else { "FAIL" });
+                eprintln!(
+                    "  Simulation:         {}",
+                    if sim_ok { "PASS" } else { "FAIL" }
+                );
             }
             if let Some(gas) = r.simulation_gas {
                 eprintln!("  Simulation gas:     {}", gas);
             }
             if let Some(exec_ok) = r.execution_success {
-                eprintln!("  Execution:          {}", if exec_ok { "PASS" } else { "FAIL" });
+                eprintln!(
+                    "  Execution:          {}",
+                    if exec_ok { "PASS" } else { "FAIL" }
+                );
             }
             if let Some(profit) = r.on_chain_profit {
                 eprintln!("  On-chain profit:    {} wei", profit);
@@ -636,8 +647,10 @@ async fn test_discover_and_execute() {
             let config = HistoricalArbConfig::default();
             match run_historical_arb(bn, &config).await {
                 Ok(r) => {
-                    eprintln!("Phase 2 complete: arb_detected={}, sim={:?}, exec={:?}",
-                        r.arb_detected, r.simulation_success, r.execution_success);
+                    eprintln!(
+                        "Phase 2 complete: arb_detected={}, sim={:?}, exec={:?}",
+                        r.arb_detected, r.simulation_success, r.execution_success
+                    );
                 }
                 Err(e) => {
                     eprintln!("Phase 2 pipeline error (non-fatal): {e}");
@@ -645,7 +658,10 @@ async fn test_discover_and_execute() {
             }
         }
         None => {
-            eprintln!("No arbs found in recent {} blocks. Test passes (mainnet well-arbitraged).", scan_range);
+            eprintln!(
+                "No arbs found in recent {} blocks. Test passes (mainnet well-arbitraged).",
+                scan_range
+            );
         }
     }
 }

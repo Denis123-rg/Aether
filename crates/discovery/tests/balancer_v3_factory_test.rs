@@ -113,7 +113,9 @@ fn factory_entries_include_balancer_v3_vault() {
     let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../config/discovery.toml");
     let cfg = DiscoveryConfig::load(path).unwrap();
     let entries = cfg.factory_entries();
-    assert!(entries.iter().any(|e| e.protocol == ProtocolType::BalancerV3));
+    assert!(entries
+        .iter()
+        .any(|e| e.protocol == ProtocolType::BalancerV3));
 }
 
 #[test]
@@ -186,7 +188,10 @@ fn balancer_v3_score_formula() {
         fee_bps: 10,
         slippage_estimate: 0.005,
     };
-    let raw = raw_score(&inputs, &aether_discovery::config::ScoringSettings::default());
+    let raw = raw_score(
+        &inputs,
+        &aether_discovery::config::ScoringSettings::default(),
+    );
     assert!(raw > 0.0);
 }
 

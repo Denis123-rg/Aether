@@ -15,9 +15,9 @@ import (
 )
 
 type mockBot struct {
-	mu       sync.Mutex
-	sent     []tgbotapi.Chattable
-	updates  chan tgbotapi.Update
+	mu      sync.Mutex
+	sent    []tgbotapi.Chattable
+	updates chan tgbotapi.Update
 }
 
 func (m *mockBot) Send(c tgbotapi.Chattable) (tgbotapi.Message, error) {
@@ -68,7 +68,7 @@ func startMockExecutor(t *testing.T) *httptest.Server {
 				PnLToday: 0.1, PnLTotal: 1.0, WinRate: 70.0,
 				LastBuilder: "flashbots", SignerHealthy: true, RPCHealthy: true,
 				SystemState: "Running", MinProfitETH: 0.001,
-				TopPools: []metrics.TopPool{{Address: "0xabc", Score: 0.9}},
+				TopPools:          []metrics.TopPool{{Address: "0xabc", Score: 0.9}},
 				ExecutorReachable: true,
 			})
 		case "/admin/pause", "/admin/resume":

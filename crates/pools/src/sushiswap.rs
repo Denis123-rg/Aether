@@ -1,7 +1,7 @@
-use alloy::primitives::{Address, U256};
-use aether_common::types::ProtocolType;
-use crate::Pool;
 use crate::uniswap_v2::UniswapV2Pool;
+use crate::Pool;
+use aether_common::types::ProtocolType;
+use alloy::primitives::{Address, U256};
 
 /// SushiSwap uses the same constant product formula as Uniswap V2
 #[derive(Debug, Clone)]
@@ -18,15 +18,33 @@ impl SushiSwapPool {
 }
 
 impl Pool for SushiSwapPool {
-    fn protocol(&self) -> ProtocolType { ProtocolType::SushiSwap }
-    fn address(&self) -> Address { self.inner.address() }
-    fn tokens(&self) -> Vec<Address> { self.inner.tokens() }
-    fn fee_bps(&self) -> u32 { self.inner.fee_bps() }
-    fn get_amount_out(&self, token_in: Address, amount_in: U256) -> Option<U256> { self.inner.get_amount_out(token_in, amount_in) }
-    fn get_amount_in(&self, token_out: Address, amount_out: U256) -> Option<U256> { self.inner.get_amount_in(token_out, amount_out) }
-    fn update_state(&mut self, reserve0: U256, reserve1: U256) { self.inner.update_state(reserve0, reserve1) }
-    fn encode_swap(&self, token_in: Address, amount_in: U256, min_out: U256) -> Vec<u8> { self.inner.encode_swap(token_in, amount_in, min_out) }
-    fn liquidity_depth(&self) -> U256 { self.inner.liquidity_depth() }
+    fn protocol(&self) -> ProtocolType {
+        ProtocolType::SushiSwap
+    }
+    fn address(&self) -> Address {
+        self.inner.address()
+    }
+    fn tokens(&self) -> Vec<Address> {
+        self.inner.tokens()
+    }
+    fn fee_bps(&self) -> u32 {
+        self.inner.fee_bps()
+    }
+    fn get_amount_out(&self, token_in: Address, amount_in: U256) -> Option<U256> {
+        self.inner.get_amount_out(token_in, amount_in)
+    }
+    fn get_amount_in(&self, token_out: Address, amount_out: U256) -> Option<U256> {
+        self.inner.get_amount_in(token_out, amount_out)
+    }
+    fn update_state(&mut self, reserve0: U256, reserve1: U256) {
+        self.inner.update_state(reserve0, reserve1)
+    }
+    fn encode_swap(&self, token_in: Address, amount_in: U256, min_out: U256) -> Vec<u8> {
+        self.inner.encode_swap(token_in, amount_in, min_out)
+    }
+    fn liquidity_depth(&self) -> U256 {
+        self.inner.liquidity_depth()
+    }
 }
 
 #[cfg(test)]

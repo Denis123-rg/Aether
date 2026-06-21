@@ -35,8 +35,8 @@ type MockArbServer struct {
 	// StreamDelay if > 0, the stream sends arbs one at a time with no delay
 	// but can be used by tests to verify ordering.
 
-	grpcServer *grpc.Server
-	listener   net.Listener
+	grpcServer  *grpc.Server
+	listener    net.Listener
 	bufListener *bufconn.Listener
 }
 

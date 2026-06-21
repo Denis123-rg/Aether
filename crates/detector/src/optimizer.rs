@@ -119,12 +119,8 @@ mod tests {
             -(x_val - 500) * (x_val - 500) + 10_000
         };
 
-        let (optimal, profit) = ternary_search_optimal_input(
-            U256::from(0u64),
-            U256::from(1000u64),
-            100,
-            profit_fn,
-        );
+        let (optimal, profit) =
+            ternary_search_optimal_input(U256::from(0u64), U256::from(1000u64), 100, profit_fn);
 
         let opt_val = optimal.to::<u128>();
         // Should be very close to 500
@@ -149,12 +145,8 @@ mod tests {
             1000 - x_val
         };
 
-        let (optimal, _profit) = ternary_search_optimal_input(
-            U256::from(0u64),
-            U256::from(1000u64),
-            100,
-            profit_fn,
-        );
+        let (optimal, _profit) =
+            ternary_search_optimal_input(U256::from(0u64), U256::from(1000u64), 100, profit_fn);
 
         let opt_val = optimal.to::<u128>();
         // Optimal should be near the lower bound
@@ -168,16 +160,10 @@ mod tests {
     #[test]
     fn test_ternary_search_peak_at_boundary_high() {
         // Monotonically increasing: profit = x
-        let profit_fn = |x: U256| -> i128 {
-            x.to::<u128>() as i128
-        };
+        let profit_fn = |x: U256| -> i128 { x.to::<u128>() as i128 };
 
-        let (optimal, _profit) = ternary_search_optimal_input(
-            U256::from(0u64),
-            U256::from(1000u64),
-            100,
-            profit_fn,
-        );
+        let (optimal, _profit) =
+            ternary_search_optimal_input(U256::from(0u64), U256::from(1000u64), 100, profit_fn);
 
         let opt_val = optimal.to::<u128>();
         // Optimal should be near the upper bound
@@ -195,12 +181,8 @@ mod tests {
             -(x_val - 5) * (x_val - 5) + 100
         };
 
-        let (optimal, profit) = ternary_search_optimal_input(
-            U256::from(3u64),
-            U256::from(7u64),
-            100,
-            profit_fn,
-        );
+        let (optimal, profit) =
+            ternary_search_optimal_input(U256::from(3u64), U256::from(7u64), 100, profit_fn);
 
         let opt_val = optimal.to::<u128>();
         assert!(
@@ -213,16 +195,10 @@ mod tests {
 
     #[test]
     fn test_ternary_search_same_min_max() {
-        let profit_fn = |x: U256| -> i128 {
-            x.to::<u128>() as i128
-        };
+        let profit_fn = |x: U256| -> i128 { x.to::<u128>() as i128 };
 
-        let (optimal, profit) = ternary_search_optimal_input(
-            U256::from(42u64),
-            U256::from(42u64),
-            100,
-            profit_fn,
-        );
+        let (optimal, profit) =
+            ternary_search_optimal_input(U256::from(42u64), U256::from(42u64), 100, profit_fn);
 
         assert_eq!(optimal, U256::from(42u64));
         assert_eq!(profit, 42);
@@ -236,12 +212,8 @@ mod tests {
         };
 
         // With 0 iterations, should return midpoint
-        let (optimal, _profit) = ternary_search_optimal_input(
-            U256::from(0u64),
-            U256::from(1000u64),
-            0,
-            profit_fn,
-        );
+        let (optimal, _profit) =
+            ternary_search_optimal_input(U256::from(0u64), U256::from(1000u64), 0, profit_fn);
 
         assert_eq!(optimal, U256::from(500u64));
     }
@@ -280,12 +252,8 @@ mod tests {
             -(x_val - 500) * (x_val - 500) + 10_000
         };
 
-        let (optimal, profit) = grid_search_optimal_input(
-            U256::from(0u64),
-            U256::from(1000u64),
-            100,
-            profit_fn,
-        );
+        let (optimal, profit) =
+            grid_search_optimal_input(U256::from(0u64), U256::from(1000u64), 100, profit_fn);
 
         let opt_val = optimal.to::<u128>();
         assert!(
@@ -293,21 +261,19 @@ mod tests {
             "grid search optimal {} should be close to 500",
             opt_val
         );
-        assert!(profit >= 9_900, "profit {} should be close to 10000", profit);
+        assert!(
+            profit >= 9_900,
+            "profit {} should be close to 10000",
+            profit
+        );
     }
 
     #[test]
     fn test_grid_search_same_min_max() {
-        let profit_fn = |x: U256| -> i128 {
-            x.to::<u128>() as i128
-        };
+        let profit_fn = |x: U256| -> i128 { x.to::<u128>() as i128 };
 
-        let (optimal, profit) = grid_search_optimal_input(
-            U256::from(42u64),
-            U256::from(42u64),
-            10,
-            profit_fn,
-        );
+        let (optimal, profit) =
+            grid_search_optimal_input(U256::from(42u64), U256::from(42u64), 10, profit_fn);
 
         assert_eq!(optimal, U256::from(42u64));
         assert_eq!(profit, 42);
@@ -315,16 +281,10 @@ mod tests {
 
     #[test]
     fn test_grid_search_zero_steps() {
-        let profit_fn = |x: U256| -> i128 {
-            x.to::<u128>() as i128
-        };
+        let profit_fn = |x: U256| -> i128 { x.to::<u128>() as i128 };
 
-        let (optimal, profit) = grid_search_optimal_input(
-            U256::from(10u64),
-            U256::from(100u64),
-            0,
-            profit_fn,
-        );
+        let (optimal, profit) =
+            grid_search_optimal_input(U256::from(10u64), U256::from(100u64), 0, profit_fn);
 
         assert_eq!(optimal, U256::from(10u64));
         assert_eq!(profit, 10);
@@ -332,16 +292,10 @@ mod tests {
 
     #[test]
     fn test_grid_search_min_greater_than_max() {
-        let profit_fn = |x: U256| -> i128 {
-            x.to::<u128>() as i128
-        };
+        let profit_fn = |x: U256| -> i128 { x.to::<u128>() as i128 };
 
-        let (optimal, profit) = grid_search_optimal_input(
-            U256::from(100u64),
-            U256::from(10u64),
-            10,
-            profit_fn,
-        );
+        let (optimal, profit) =
+            grid_search_optimal_input(U256::from(100u64), U256::from(10u64), 10, profit_fn);
 
         // Should return min_input when min > max
         assert_eq!(optimal, U256::from(100u64));
@@ -356,16 +310,16 @@ mod tests {
             -(x_val * x_val) - 100
         };
 
-        let (optimal, profit) = grid_search_optimal_input(
-            U256::from(1u64),
-            U256::from(100u64),
-            50,
-            profit_fn,
-        );
+        let (optimal, profit) =
+            grid_search_optimal_input(U256::from(1u64), U256::from(100u64), 50, profit_fn);
 
         // Least-bad is at x=1: -(1) - 100 = -101
         let opt_val = optimal.to::<u128>();
-        assert!(opt_val <= 3, "optimal {} should be near lower bound", opt_val);
+        assert!(
+            opt_val <= 3,
+            "optimal {} should be near lower bound",
+            opt_val
+        );
         assert!(profit < 0, "all profits should be negative");
     }
 
@@ -377,12 +331,8 @@ mod tests {
             -(x_val - 3) * (x_val - 3) + 9
         };
 
-        let (optimal, profit) = grid_search_optimal_input(
-            U256::from(0u64),
-            U256::from(5u64),
-            1,
-            profit_fn,
-        );
+        let (optimal, profit) =
+            grid_search_optimal_input(U256::from(0u64), U256::from(5u64), 1, profit_fn);
 
         // Only evaluates at 0 and 5
         let opt_val = optimal.to::<u128>();

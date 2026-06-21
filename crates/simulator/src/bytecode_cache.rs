@@ -158,8 +158,7 @@ impl BytecodeCache {
         }
         match self.disk_get(addr) {
             Ok(Some((hash, code))) => {
-                let bytecode =
-                    Bytecode::new_raw(revm::primitives::Bytes::copy_from_slice(&code));
+                let bytecode = Bytecode::new_raw(revm::primitives::Bytes::copy_from_slice(&code));
                 let entry = (hash, bytecode);
                 self.inner.mem.insert(addr, entry.clone());
                 Some(entry)
@@ -199,11 +198,7 @@ impl BytecodeCache {
     /// Logs RPC failures but does not propagate errors — callers should keep
     /// the pool in the hot cache and retry on first simulation.
     /// Returns `true` when bytecode is available in cache after prewarm.
-    pub async fn prewarm_bytecode(
-        &self,
-        addr: Address,
-        provider: &DynProvider<Ethereum>,
-    ) -> bool {
+    pub async fn prewarm_bytecode(&self, addr: Address, provider: &DynProvider<Ethereum>) -> bool {
         if self.get(addr).is_some() {
             return true;
         }
@@ -233,8 +228,7 @@ impl BytecodeCache {
                 if let Err(e) = self.put(addr, hash, &code) {
                     warn!(%addr, error = %e, "bytecode cache: persist failed; serving fetched value");
                 }
-                let bytecode =
-                    Bytecode::new_raw(revm::primitives::Bytes::copy_from_slice(&code));
+                let bytecode = Bytecode::new_raw(revm::primitives::Bytes::copy_from_slice(&code));
                 Some((hash, bytecode))
             }
             Ok(_) => None,
@@ -301,7 +295,7 @@ mod tests {
         let tmp = tempfile::NamedTempFile::new().unwrap();
         let path = tmp.path().to_path_buf();
         drop(tmp); // we only need a unique path; redb will create it.
-        // First open creates schema.
+                   // First open creates schema.
         let c1 = BytecodeCache::open(&path).expect("first open");
         drop(c1);
         // Reopen must succeed without TableDoesNotExist.

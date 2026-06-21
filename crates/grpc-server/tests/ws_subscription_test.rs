@@ -114,7 +114,11 @@ async fn test_ws_subscription_receives_blocks() {
         max_reconnect_attempts: 5,
         ..ProviderConfig::default()
     };
-    let provider = Arc::new(RpcProvider::new(config, Arc::clone(&channels), test_metrics()));
+    let provider = Arc::new(RpcProvider::new(
+        config,
+        Arc::clone(&channels),
+        test_metrics(),
+    ));
 
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
     let provider_clone = Arc::clone(&provider);
@@ -175,7 +179,11 @@ async fn test_ws_reconnection_on_disconnect() {
         max_reconnect_attempts: 20,
         ..ProviderConfig::default()
     };
-    let provider = Arc::new(RpcProvider::new(config, Arc::clone(&channels), test_metrics()));
+    let provider = Arc::new(RpcProvider::new(
+        config,
+        Arc::clone(&channels),
+        test_metrics(),
+    ));
 
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
     let provider_clone = Arc::clone(&provider);
@@ -266,7 +274,11 @@ async fn test_http_fallback_still_works() {
         max_reconnect_attempts: 5,
         ..ProviderConfig::default()
     };
-    let provider = Arc::new(RpcProvider::new(config, Arc::clone(&channels), test_metrics()));
+    let provider = Arc::new(RpcProvider::new(
+        config,
+        Arc::clone(&channels),
+        test_metrics(),
+    ));
 
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
     let provider_clone = Arc::clone(&provider);

@@ -310,5 +310,3 @@ func TestSubscriber_AllRouteChannels(t *testing.T) {
 	// Unknown channel
 	s.route("unknown:channel", "{}")
 }
-
-

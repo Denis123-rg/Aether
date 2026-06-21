@@ -260,8 +260,7 @@ where
             buf[31] = p;
             // mapping slot index = 3, 32-byte big-endian.
             buf[63] = 3;
-            let storage_key =
-                U256::from_be_slice(alloy::primitives::keccak256(buf).as_slice());
+            let storage_key = U256::from_be_slice(alloy::primitives::keccak256(buf).as_slice());
             let _ = db.insert_account_storage(arb.to, storage_key, U256::from(1u64));
         }
         db.insert_account_info(
@@ -281,9 +280,7 @@ where
     let mut key_input = [0u8; 64];
     key_input[12..32].copy_from_slice(params.profit_recipient.as_slice());
     key_input[32..64].copy_from_slice(&params.balance_slot.to_be_bytes::<32>());
-    let storage_key = U256::from_be_slice(
-        alloy::primitives::keccak256(key_input).as_slice(),
-    );
+    let storage_key = U256::from_be_slice(alloy::primitives::keccak256(key_input).as_slice());
 
     // Read pre-sim recipient balance via DatabaseRef::storage_ref so it
     // serves from cache when warm, or triggers a single RPC fetch under
@@ -300,23 +297,25 @@ where
         ..Default::default()
     };
 
-    let ctx = Context::<BlockEnv, TxEnv, _, CacheDB<DB>, revm::context::Journal<CacheDB<DB>>, ()>::new(
-        db, SpecId::CANCUN,
-    )
-    .with_block(block)
-    .modify_cfg_chained(|cfg| {
-        cfg.chain_id = params.chain_id;
-        cfg.disable_nonce_check = true;
-        cfg.disable_balance_check = true;
-        cfg.disable_base_fee = true;
-        // EIP-3607 rejects txs from accounts that carry bytecode. The synthetic
-        // searcher `caller` can collide with an address that has code on the
-        // forked chain, which aborts the arb leg before any gas is spent
-        // (`Transaction(RejectCallerWithCode)` → bogus `sim_error`, arb_gas=0).
-        // The caller is sim-only (we already disable nonce/balance), so the
-        // 3607 check is meaningless here — disable it.
-        cfg.disable_eip3607 = true;
-    });
+    let ctx =
+        Context::<BlockEnv, TxEnv, _, CacheDB<DB>, revm::context::Journal<CacheDB<DB>>, ()>::new(
+            db,
+            SpecId::CANCUN,
+        )
+        .with_block(block)
+        .modify_cfg_chained(|cfg| {
+            cfg.chain_id = params.chain_id;
+            cfg.disable_nonce_check = true;
+            cfg.disable_balance_check = true;
+            cfg.disable_base_fee = true;
+            // EIP-3607 rejects txs from accounts that carry bytecode. The synthetic
+            // searcher `caller` can collide with an address that has code on the
+            // forked chain, which aborts the arb leg before any gas is spent
+            // (`Transaction(RejectCallerWithCode)` → bogus `sim_error`, arb_gas=0).
+            // The caller is sim-only (we already disable nonce/balance), so the
+            // 3607 check is meaningless here — disable it.
+            cfg.disable_eip3607 = true;
+        });
 
     let mut evm = ctx.build_mainnet();
 
@@ -338,50 +337,48 @@ where
     // (e.g. signing-state divergence) yet the analytical post-state is
     // still a useful basis for evaluating the arb leg.
     let (victim_gas_used, victim_ok) = if params.skip_victim_with_overrides.is_some() {
-        debug!(
-            "mempool-backrun: skipping victim replay, using analytical post-state overrides"
-        );
+        debug!("mempool-backrun: skipping victim replay, using analytical post-state overrides");
         (0u64, true)
     } else {
         match evm.transact_commit(victim_env) {
-        Ok(ExecutionResult::Success { gas_used, .. }) => (gas_used, true),
-        Ok(ExecutionResult::Revert { gas_used, output }) => {
-            // Capture the revert reason + selector so dashboards / triage can
-            // tell an allowance failure (TRANSFER_FROM_FAILED) apart from a
-            // slippage failure (INSUFFICIENT_OUTPUT_AMOUNT) without re-replaying
-            // the tx by hand. The selector is carried in the result, matching
-            // the arb-revert path below.
-            let selector = revert_selector(&output);
-            let reason = decode_revert_reason(&output);
-            info!(
-                gas_used,
-                selector = %alloy::hex::encode(selector),
-                reason = %reason,
-                output_hex = %alloy::primitives::hex::encode(output.as_ref()),
-                "mempool-backrun: victim reverted"
-            );
-            return BackrunSimResult {
-                accepted: false,
-                gross_profit_wei: U256::ZERO,
-                arb_gas_used: 0,
-                victim_gas_used: gas_used,
-                reject: Some(RejectReason::VictimReverted),
-                revert_selector: Some(selector),
-            };
-        }
-        Ok(ExecutionResult::Halt { reason, gas_used }) => {
-            debug!(?reason, gas_used, "mempool-backrun: victim halted");
-            return BackrunSimResult::rejected(RejectReason::VictimHalted, gas_used, 0);
-        }
-        Err(e) => {
-            let reason = classify_transact_err(&e);
-            if reason == RejectReason::RpcTransport {
-                warn!(error = ?e, "mempool-backrun: victim sim RPC transport error");
-            } else {
-                debug!(error = ?e, "mempool-backrun: victim sim error");
+            Ok(ExecutionResult::Success { gas_used, .. }) => (gas_used, true),
+            Ok(ExecutionResult::Revert { gas_used, output }) => {
+                // Capture the revert reason + selector so dashboards / triage can
+                // tell an allowance failure (TRANSFER_FROM_FAILED) apart from a
+                // slippage failure (INSUFFICIENT_OUTPUT_AMOUNT) without re-replaying
+                // the tx by hand. The selector is carried in the result, matching
+                // the arb-revert path below.
+                let selector = revert_selector(&output);
+                let reason = decode_revert_reason(&output);
+                info!(
+                    gas_used,
+                    selector = %alloy::hex::encode(selector),
+                    reason = %reason,
+                    output_hex = %alloy::primitives::hex::encode(output.as_ref()),
+                    "mempool-backrun: victim reverted"
+                );
+                return BackrunSimResult {
+                    accepted: false,
+                    gross_profit_wei: U256::ZERO,
+                    arb_gas_used: 0,
+                    victim_gas_used: gas_used,
+                    reject: Some(RejectReason::VictimReverted),
+                    revert_selector: Some(selector),
+                };
             }
-            return BackrunSimResult::rejected(reason, 0, 0);
-        }
+            Ok(ExecutionResult::Halt { reason, gas_used }) => {
+                debug!(?reason, gas_used, "mempool-backrun: victim halted");
+                return BackrunSimResult::rejected(RejectReason::VictimHalted, gas_used, 0);
+            }
+            Err(e) => {
+                let reason = classify_transact_err(&e);
+                if reason == RejectReason::RpcTransport {
+                    warn!(error = ?e, "mempool-backrun: victim sim RPC transport error");
+                } else {
+                    debug!(error = ?e, "mempool-backrun: victim sim error");
+                }
+                return BackrunSimResult::rejected(reason, 0, 0);
+            }
         }
     };
 
@@ -400,12 +397,8 @@ where
     match evm.transact(arb_env) {
         Ok(rs) => match rs.result {
             ExecutionResult::Success { gas_used, .. } => {
-                let post_balance = read_post_balance(
-                    &rs.state,
-                    params.profit_token,
-                    storage_key,
-                    pre_balance,
-                );
+                let post_balance =
+                    read_post_balance(&rs.state, params.profit_token, storage_key, pre_balance);
                 let gross = post_balance.saturating_sub(pre_balance);
 
                 // Net-after-gas check at the sim base fee. This is a coarse
@@ -489,12 +482,7 @@ fn classify_transact_err<DErr, TErr>(err: &EVMError<DErr, TErr>) -> RejectReason
     }
 }
 
-fn read_post_balance(
-    state: &EvmState,
-    token: Address,
-    storage_key: U256,
-    fallback: U256,
-) -> U256 {
+fn read_post_balance(state: &EvmState, token: Address, storage_key: U256, fallback: U256) -> U256 {
     state
         .get(&token)
         .and_then(|acc| acc.storage.get(&storage_key))
@@ -584,8 +572,8 @@ pub fn empty_cache_db() -> CacheDB<EmptyDB> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alloy::primitives::{Address, Bytes};
     use alloy::primitives::address;
+    use alloy::primitives::{Address, Bytes};
     #[allow(unused_imports)] // used only by the #[ignore] fork test
     use alloy::providers::Provider;
     #[allow(unused_imports)] // used only by the #[ignore] fork test
@@ -639,7 +627,8 @@ mod tests {
         // gross_profit = 0 → NegativeAfterGas reject (correct: zero profit
         // never beats zero gas at any non-zero base fee).
         let state = ForkedState::new_empty(18_000_000, 1_700_000_000, 0);
-        let result = validate_backrun_cache(state, &default_victim(), &default_arb(), &default_params());
+        let result =
+            validate_backrun_cache(state, &default_victim(), &default_arb(), &default_params());
         assert!(!result.accepted, "zero-profit must reject");
         assert_eq!(result.reject, Some(RejectReason::NegativeAfterGas));
         assert_eq!(result.gross_profit_wei, U256::ZERO);
@@ -652,7 +641,8 @@ mod tests {
         // victim's, not the arb's.
         let mut state = ForkedState::new_empty(18_000_000, 1_700_000_000, 0);
         state.insert_account(VICTIM_TO, U256::ZERO, vec![0xfe].into()); // INVALID
-        let result = validate_backrun_cache(state, &default_victim(), &default_arb(), &default_params());
+        let result =
+            validate_backrun_cache(state, &default_victim(), &default_arb(), &default_params());
         assert!(!result.accepted);
         // INVALID is an unknown opcode → Halt in revm.
         assert_eq!(result.reject, Some(RejectReason::VictimHalted));
@@ -664,8 +654,13 @@ mod tests {
         // Victim is an EOA (succeeds). Arb target contains REVERT opcode:
         //   PUSH1 0x00 PUSH1 0x00 REVERT  → reverts with empty output
         let mut state = ForkedState::new_empty(18_000_000, 1_700_000_000, 0);
-        state.insert_account(ARB_TO, U256::ZERO, vec![0x60, 0x00, 0x60, 0x00, 0xfd].into());
-        let result = validate_backrun_cache(state, &default_victim(), &default_arb(), &default_params());
+        state.insert_account(
+            ARB_TO,
+            U256::ZERO,
+            vec![0x60, 0x00, 0x60, 0x00, 0xfd].into(),
+        );
+        let result =
+            validate_backrun_cache(state, &default_victim(), &default_arb(), &default_params());
         assert!(!result.accepted);
         assert_eq!(result.reject, Some(RejectReason::ArbReverted));
         assert_eq!(result.victim_gas_used, 21000, "victim consumed base tx gas");
@@ -677,7 +672,8 @@ mod tests {
         // Arb target is INVALID opcode → Halt.
         let mut state = ForkedState::new_empty(18_000_000, 1_700_000_000, 0);
         state.insert_account(ARB_TO, U256::ZERO, vec![0xfe].into());
-        let result = validate_backrun_cache(state, &default_victim(), &default_arb(), &default_params());
+        let result =
+            validate_backrun_cache(state, &default_victim(), &default_arb(), &default_params());
         assert!(!result.accepted);
         assert_eq!(result.reject, Some(RejectReason::ArbHalted));
     }
@@ -692,7 +688,10 @@ mod tests {
         assert_eq!(RejectReason::VictimHalted.as_str(), "victim_halted");
         assert_eq!(RejectReason::ArbReverted.as_str(), "arb_reverted");
         assert_eq!(RejectReason::ArbHalted.as_str(), "arb_halted");
-        assert_eq!(RejectReason::NegativeAfterGas.as_str(), "negative_after_gas");
+        assert_eq!(
+            RejectReason::NegativeAfterGas.as_str(),
+            "negative_after_gas"
+        );
         assert_eq!(RejectReason::SimError.as_str(), "sim_error");
         assert_eq!(RejectReason::RpcTransport.as_str(), "rpc_transport");
         assert_eq!(RejectReason::SimTimeout.as_str(), "sim_timeout");
@@ -886,8 +885,8 @@ mod tests {
     fn build_roundtrip_calldata(
         executor: Address,
         flashloan_weth: U256,
-        uni_r0: U256, // USDC
-        uni_r1: U256, // WETH
+        uni_r0: U256,   // USDC
+        uni_r1: U256,   // WETH
         sushi_r0: U256, // USDC
         sushi_r1: U256, // WETH
         deadline: U256,
@@ -967,8 +966,7 @@ mod tests {
         let unspliced = load_executor_bytecode(false).expect("artifact already loaded once");
 
         // Build an HTTP DynProvider exactly as the engine does.
-        let parsed: alloy::transports::http::reqwest::Url =
-            rpc_url.parse().expect("valid RPC URL");
+        let parsed: alloy::transports::http::reqwest::Url = rpc_url.parse().expect("valid RPC URL");
         let provider = alloy::providers::ProviderBuilder::new()
             .connect_http(parsed)
             .erased();
@@ -990,7 +988,13 @@ mod tests {
         let deadline = U256::from(u64::MAX); // never expires under disable_base_fee sim
 
         let calldata = build_roundtrip_calldata(
-            executor, flashloan_weth, uni_r0, uni_r1, sushi_r0, sushi_r1, deadline,
+            executor,
+            flashloan_weth,
+            uni_r0,
+            uni_r1,
+            sushi_r0,
+            sushi_r1,
+            deadline,
         );
 
         let arb = ArbTx {
@@ -1015,13 +1019,8 @@ mod tests {
 
         // A fresh RpcForkedState is required per run (AlloyDB is !Clone).
         let mk_state = || {
-            RpcForkedState::new_at_latest(
-                provider.clone(),
-                0,
-                4_000_000_000,
-                1_000_000_000,
-            )
-            .expect("must run inside multi-thread tokio runtime")
+            RpcForkedState::new_at_latest(provider.clone(), 0, 4_000_000_000, 1_000_000_000)
+                .expect("must run inside multi-thread tokio runtime")
         };
 
         // ── Spliced run: aavePool is the real Aave V3 Pool ──────────────
@@ -1033,8 +1032,7 @@ mod tests {
             gas_price: 0,
             gas_limit: 100_000,
         };
-        let spliced_res =
-            validate_backrun_rpc(mk_state(), &victim, &arb, &mk_params(spliced));
+        let spliced_res = validate_backrun_rpc(mk_state(), &victim, &arb, &mk_params(spliced));
         let spliced_sel = spliced_res
             .revert_selector
             .map(alloy::hex::encode)
@@ -1049,8 +1047,7 @@ mod tests {
         );
 
         // ── Control run: aavePool == address(0) (pre-fix no-op) ─────────
-        let control_res =
-            validate_backrun_rpc(mk_state(), &victim, &arb, &mk_params(unspliced));
+        let control_res = validate_backrun_rpc(mk_state(), &victim, &arb, &mk_params(unspliced));
         eprintln!(
             "UNSPLICED -> accepted={} arb_gas={} gross={} reject={:?}",
             control_res.accepted,
@@ -1121,10 +1118,7 @@ mod tests {
         payload.extend_from_slice(&(U256::from(5u64).to_be_bytes::<32>())); // len=5
         payload.extend_from_slice(b"hello");
         payload.extend_from_slice(&[0u8; 27]); // pad to 32-byte boundary
-        assert_eq!(
-            decode_revert_reason(&payload),
-            r#"Error("hello")"#
-        );
+        assert_eq!(decode_revert_reason(&payload), r#"Error("hello")"#);
     }
 
     #[test]
@@ -1227,11 +1221,19 @@ mod tests {
             }
         };
     }
-    reject_label!(lbl_victim_rev, RejectReason::VictimReverted, "victim_reverted");
+    reject_label!(
+        lbl_victim_rev,
+        RejectReason::VictimReverted,
+        "victim_reverted"
+    );
     reject_label!(lbl_victim_halt, RejectReason::VictimHalted, "victim_halted");
     reject_label!(lbl_arb_rev, RejectReason::ArbReverted, "arb_reverted");
     reject_label!(lbl_arb_halt, RejectReason::ArbHalted, "arb_halted");
-    reject_label!(lbl_neg_gas, RejectReason::NegativeAfterGas, "negative_after_gas");
+    reject_label!(
+        lbl_neg_gas,
+        RejectReason::NegativeAfterGas,
+        "negative_after_gas"
+    );
     reject_label!(lbl_sim_err, RejectReason::SimError, "sim_error");
     reject_label!(lbl_rpc, RejectReason::RpcTransport, "rpc_transport");
     reject_label!(lbl_timeout, RejectReason::SimTimeout, "sim_timeout");
@@ -1246,7 +1248,11 @@ mod tests {
         };
     }
     classify_err!(cls_db_timeout, "timeout", RejectReason::RpcTransport);
-    classify_err!(cls_db_closed, "connection closed", RejectReason::RpcTransport);
+    classify_err!(
+        cls_db_closed,
+        "connection closed",
+        RejectReason::RpcTransport
+    );
     classify_err!(cls_db_reset, "connection reset", RejectReason::RpcTransport);
 
     #[test]
@@ -1312,11 +1318,8 @@ mod tests {
     fn skip_victim_override_path_runs() {
         let state = ForkedState::new_empty(18_000_000, 1_700_000_000, 0);
         let mut params = default_params();
-        params.skip_victim_with_overrides = Some(vec![(
-            VICTIM_TO,
-            U256::from(8u64),
-            U256::from(1u64) << 112,
-        )]);
+        params.skip_victim_with_overrides =
+            Some(vec![(VICTIM_TO, U256::from(8u64), U256::from(1u64) << 112)]);
         let result = validate_backrun_cache(state, &default_victim(), &default_arb(), &params);
         assert!(!result.accepted);
     }
@@ -1385,7 +1388,13 @@ mod tests {
         let sushi_r1 = U256::from(100u128 * 10u128.pow(18));
         let deadline = U256::from(u64::MAX);
         let calldata = build_roundtrip_calldata(
-            ARB_TO, flashloan_weth, uni_r0, uni_r1, sushi_r0, sushi_r1, deadline,
+            ARB_TO,
+            flashloan_weth,
+            uni_r0,
+            uni_r1,
+            sushi_r0,
+            sushi_r1,
+            deadline,
         );
         assert!(calldata.len() > 4);
     }
@@ -1456,7 +1465,9 @@ mod tests {
         let old = std::env::var("ETH_RPC_URL").ok();
         std::env::remove_var("ETH_RPC_URL");
         let _ = resolve_rpc_url();
-        if let Some(v) = old { std::env::set_var("ETH_RPC_URL", v); }
+        if let Some(v) = old {
+            std::env::set_var("ETH_RPC_URL", v);
+        }
     }
 
     #[test]
@@ -1477,13 +1488,16 @@ mod tests {
 
     #[test]
     fn classify_transaction_error_is_sim_error() {
-        let err: EVMError<String> = EVMError::Transaction(revm::context::result::InvalidTransaction::GasPriceLessThanBasefee);
+        let err: EVMError<String> = EVMError::Transaction(
+            revm::context::result::InvalidTransaction::GasPriceLessThanBasefee,
+        );
         assert_eq!(classify_transact_err(&err), RejectReason::SimError);
     }
 
     #[test]
     fn classify_header_error_is_sim_error() {
-        let err: EVMError<String> = EVMError::Header(revm::context::result::InvalidHeader::PrevrandaoNotSet);
+        let err: EVMError<String> =
+            EVMError::Header(revm::context::result::InvalidHeader::PrevrandaoNotSet);
         assert_eq!(classify_transact_err(&err), RejectReason::SimError);
     }
 
@@ -1516,8 +1530,13 @@ mod tests {
     #[test]
     fn victim_revert_produces_correct_result() {
         let mut state = ForkedState::new_empty(18_000_000, 1_700_000_000, 0);
-        state.insert_account(VICTIM_TO, U256::ZERO, vec![0x60, 0x00, 0x60, 0x00, 0xfd].into());
-        let result = validate_backrun_cache(state, &default_victim(), &default_arb(), &default_params());
+        state.insert_account(
+            VICTIM_TO,
+            U256::ZERO,
+            vec![0x60, 0x00, 0x60, 0x00, 0xfd].into(),
+        );
+        let result =
+            validate_backrun_cache(state, &default_victim(), &default_arb(), &default_params());
         assert!(!result.accepted);
         assert_eq!(result.reject, Some(RejectReason::VictimReverted));
         assert_eq!(result.arb_gas_used, 0);
@@ -1529,15 +1548,11 @@ mod tests {
     fn victim_revert_with_error_data_sets_selector() {
         let mut state = ForkedState::new_empty(18_000_000, 1_700_000_000, 0);
         let revert_bytecode: Vec<u8> = vec![
-            0x63, 0x08, 0xc3, 0x79, 0xa0,
-            0x60, 0x00,
-            0x52,
-            0x60, 0x04,
-            0x60, 0x1c,
-            0xfd,
+            0x63, 0x08, 0xc3, 0x79, 0xa0, 0x60, 0x00, 0x52, 0x60, 0x04, 0x60, 0x1c, 0xfd,
         ];
         state.insert_account(VICTIM_TO, U256::ZERO, revert_bytecode.into());
-        let result = validate_backrun_cache(state, &default_victim(), &default_arb(), &default_params());
+        let result =
+            validate_backrun_cache(state, &default_victim(), &default_arb(), &default_params());
         assert!(!result.accepted);
         assert_eq!(result.reject, Some(RejectReason::VictimReverted));
         assert_eq!(result.revert_selector, Some([0x08, 0xc3, 0x79, 0xa0]));
@@ -1547,15 +1562,11 @@ mod tests {
     fn arb_revert_with_error_data_sets_selector() {
         let mut state = ForkedState::new_empty(18_000_000, 1_700_000_000, 0);
         let revert_bytecode: Vec<u8> = vec![
-            0x63, 0x08, 0xc3, 0x79, 0xa0,
-            0x60, 0x00,
-            0x52,
-            0x60, 0x04,
-            0x60, 0x1c,
-            0xfd,
+            0x63, 0x08, 0xc3, 0x79, 0xa0, 0x60, 0x00, 0x52, 0x60, 0x04, 0x60, 0x1c, 0xfd,
         ];
         state.insert_account(ARB_TO, U256::ZERO, revert_bytecode.into());
-        let result = validate_backrun_cache(state, &default_victim(), &default_arb(), &default_params());
+        let result =
+            validate_backrun_cache(state, &default_victim(), &default_arb(), &default_params());
         assert!(!result.accepted);
         assert_eq!(result.reject, Some(RejectReason::ArbReverted));
         assert_eq!(result.revert_selector, Some([0x08, 0xc3, 0x79, 0xa0]));
@@ -1588,15 +1599,12 @@ mod tests {
         };
 
         let mut arb_code = vec![
-            0x60, 0x00,
-            0x60, 0x00,
-            0x60, 0x00,
-            0x60, 0x00,
-            0x60, 0x00,
-            0x73,
+            0x60, 0x00, 0x60, 0x00, 0x60, 0x00, 0x60, 0x00, 0x60, 0x00, 0x73,
         ];
         arb_code.extend_from_slice(WETH.as_slice());
-        arb_code.push(0x61); arb_code.push(0x60); arb_code.push(0x00);
+        arb_code.push(0x61);
+        arb_code.push(0x60);
+        arb_code.push(0x00);
         arb_code.push(0xf1);
         arb_code.push(0x50);
         arb_code.push(0x00);
@@ -1626,7 +1634,11 @@ mod tests {
         };
 
         let result = validate_backrun_cache(state, &victim, &arb, &params);
-        assert!(result.accepted, "arb should be accepted with profit, got: {:?}", result.reject);
+        assert!(
+            result.accepted,
+            "arb should be accepted with profit, got: {:?}",
+            result.reject
+        );
         assert!(result.gross_profit_wei > U256::ZERO);
         assert!(result.arb_gas_used > 0);
         assert!(result.reject.is_none());
@@ -1681,7 +1693,7 @@ mod tests {
 
     #[test]
     fn read_post_balance_returns_stored_value_when_key_present() {
-        use revm::state::{EvmState, Account, EvmStorageSlot};
+        use revm::state::{Account, EvmState, EvmStorageSlot};
         let mut state = EvmState::default();
         let key = U256::from(42u64);
         let value = U256::from(12345u64);
@@ -1694,7 +1706,7 @@ mod tests {
 
     #[test]
     fn read_post_balance_returns_fallback_when_key_absent_but_token_present() {
-        use revm::state::{EvmState, Account};
+        use revm::state::{Account, EvmState};
         let mut state = EvmState::default();
         state.insert(WETH, Account::default());
         let key = U256::from(42u64);
@@ -1705,7 +1717,8 @@ mod tests {
 
     #[test]
     fn classify_transaction_header_error() {
-        let err: EVMError<String> = EVMError::Header(revm::context::result::InvalidHeader::PrevrandaoNotSet);
+        let err: EVMError<String> =
+            EVMError::Header(revm::context::result::InvalidHeader::PrevrandaoNotSet);
         assert_eq!(classify_transact_err(&err), RejectReason::SimError);
     }
 
@@ -1741,8 +1754,13 @@ mod tests {
     #[test]
     fn backrun_result_fields_on_arb_reverted() {
         let mut state = ForkedState::new_empty(18_000_000, 1_700_000_000, 0);
-        state.insert_account(ARB_TO, U256::ZERO, vec![0x60, 0x00, 0x60, 0x00, 0xfd].into());
-        let result = validate_backrun_cache(state, &default_victim(), &default_arb(), &default_params());
+        state.insert_account(
+            ARB_TO,
+            U256::ZERO,
+            vec![0x60, 0x00, 0x60, 0x00, 0xfd].into(),
+        );
+        let result =
+            validate_backrun_cache(state, &default_victim(), &default_arb(), &default_params());
         assert_eq!(result.gross_profit_wei, U256::ZERO);
         assert!(result.arb_gas_used > 0);
         assert!(result.victim_gas_used > 0);
@@ -1765,21 +1783,20 @@ mod tests {
             code.push(0x7f);
             code.extend_from_slice(&storage_key.to_be_bytes::<32>());
             code.push(0x55);
-            code.push(0x60); code.push(0x00);
-            code.push(0x60); code.push(0x00);
+            code.push(0x60);
+            code.push(0x00);
+            code.push(0x60);
+            code.push(0x00);
             code.push(0xf3);
             code
         };
         let mut arb_code = vec![
-            0x60, 0x00,
-            0x60, 0x00,
-            0x60, 0x00,
-            0x60, 0x00,
-            0x60, 0x00,
-            0x73,
+            0x60, 0x00, 0x60, 0x00, 0x60, 0x00, 0x60, 0x00, 0x60, 0x00, 0x73,
         ];
         arb_code.extend_from_slice(WETH.as_slice());
-        arb_code.push(0x61); arb_code.push(0x60); arb_code.push(0x00);
+        arb_code.push(0x61);
+        arb_code.push(0x60);
+        arb_code.push(0x00);
         arb_code.push(0xf1);
         arb_code.push(0x50);
         arb_code.push(0x00);
@@ -1788,13 +1805,13 @@ mod tests {
         state.insert_account(ARB_TO, U256::ZERO, arb_code.into());
         let mut params = default_params();
         params.base_fee = 1;
-        params.skip_victim_with_overrides = Some(vec![(
-            VICTIM_TO,
-            U256::from(8u64),
-            U256::from(1u64) << 112,
-        )]);
+        params.skip_victim_with_overrides =
+            Some(vec![(VICTIM_TO, U256::from(8u64), U256::from(1u64) << 112)]);
         let result = validate_backrun_cache(state, &default_victim(), &default_arb(), &params);
-        assert!(result.accepted, "should be accepted with profit via overrides");
+        assert!(
+            result.accepted,
+            "should be accepted with profit via overrides"
+        );
         assert!(result.gross_profit_wei > U256::ZERO);
     }
 
@@ -1837,8 +1854,13 @@ mod tests {
     #[test]
     fn victim_revert_with_empty_output() {
         let mut state = ForkedState::new_empty(18_000_000, 1_700_000_000, 0);
-        state.insert_account(VICTIM_TO, U256::ZERO, vec![0x60, 0x00, 0x60, 0x00, 0xfd].into());
-        let result = validate_backrun_cache(state, &default_victim(), &default_arb(), &default_params());
+        state.insert_account(
+            VICTIM_TO,
+            U256::ZERO,
+            vec![0x60, 0x00, 0x60, 0x00, 0xfd].into(),
+        );
+        let result =
+            validate_backrun_cache(state, &default_victim(), &default_arb(), &default_params());
         assert_eq!(result.revert_selector, Some([0, 0, 0, 0]));
     }
 
@@ -1891,22 +1913,21 @@ mod tests {
             code.push(0x7f);
             code.extend_from_slice(&storage_key.to_be_bytes::<32>());
             code.push(0x55);
-            code.push(0x60); code.push(0x00);
-            code.push(0x60); code.push(0x00);
+            code.push(0x60);
+            code.push(0x00);
+            code.push(0x60);
+            code.push(0x00);
             code.push(0xf3);
             code
         };
 
         let mut arb_code = vec![
-            0x60, 0x00,
-            0x60, 0x00,
-            0x60, 0x00,
-            0x60, 0x00,
-            0x60, 0x00,
-            0x73,
+            0x60, 0x00, 0x60, 0x00, 0x60, 0x00, 0x60, 0x00, 0x60, 0x00, 0x73,
         ];
         arb_code.extend_from_slice(WETH.as_slice());
-        arb_code.push(0x61); arb_code.push(0x60); arb_code.push(0x00);
+        arb_code.push(0x61);
+        arb_code.push(0x60);
+        arb_code.push(0x00);
         arb_code.push(0xf1);
         arb_code.push(0x50);
         arb_code.push(0x00);
@@ -1936,7 +1957,10 @@ mod tests {
         };
 
         let result = validate_backrun_cache(state, &victim, &arb, &params);
-        assert!(!result.accepted, "tiny profit should not cover high gas cost");
+        assert!(
+            !result.accepted,
+            "tiny profit should not cover high gas cost"
+        );
         assert_eq!(result.reject, Some(RejectReason::NegativeAfterGas));
     }
 }

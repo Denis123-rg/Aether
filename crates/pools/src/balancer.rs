@@ -1,6 +1,6 @@
-use alloy::primitives::{Address, U256};
-use aether_common::types::ProtocolType;
 use crate::Pool;
+use aether_common::types::ProtocolType;
+use alloy::primitives::{Address, U256};
 
 /// Conservative discount on unequal-weight analytical output (2%).
 const UNEQUAL_WEIGHT_SAFETY_MARGIN_BPS: u32 = 200;
@@ -171,7 +171,10 @@ impl Pool for BalancerPool {
                 return None;
             }
             let raw = numerator / denominator;
-            Some(raw * U256::from(10_000u32 - UNEQUAL_WEIGHT_SAFETY_MARGIN_BPS) / U256::from(10_000u32))
+            Some(
+                raw * U256::from(10_000u32 - UNEQUAL_WEIGHT_SAFETY_MARGIN_BPS)
+                    / U256::from(10_000u32),
+            )
         }
     }
 
@@ -295,7 +298,8 @@ mod tests {
         let denominator = pool.balance0 * w_out + amount_in_after_fee * w_in;
         let raw = numerator / denominator;
         let out = pool.get_amount_out(pool.token0, amount_in).unwrap();
-        let expected = raw * U256::from(10_000u32 - UNEQUAL_WEIGHT_SAFETY_MARGIN_BPS) / U256::from(10_000u32);
+        let expected =
+            raw * U256::from(10_000u32 - UNEQUAL_WEIGHT_SAFETY_MARGIN_BPS) / U256::from(10_000u32);
         assert_eq!(out, expected);
     }
 
@@ -304,8 +308,9 @@ mod tests {
             Address::ZERO,
             address!("C02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2"), // WETH
             address!("A0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"), // USDC
-            200000, 800000, // 20/80 weights — unequal, exercises approx path
-            10,             // 0.1%
+            200000,
+            800000, // 20/80 weights — unequal, exercises approx path
+            10,     // 0.1%
         );
         pool.update_state(
             U256::from(1_000_000_000_000_000_000_000u128),
@@ -335,7 +340,9 @@ mod tests {
             Address::ZERO,
             address!("C02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2"),
             address!("A0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"),
-            500000, 500000, 30,
+            500000,
+            500000,
+            30,
         );
         assert!(pool
             .predict_post_state(pool.token0, U256::from(1u64))
@@ -425,19 +432,14 @@ mod tests {
     #[test]
     fn test_balancer_get_amount_in_overflow_reserve() {
         let pool = setup_balancer_pool();
-        assert!(pool
-            .get_amount_in(pool.token1, pool.balance1)
-            .is_none());
+        assert!(pool.get_amount_in(pool.token1, pool.balance1).is_none());
     }
 
     #[test]
     fn test_balancer_unequal_weight_huge_input() {
         let pool = setup_balancer_80_20_pool();
         let out = pool
-            .get_amount_out(
-                pool.token0,
-                U256::from(10u128.pow(30)),
-            )
+            .get_amount_out(pool.token0, U256::from(10u128.pow(30)))
             .expect("approx path");
         assert!(out < pool.balance1);
     }

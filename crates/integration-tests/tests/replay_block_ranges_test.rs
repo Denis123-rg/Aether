@@ -33,10 +33,7 @@ async fn replay_block_range_no_panic() {
         .unwrap_or(1000);
 
     let provider = ProviderBuilder::new().connect_http(rpc_url.parse().expect("valid rpc url"));
-    let latest = provider
-        .get_block_number()
-        .await
-        .expect("block number");
+    let latest = provider.get_block_number().await.expect("block number");
 
     let start = latest.saturating_sub(block_count);
     let pools: Vec<PoolDef> = default_pool_set();
@@ -58,7 +55,10 @@ async fn replay_block_range_no_panic() {
 
     latencies_us.sort_unstable();
     let p99_idx = (latencies_us.len() as f64 * 0.99).floor() as usize;
-    let p99 = latencies_us.get(p99_idx.min(latencies_us.len().saturating_sub(1))).copied().unwrap_or(0);
+    let p99 = latencies_us
+        .get(p99_idx.min(latencies_us.len().saturating_sub(1)))
+        .copied()
+        .unwrap_or(0);
 
     eprintln!(
         "replay blocks={}..={} samples={} cycles_total={} p99_detection_us={}",

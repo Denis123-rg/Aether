@@ -135,10 +135,7 @@ impl PrewarmedState {
     /// bytecode and storage parts (the production path goes through
     /// [`prewarm_state`], which needs a live provider).
     #[cfg(test)]
-    fn from_parts(
-        code_cache: Vec<(B256, Bytecode)>,
-        storage: Vec<(Address, U256, U256)>,
-    ) -> Self {
+    fn from_parts(code_cache: Vec<(B256, Bytecode)>, storage: Vec<(Address, U256, U256)>) -> Self {
         Self {
             code_cache,
             storage,
@@ -1017,8 +1014,8 @@ mod tests {
 
     fn prewarm_fixture() -> (PrewarmedState, Address, Bytecode) {
         let pool = address!("b4e16d0168e52d35cacd2c6185b44281ec28c9dc"); // UNIV2 WETH/USDC
-        // PUSH1 0x00 PUSH1 0x00 RETURN — any non-empty program; we only
-        // assert the bytecode lands in the contracts cache.
+                                                                         // PUSH1 0x00 PUSH1 0x00 RETURN — any non-empty program; we only
+                                                                         // assert the bytecode lands in the contracts cache.
         let code = Bytecode::new_raw(Bytes::from(vec![0x60, 0x00, 0x60, 0x00, 0xf3]));
         let stale_reserves = U256::from(1_234_567u64);
         let warm = PrewarmedState::from_parts(

@@ -71,11 +71,7 @@ pub fn build_execute_arb_calldata(
 
 /// Build calldata for a Uniswap V2-style swap.
 /// swap(uint amount0Out, uint amount1Out, address to, bytes data)
-pub fn build_univ2_swap_calldata(
-    amount0_out: U256,
-    amount1_out: U256,
-    to: Address,
-) -> Vec<u8> {
+pub fn build_univ2_swap_calldata(amount0_out: U256, amount1_out: U256, to: Address) -> Vec<u8> {
     sol! {
         function swap(uint256 amount0Out, uint256 amount1Out, address to, bytes data);
     }
@@ -110,9 +106,8 @@ pub fn build_univ3_swap_calldata(
     // Convert U256 to uint160 - clamp to max uint160
     let max_uint160 = U256::from(1u8).wrapping_shl(160) - U256::from(1u8);
     let clamped = sqrt_price_limit_x96.min(max_uint160);
-    let limit_u160 = alloy::primitives::Uint::<160, 3>::from_limbs_slice(
-        &clamped.into_limbs()[..3],
-    );
+    let limit_u160 =
+        alloy::primitives::Uint::<160, 3>::from_limbs_slice(&clamped.into_limbs()[..3]);
     let call = swapCall {
         recipient,
         zeroForOne: zero_for_one,
@@ -332,10 +327,22 @@ mod tests {
 
         let deadline = U256::from(1_700_000_000u64 + 120);
         let tip_bps = U256::from(9000u64);
-        let calldata1 =
-            build_execute_arb_calldata(&steps, Address::ZERO, U256::from(1000), deadline, U256::ZERO, tip_bps);
-        let calldata2 =
-            build_execute_arb_calldata(&steps, Address::ZERO, U256::from(1000), deadline, U256::ZERO, tip_bps);
+        let calldata1 = build_execute_arb_calldata(
+            &steps,
+            Address::ZERO,
+            U256::from(1000),
+            deadline,
+            U256::ZERO,
+            tip_bps,
+        );
+        let calldata2 = build_execute_arb_calldata(
+            &steps,
+            Address::ZERO,
+            U256::from(1000),
+            deadline,
+            U256::ZERO,
+            tip_bps,
+        );
 
         // Same inputs must produce identical calldata (deterministic)
         assert_eq!(calldata1, calldata2);
@@ -350,13 +357,28 @@ mod tests {
 
         // Different tip_bps values should produce different calldata
         let calldata_9000 = build_execute_arb_calldata(
-            &steps, flashloan_token, flashloan_amount, deadline, U256::ZERO, U256::from(9000u64),
+            &steps,
+            flashloan_token,
+            flashloan_amount,
+            deadline,
+            U256::ZERO,
+            U256::from(9000u64),
         );
         let calldata_5000 = build_execute_arb_calldata(
-            &steps, flashloan_token, flashloan_amount, deadline, U256::ZERO, U256::from(5000u64),
+            &steps,
+            flashloan_token,
+            flashloan_amount,
+            deadline,
+            U256::ZERO,
+            U256::from(5000u64),
         );
         let calldata_0 = build_execute_arb_calldata(
-            &steps, flashloan_token, flashloan_amount, deadline, U256::ZERO, U256::ZERO,
+            &steps,
+            flashloan_token,
+            flashloan_amount,
+            deadline,
+            U256::ZERO,
+            U256::ZERO,
         );
 
         assert_ne!(calldata_9000, calldata_5000);

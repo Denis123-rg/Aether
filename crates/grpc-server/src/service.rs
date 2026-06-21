@@ -198,7 +198,10 @@ impl ArbService for ArbServiceImpl {
         request: Request<StreamArbsRequest>,
     ) -> Result<Response<Self::StreamArbsStream>, Status> {
         let min_profit = request.into_inner().min_profit_eth;
-        info!(min_profit_eth = min_profit, "Client subscribed to arb stream");
+        info!(
+            min_profit_eth = min_profit,
+            "Client subscribed to arb stream"
+        );
 
         let min_profit_wei = eth_to_wei_threshold(min_profit);
         let (tx, rx) = mpsc::channel(100);
@@ -228,7 +231,10 @@ impl ArbService for ArbServiceImpl {
                         }
                     }
                     Err(broadcast::error::RecvError::Lagged(n)) => {
-                        warn!(skipped = n, "StreamArbs subscriber lagged, dropped messages");
+                        warn!(
+                            skipped = n,
+                            "StreamArbs subscriber lagged, dropped messages"
+                        );
                         // Continue — the subscriber missed some but can still
                         // receive future messages.
                     }
@@ -927,7 +933,10 @@ tier = "warm"
     fn test_profit_wei_to_u128_small() {
         // 1 ETH = 1e18 wei = 0xDE0B6B3A7640000 (8 bytes)
         let one_eth_bytes = 1_000_000_000_000_000_000u128.to_be_bytes();
-        assert_eq!(profit_wei_to_u128(&one_eth_bytes), 1_000_000_000_000_000_000);
+        assert_eq!(
+            profit_wei_to_u128(&one_eth_bytes),
+            1_000_000_000_000_000_000
+        );
     }
 
     #[test]
@@ -1023,14 +1032,11 @@ tier = "warm"
         svc.arb_tx.send(high_arb).unwrap();
 
         // We should only receive the high-profit arb (low-profit is filtered out).
-        let received = tokio::time::timeout(
-            std::time::Duration::from_millis(200),
-            stream.next(),
-        )
-        .await
-        .expect("should receive within timeout")
-        .expect("stream should have a message")
-        .expect("item should be Ok");
+        let received = tokio::time::timeout(std::time::Duration::from_millis(200), stream.next())
+            .await
+            .expect("should receive within timeout")
+            .expect("stream should have a message")
+            .expect("item should be Ok");
 
         assert_eq!(received.id, "high-profit");
     }
@@ -1069,14 +1075,11 @@ tier = "warm"
 
         svc.arb_tx.send(arb).unwrap();
 
-        let received = tokio::time::timeout(
-            std::time::Duration::from_millis(200),
-            stream.next(),
-        )
-        .await
-        .expect("should receive within timeout")
-        .expect("stream should have a message")
-        .expect("item should be Ok");
+        let received = tokio::time::timeout(std::time::Duration::from_millis(200), stream.next())
+            .await
+            .expect("should receive within timeout")
+            .expect("stream should have a message")
+            .expect("item should be Ok");
 
         assert_eq!(received.id, "tiny-profit");
     }
@@ -1124,12 +1127,9 @@ tier = "warm"
         // the surviving broadcast messages. Scan until we see the sentinel
         // that proves forward progress continued through the Lagged branch.
         let mut found_final = false;
-        while let Some(msg) = tokio::time::timeout(
-            std::time::Duration::from_secs(5),
-            stream.next(),
-        )
-        .await
-        .expect("should receive within timeout")
+        while let Some(msg) = tokio::time::timeout(std::time::Duration::from_secs(5), stream.next())
+            .await
+            .expect("should receive within timeout")
         {
             let arb = msg.expect("item should be Ok");
             if arb.id == "after-lagged" {

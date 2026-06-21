@@ -20,9 +20,8 @@ use aether_simulator::fork::{RpcForkedState, SimConfig};
 use aether_simulator::EvmSimulator;
 
 use common::{
-    build_price_graph, check_prerequisites, default_pool_set, fetch_reserves,
-    getReservesCall, spawn_anvil_at_block, wait_for_anvil,
-    SUSHI_WETH_USDC, UNIV2_WETH_USDC,
+    build_price_graph, check_prerequisites, default_pool_set, fetch_reserves, getReservesCall,
+    spawn_anvil_at_block, wait_for_anvil, SUSHI_WETH_USDC, UNIV2_WETH_USDC,
 };
 
 /// Full E2E test: real reserves -> price graph -> detection -> RPC simulation.

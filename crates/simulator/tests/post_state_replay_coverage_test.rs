@@ -1,6 +1,6 @@
-use aether_simulator::post_state_replay::*;
-use aether_simulator::mempool_backrun::VictimTx;
 use aether_simulator::fork::ForkedState;
+use aether_simulator::mempool_backrun::VictimTx;
+use aether_simulator::post_state_replay::*;
 use alloy::primitives::{address, Bytes, U256};
 
 fn default_params() -> ReplayParams {
@@ -116,7 +116,8 @@ fn curve_replay_victim_halted() {
     let pool = address!("bEbc44782C7dB0a1A60Cb6fe97d0b483032FF1C7");
     let mut state = ForkedState::new_empty(18_000_000, 1_700_000_000, 1_000_000_000);
     state.insert_account(noop_victim().to, U256::ZERO, vec![0xfe].into());
-    let result = replay_curve_post_state_cache(state, &noop_victim(), pool, 0, 1, &default_params());
+    let result =
+        replay_curve_post_state_cache(state, &noop_victim(), pool, 0, 1, &default_params());
     assert!(matches!(result, Err(ReplayError::VictimHalted)));
 }
 
@@ -129,7 +130,8 @@ fn curve_replay_success_const_returner() {
     state.insert_account(pool, U256::ZERO, Bytes::from(pool_code));
     state.insert_account_balance(noop_victim().from, U256::from(10u128.pow(18)));
 
-    let result = replay_curve_post_state_cache(state, &noop_victim(), pool, 0, 1, &default_params());
+    let result =
+        replay_curve_post_state_cache(state, &noop_victim(), pool, 0, 1, &default_params());
     let post = result.expect("curve replay should succeed");
     assert_eq!(post.new_balance_in, balance_val);
     assert_eq!(post.new_balance_out, balance_val);
@@ -143,7 +145,8 @@ fn curve_replay_success_const_returner() {
 fn curve_replay_no_code_decode_failed() {
     let pool = address!("bEbc44782C7dB0a1A60Cb6fe97d0b483032FF1C7");
     let state = ForkedState::new_empty(18_000_000, 1_700_000_000, 1_000_000_000);
-    let result = replay_curve_post_state_cache(state, &noop_victim(), pool, 0, 1, &default_params());
+    let result =
+        replay_curve_post_state_cache(state, &noop_victim(), pool, 0, 1, &default_params());
     assert!(matches!(result, Err(ReplayError::DecodeFailed("balances"))));
 }
 
@@ -158,7 +161,15 @@ fn balancer_replay_victim_halted() {
 
     let mut state = ForkedState::new_empty(18_000_000, 1_700_000_000, 1_000_000_000);
     state.insert_account(noop_victim().to, U256::ZERO, vec![0xfe].into());
-    let result = replay_balancer_post_state_cache(state, &noop_victim(), pool, vault, t0, t1, &default_params());
+    let result = replay_balancer_post_state_cache(
+        state,
+        &noop_victim(),
+        pool,
+        vault,
+        t0,
+        t1,
+        &default_params(),
+    );
     assert!(matches!(result, Err(ReplayError::VictimHalted)));
 }
 
@@ -170,8 +181,19 @@ fn balancer_replay_no_code_get_pool_id_decode_failed() {
     let t1 = address!("ba100000625a3754423978a60c9317c58a424e3D");
 
     let state = ForkedState::new_empty(18_000_000, 1_700_000_000, 1_000_000_000);
-    let result = replay_balancer_post_state_cache(state, &noop_victim(), pool, vault, t0, t1, &default_params());
-    assert!(matches!(result, Err(ReplayError::DecodeFailed("getPoolId"))));
+    let result = replay_balancer_post_state_cache(
+        state,
+        &noop_victim(),
+        pool,
+        vault,
+        t0,
+        t1,
+        &default_params(),
+    );
+    assert!(matches!(
+        result,
+        Err(ReplayError::DecodeFailed("getPoolId"))
+    ));
 }
 
 #[test]
@@ -205,9 +227,9 @@ fn balancer_replay_success_with_mock() {
     let mut vault_ret = Vec::new();
     // Offset to tokens array (relative to start of return data)
     vault_ret.extend_from_slice(&U256::from(0x60u64).to_be_bytes::<32>()); // offset = 3*32 = 96
-    // Offset to balances array (after: 3 header words + 1 len + 2 tokens = 6 words)
+                                                                           // Offset to balances array (after: 3 header words + 1 len + 2 tokens = 6 words)
     vault_ret.extend_from_slice(&U256::from(0xc0u64).to_be_bytes::<32>()); // offset = 6*32 = 192
-    // lastChangeBlock
+                                                                           // lastChangeBlock
     vault_ret.extend_from_slice(&U256::from(100u64).to_be_bytes::<32>());
     // tokens length
     vault_ret.extend_from_slice(&U256::from(2u64).to_be_bytes::<32>());
@@ -233,7 +255,15 @@ fn balancer_replay_success_with_mock() {
     state.insert_account(vault, U256::ZERO, Bytes::from(vault_code));
     state.insert_account_balance(noop_victim().from, U256::from(10u128.pow(18)));
 
-    let result = replay_balancer_post_state_cache(state, &noop_victim(), pool, vault, t0, t1, &default_params());
+    let result = replay_balancer_post_state_cache(
+        state,
+        &noop_victim(),
+        pool,
+        vault,
+        t0,
+        t1,
+        &default_params(),
+    );
     let post = result.expect("balancer replay should succeed with mock bytecode");
     assert_eq!(post.new_balance0, bal0);
     assert_eq!(post.new_balance1, bal1);
@@ -279,10 +309,16 @@ fn const_returner_raw(data: &[u8]) -> Vec<u8> {
 fn replay_error_as_str_coverage() {
     assert_eq!(ReplayError::VictimReverted.as_str(), "victim_reverted");
     assert_eq!(ReplayError::VictimHalted.as_str(), "victim_halted");
-    assert_eq!(ReplayError::ReadCallFailed("foo").as_str(), "read_call_failed");
+    assert_eq!(
+        ReplayError::ReadCallFailed("foo").as_str(),
+        "read_call_failed"
+    );
     assert_eq!(ReplayError::DecodeFailed("bar").as_str(), "decode_failed");
     assert_eq!(ReplayError::SimError.as_str(), "sim_error");
-    assert_eq!(ReplayError::UnimplementedProtocol("curve").as_str(), "unimplemented_protocol");
+    assert_eq!(
+        ReplayError::UnimplementedProtocol("curve").as_str(),
+        "unimplemented_protocol"
+    );
 }
 
 #[test]

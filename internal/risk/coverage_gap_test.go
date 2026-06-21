@@ -124,8 +124,8 @@ func TestPause_WithObserver_Coverage(t *testing.T) {
 
 func TestRecordRevert_BugTriggersPause_Coverage(t *testing.T) {
 	rm := NewRiskManager(RiskConfig{
-		ConsecutiveRevertsPause: 3,
-		RevertWindowMinutes:     60,
+		ConsecutiveRevertsPause:   3,
+		RevertWindowMinutes:       60,
 		CompetitiveRevertAlertPct: 90,
 	})
 	for i := 0; i < 3; i++ {
@@ -239,14 +239,14 @@ func TestRecordBundleResult_MissRateAlert_Coverage(t *testing.T) {
 
 func TestRecordTrade_DailyLossHalt_Coverage(t *testing.T) {
 	rm := NewRiskManager(RiskConfig{
-		DailyLossHaltETH:     0.01,
-		MinETHBalance:        0.01,
-		MaxGasGwei:           1000,
-		MaxSingleTradeETH:    1000,
-		MaxDailyVolumeETH:    1000,
-		MinProfitETH:         0.0001,
-		MinTipSharePct:       0,
-		MaxTipSharePct:       100,
+		DailyLossHaltETH:          0.01,
+		MinETHBalance:             0.01,
+		MaxGasGwei:                1000,
+		MaxSingleTradeETH:         1000,
+		MaxDailyVolumeETH:         1000,
+		MinProfitETH:              0.0001,
+		MinTipSharePct:            0,
+		MaxTipSharePct:            100,
 		CompetitiveRevertAlertPct: 99,
 	})
 	rm.ForceStateForTest(StateRunning)

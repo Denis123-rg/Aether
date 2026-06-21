@@ -1,6 +1,6 @@
-use alloy::primitives::{Address, U256};
-use aether_common::types::ProtocolType;
 use crate::Pool;
+use aether_common::types::ProtocolType;
+use alloy::primitives::{Address, U256};
 
 #[derive(Debug, Clone)]
 pub struct UniswapV2Pool {
@@ -26,13 +26,23 @@ impl UniswapV2Pool {
 }
 
 impl Pool for UniswapV2Pool {
-    fn protocol(&self) -> ProtocolType { ProtocolType::UniswapV2 }
-    fn address(&self) -> Address { self.address }
-    fn tokens(&self) -> Vec<Address> { vec![self.token0, self.token1] }
-    fn fee_bps(&self) -> u32 { self.fee_bps }
+    fn protocol(&self) -> ProtocolType {
+        ProtocolType::UniswapV2
+    }
+    fn address(&self) -> Address {
+        self.address
+    }
+    fn tokens(&self) -> Vec<Address> {
+        vec![self.token0, self.token1]
+    }
+    fn fee_bps(&self) -> u32 {
+        self.fee_bps
+    }
 
     fn get_amount_out(&self, token_in: Address, amount_in: U256) -> Option<U256> {
-        if amount_in.is_zero() { return None; }
+        if amount_in.is_zero() {
+            return None;
+        }
         let (reserve_in, reserve_out) = if token_in == self.token0 {
             (self.reserve0, self.reserve1)
         } else if token_in == self.token1 {
@@ -40,7 +50,9 @@ impl Pool for UniswapV2Pool {
         } else {
             return None;
         };
-        if reserve_in.is_zero() || reserve_out.is_zero() { return None; }
+        if reserve_in.is_zero() || reserve_out.is_zero() {
+            return None;
+        }
 
         // dy = (dx * (10000 - fee_bps) * y) / (x * 10000 + dx * (10000 - fee_bps))
         let fee_complement = 10_000u64.saturating_sub(self.fee_bps as u64);
@@ -51,7 +63,9 @@ impl Pool for UniswapV2Pool {
     }
 
     fn get_amount_in(&self, token_out: Address, amount_out: U256) -> Option<U256> {
-        if amount_out.is_zero() { return None; }
+        if amount_out.is_zero() {
+            return None;
+        }
         let (reserve_in, reserve_out) = if token_out == self.token1 {
             (self.reserve0, self.reserve1)
         } else if token_out == self.token0 {
@@ -59,8 +73,12 @@ impl Pool for UniswapV2Pool {
         } else {
             return None;
         };
-        if reserve_in.is_zero() || reserve_out.is_zero() { return None; }
-        if amount_out >= reserve_out { return None; }
+        if reserve_in.is_zero() || reserve_out.is_zero() {
+            return None;
+        }
+        if amount_out >= reserve_out {
+            return None;
+        }
 
         // dx = (x * dy * 10000) / ((y - dy) * (10000 - fee_bps)) + 1
         let fee_complement = 10_000u64.saturating_sub(self.fee_bps as u64);
@@ -99,7 +117,7 @@ mod tests {
         );
         // Set realistic reserves: 10M USDC, 5000 ETH
         pool.update_state(
-            U256::from(10_000_000_000_000u64),  // 10M USDC (6 decimals)
+            U256::from(10_000_000_000_000u64), // 10M USDC (6 decimals)
             U256::from(5_000_000_000_000_000_000_000u128), // 5000 ETH (18 decimals)
         );
         pool
@@ -156,9 +174,14 @@ mod tests {
     #[test]
     fn test_empty_reserves_returns_none() {
         let pool = UniswapV2Pool::new(
-            Address::ZERO, Address::ZERO, address!("0000000000000000000000000000000000000001"), 30,
+            Address::ZERO,
+            Address::ZERO,
+            address!("0000000000000000000000000000000000000001"),
+            30,
         );
-        assert!(pool.get_amount_out(Address::ZERO, U256::from(1000u64)).is_none());
+        assert!(pool
+            .get_amount_out(Address::ZERO, U256::from(1000u64))
+            .is_none());
     }
 
     #[test]
@@ -204,8 +227,12 @@ mod tests {
     fn test_zero_reserves_amount_out_none() {
         let mut pool = setup_pool();
         pool.update_state(U256::ZERO, U256::ZERO);
-        assert!(pool.get_amount_out(pool.token0, U256::from(1000u64)).is_none());
-        assert!(pool.get_amount_in(pool.token0, U256::from(1000u64)).is_none());
+        assert!(pool
+            .get_amount_out(pool.token0, U256::from(1000u64))
+            .is_none());
+        assert!(pool
+            .get_amount_in(pool.token0, U256::from(1000u64))
+            .is_none());
     }
 
     #[test]
@@ -232,15 +259,21 @@ mod tests {
     fn test_get_reserves_zero_r0_only_returns_none() {
         let mut pool = setup_pool();
         pool.update_state(U256::ZERO, U256::from(1_000_000_000_000_000_000u64));
-        assert!(pool.get_amount_out(pool.token0, U256::from(1000u64)).is_none());
-        assert!(pool.get_amount_in(pool.token1, U256::from(1000u64)).is_none());
+        assert!(pool
+            .get_amount_out(pool.token0, U256::from(1000u64))
+            .is_none());
+        assert!(pool
+            .get_amount_in(pool.token1, U256::from(1000u64))
+            .is_none());
     }
 
     #[test]
     fn test_get_reserves_zero_r1_only_returns_none() {
         let mut pool = setup_pool();
         pool.update_state(U256::from(1_000_000_000_000u64), U256::ZERO);
-        assert!(pool.get_amount_out(pool.token1, U256::from(1000u64)).is_none());
+        assert!(pool
+            .get_amount_out(pool.token1, U256::from(1000u64))
+            .is_none());
     }
 
     #[test]
@@ -267,7 +300,9 @@ mod tests {
         let mut low_fee = setup_pool();
         low_fee.fee_bps = 25;
         let amount_in = U256::from(1_000_000_000_000_000_000u64);
-        let out_30 = setup_pool().get_amount_out(setup_pool().token1, amount_in).unwrap();
+        let out_30 = setup_pool()
+            .get_amount_out(setup_pool().token1, amount_in)
+            .unwrap();
         let out_25 = low_fee.get_amount_out(low_fee.token1, amount_in).unwrap();
         assert!(out_25 > out_30);
     }
@@ -289,7 +324,9 @@ mod tests {
         let amount_in = U256::from(1_000_000_000_000_000_000u64);
         let out = pool.get_amount_out(pool.token1, amount_in).unwrap();
         assert!(out > U256::ZERO);
-        let out_30 = setup_pool().get_amount_out(setup_pool().token1, amount_in).unwrap();
+        let out_30 = setup_pool()
+            .get_amount_out(setup_pool().token1, amount_in)
+            .unwrap();
         assert!(out < out_30);
     }
 
@@ -309,8 +346,6 @@ mod tests {
             U256::from(1_000_000u64),
             U256::from(1_000_000_000_000_000_000u64),
         );
-        assert!(pool
-            .get_amount_in(pool.token0, pool.reserve0)
-            .is_none());
+        assert!(pool.get_amount_in(pool.token0, pool.reserve0).is_none());
     }
 }

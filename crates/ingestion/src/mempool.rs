@@ -157,9 +157,7 @@ impl AlchemyMempool {
         // alchemy_pendingTransactions is a non-standard subscription; route
         // through the raw `eth_subscribe` path with the method-specific
         // params object.
-        let sub = provider
-            .subscribe::<_, Transaction>(params)
-            .await?;
+        let sub = provider.subscribe::<_, Transaction>(params).await?;
         let mut stream = sub.into_stream();
 
         loop {
@@ -523,8 +521,14 @@ mod tests {
         let v = default_router_addresses();
         let curve_3pool = address!("bEbc44782C7dB0a1A60Cb6fe97d0b483032FF1C7");
         let curve_steth = address!("DC24316b9AE028F1497c275EB9192a3Ea0f67022");
-        assert!(v.contains(&curve_3pool), "default filter must include Curve 3pool");
-        assert!(v.contains(&curve_steth), "default filter must include Curve stETH pool");
+        assert!(
+            v.contains(&curve_3pool),
+            "default filter must include Curve 3pool"
+        );
+        assert!(
+            v.contains(&curve_steth),
+            "default filter must include Curve stETH pool"
+        );
     }
 
     #[test]
@@ -543,9 +547,10 @@ mod tests {
     }
 
     fn signed_tx_vector() -> (Vec<u8>, alloy::primitives::B256) {
-        let signer: PrivateKeySigner = "0x4c0883a69102937d6231471b5dbb6204fe512961708279f2e3e8a5d4b8e3e3e3"
-            .parse()
-            .expect("valid private key hex");
+        let signer: PrivateKeySigner =
+            "0x4c0883a69102937d6231471b5dbb6204fe512961708279f2e3e8a5d4b8e3e3e3"
+                .parse()
+                .expect("valid private key hex");
 
         let tx = TxEip1559 {
             chain_id: 1,
@@ -569,9 +574,10 @@ mod tests {
     }
 
     fn signed_envelope() -> TxEnvelope {
-        let signer: PrivateKeySigner = "0x4c0883a69102937d6231471b5dbb6204fe512961708279f2e3e8a5d4b8e3e3e3"
-            .parse()
-            .expect("valid private key hex");
+        let signer: PrivateKeySigner =
+            "0x4c0883a69102937d6231471b5dbb6204fe512961708279f2e3e8a5d4b8e3e3e3"
+                .parse()
+                .expect("valid private key hex");
 
         let tx = TxEip1559 {
             chain_id: 1,
@@ -627,7 +633,10 @@ mod tests {
     #[test]
     fn raw_tx_matches_hash_rejects_all_zeros() {
         let zeros = vec![0u8; 64];
-        assert!(!raw_tx_matches_hash(&zeros, alloy::primitives::B256::repeat_byte(0xff)));
+        assert!(!raw_tx_matches_hash(
+            &zeros,
+            alloy::primitives::B256::repeat_byte(0xff)
+        ));
     }
 
     #[test]
@@ -681,16 +690,16 @@ mod tests {
         mempool.forward(&channels, tx);
 
         let received = rx.try_recv().expect("event should be dispatched");
-        assert_eq!(
-            received.tx_hash,
-            keccak256(&signed_tx_vector().0)
-        );
+        assert_eq!(received.tx_hash, keccak256(&signed_tx_vector().0));
         assert_eq!(received.from, expected_from);
         assert_eq!(
             received.to,
             Some(address!("7a250d5630B4cF539739dF2C5dAcb4c659F2488D"))
         );
-        assert_eq!(received.value, AlloyU256::from(1_000_000_000_000_000_000u64));
+        assert_eq!(
+            received.value,
+            AlloyU256::from(1_000_000_000_000_000_000u64)
+        );
         assert_eq!(received.input, vec![0xde, 0xad, 0xbe, 0xef]);
         assert_eq!(received.gas_price, 30_000_000_000);
         assert!(!received.raw_tx.is_empty());
@@ -794,9 +803,10 @@ mod tests {
             router_filter: vec![],
         });
 
-        let signer: PrivateKeySigner = "0x4c0883a69102937d6231471b5dbb6204fe512961708279f2e3e8a5d4b8e3e3e3"
-            .parse()
-            .expect("valid private key hex");
+        let signer: PrivateKeySigner =
+            "0x4c0883a69102937d6231471b5dbb6204fe512961708279f2e3e8a5d4b8e3e3e3"
+                .parse()
+                .expect("valid private key hex");
 
         let tx = TxEip1559 {
             chain_id: 1,
@@ -844,8 +854,7 @@ mod tests {
 
         let received = rx.try_recv().unwrap();
         assert!(
-            received.first_seen_unix_nanos >= before
-                && received.first_seen_unix_nanos <= after,
+            received.first_seen_unix_nanos >= before && received.first_seen_unix_nanos <= after,
             "first_seen should be between before={} and after={}, got={}",
             before,
             after,
@@ -883,7 +892,11 @@ mod tests {
     #[test]
     fn default_router_addresses_count() {
         let v = default_router_addresses();
-        assert!(v.len() >= 16, "expected at least 16 router addresses, got {}", v.len());
+        assert!(
+            v.len() >= 16,
+            "expected at least 16 router addresses, got {}",
+            v.len()
+        );
     }
 
     #[test]

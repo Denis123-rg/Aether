@@ -201,12 +201,8 @@ impl RpcProvider {
                         NodeType::WebSocket => {
                             self.connect_ws(&node_url, &node, &mut shutdown).await
                         }
-                        NodeType::Ipc => {
-                            self.connect_ipc(&node_url, &node, &mut shutdown).await
-                        }
-                        NodeType::Http => {
-                            self.connect_http(&node_url, &node, &mut shutdown).await
-                        }
+                        NodeType::Ipc => self.connect_ipc(&node_url, &node, &mut shutdown).await,
+                        NodeType::Http => self.connect_http(&node_url, &node, &mut shutdown).await,
                     };
 
                     match result {
@@ -406,7 +402,10 @@ impl RpcProvider {
         let provider = ProviderBuilder::new().connect_http(parsed_url);
 
         let initial_block = provider.get_block_number().await?;
-        info!(block = initial_block, "HTTP provider connected (polling mode)");
+        info!(
+            block = initial_block,
+            "HTTP provider connected (polling mode)"
+        );
         node.write().await.record_success(0, initial_block);
         let mut last_block = initial_block;
         let event_topics = self.event_topics();
@@ -858,11 +857,7 @@ mod tests {
         let provider = RpcProvider::new(config, channels, Arc::clone(&metrics));
 
         let unknown_topic = B256::repeat_byte(0xFF);
-        provider.process_logs(&[(
-            Address::ZERO,
-            vec![unknown_topic],
-            vec![0u8; 64],
-        )]);
+        provider.process_logs(&[(Address::ZERO, vec![unknown_topic], vec![0u8; 64])]);
 
         let rendered = String::from_utf8(metrics.render()).expect("metrics utf-8");
         assert!(
@@ -870,11 +865,7 @@ mod tests {
             "expected unknown_topic counter at 1, got: {rendered}"
         );
 
-        provider.process_logs(&[(
-            Address::ZERO,
-            vec![unknown_topic],
-            vec![0u8; 64],
-        )]);
+        provider.process_logs(&[(Address::ZERO, vec![unknown_topic], vec![0u8; 64])]);
         let rendered = String::from_utf8(metrics.render()).expect("metrics utf-8");
         assert!(
             rendered.contains(r#"aether_decode_errors_total{reason="unknown_topic"} 2"#),
@@ -904,9 +895,7 @@ mod tests {
             rendered.contains(r#"aether_decode_errors_total{reason="malformed_payload"} 1"#),
             "expected malformed_payload counter at 1, got: {rendered}"
         );
-        assert!(
-            !rendered.contains(r#"aether_decode_errors_total{reason="unknown_topic"} 1"#),
-        );
+        assert!(!rendered.contains(r#"aether_decode_errors_total{reason="unknown_topic"} 1"#),);
     }
 
     #[test]
@@ -1005,7 +994,10 @@ mod tests {
     #[test]
     fn test_infer_node_type_websocket() {
         assert_eq!(infer_node_type("ws://localhost:8546"), NodeType::WebSocket);
-        assert_eq!(infer_node_type("wss://eth-mainnet.g.alchemy.com/v2/key"), NodeType::WebSocket);
+        assert_eq!(
+            infer_node_type("wss://eth-mainnet.g.alchemy.com/v2/key"),
+            NodeType::WebSocket
+        );
     }
 
     #[test]
@@ -1018,7 +1010,10 @@ mod tests {
     #[test]
     fn test_infer_node_type_http() {
         assert_eq!(infer_node_type("http://localhost:8545"), NodeType::Http);
-        assert_eq!(infer_node_type("https://mainnet.infura.io/v3/key"), NodeType::Http);
+        assert_eq!(
+            infer_node_type("https://mainnet.infura.io/v3/key"),
+            NodeType::Http
+        );
     }
 
     #[test]
@@ -1100,7 +1095,11 @@ min_healthy_nodes: 1
 
         assert_eq!(provider.node_pool().all_nodes().len(), 3);
 
-        let best = provider.node_pool().best_node().await.expect("should have best node");
+        let best = provider
+            .node_pool()
+            .best_node()
+            .await
+            .expect("should have best node");
         let best_read = best.read().await;
         assert_eq!(best_read.config.name, "ipc-local");
 
@@ -1239,7 +1238,10 @@ min_healthy_nodes: 1
             health_check_interval: Duration::from_secs(60),
         };
         assert_eq!(config.rpc_url, "ws://test:8546");
-        assert_eq!(config.nodes_config_path, Some("/tmp/nodes.yaml".to_string()));
+        assert_eq!(
+            config.nodes_config_path,
+            Some("/tmp/nodes.yaml".to_string())
+        );
         assert_eq!(config.monitored_pools.len(), 1);
         assert_eq!(config.reconnect_delay, Duration::from_secs(5));
         assert_eq!(config.max_reconnect_attempts, 20);
@@ -1388,7 +1390,11 @@ min_healthy_nodes: 1
 
         let event = rx.try_recv().expect("should receive PoolCreated event");
         match event {
-            aether_ingestion::event_decoder::PoolEvent::PoolCreated { token0: t0, pool: _, .. } => {
+            aether_ingestion::event_decoder::PoolEvent::PoolCreated {
+                token0: t0,
+                pool: _,
+                ..
+            } => {
                 assert_eq!(t0, token0);
             }
             other => panic!("Expected PoolCreated, got {:?}", other),
@@ -1444,9 +1450,7 @@ min_healthy_nodes: 1
         );
 
         let rendered = String::from_utf8(metrics.render()).expect("metrics utf-8");
-        assert!(
-            rendered.contains(r#"aether_decode_errors_total{reason="insufficient_topics"} 1"#),
-        );
+        assert!(rendered.contains(r#"aether_decode_errors_total{reason="insufficient_topics"} 1"#),);
     }
 
     #[test]
@@ -1466,9 +1470,7 @@ min_healthy_nodes: 1
         );
 
         let rendered = String::from_utf8(metrics.render()).expect("metrics utf-8");
-        assert!(
-            rendered.contains(r#"aether_decode_errors_total{reason="malformed_payload"} 1"#),
-        );
+        assert!(rendered.contains(r#"aether_decode_errors_total{reason="malformed_payload"} 1"#),);
     }
 
     #[serial]
@@ -1571,16 +1573,10 @@ min_healthy_nodes: 1
         };
         let provider = RpcProvider::new(config, channels, Arc::clone(&metrics));
 
-        provider.process_logs(&[(
-            Address::ZERO,
-            vec![],
-            vec![0u8; 64],
-        )]);
+        provider.process_logs(&[(Address::ZERO, vec![], vec![0u8; 64])]);
 
         let rendered = String::from_utf8(metrics.render()).expect("metrics utf-8");
-        assert!(
-            rendered.contains("aether_decode_errors_total"),
-        );
+        assert!(rendered.contains("aether_decode_errors_total"),);
     }
 
     #[test]

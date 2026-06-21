@@ -50,10 +50,10 @@ const (
 	metricsBatchSize = 256
 	// metricsFlushInterval bounds staleness: a partial batch is flushed at
 	// least this often even when traffic is light.
-	metricsFlushInterval = 1 * time.Second
+	metricsFlushInterval  = 1 * time.Second
 	metricsConnectTimeout = 2 * time.Second
 	metricsWriteTimeout   = 5 * time.Second
-	metricsPoolSize = 4
+	metricsPoolSize       = 4
 )
 
 // metricsCloseDrain caps how long Close() waits for in-flight writes. Var for tests.

@@ -34,7 +34,7 @@ func TestParseBlob_MoreErrors(t *testing.T) {
 		blob []byte
 	}{
 		{name: "too short", blob: []byte("AETK")},
-		{name: "bad magic", blob: append([]byte("XXXX"), make([]byte, 32)...)} ,
+		{name: "bad magic", blob: append([]byte("XXXX"), make([]byte, 32)...)},
 	}
 	for _, tc := range tests {
 		tc := tc
@@ -102,7 +102,7 @@ func TestParseHexKey_InvalidHex(t *testing.T) {
 
 func TestParseHexKey_WrongLength(t *testing.T) {
 	short := make([]byte, 16)
-	if _, err := ParseHexKey("0x"+bytesToHex(short)); err == nil {
+	if _, err := ParseHexKey("0x" + bytesToHex(short)); err == nil {
 		t.Fatal("expected length error")
 	}
 }

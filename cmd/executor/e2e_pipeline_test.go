@@ -6,11 +6,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/alicebob/miniredis/v2"
 	"github.com/aether-arb/aether/internal/db"
 	aethergrpc "github.com/aether-arb/aether/internal/grpc"
 	pb "github.com/aether-arb/aether/internal/pb"
 	"github.com/aether-arb/aether/internal/testutil"
+	"github.com/alicebob/miniredis/v2"
 )
 
 // E2E-style pipeline tests: mock gRPC arb stream → processArb → mock builder.

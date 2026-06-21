@@ -994,22 +994,22 @@ func dumpShadowBundle(
 	}
 
 	payload := map[string]interface{}{
-		"ts":                time.Now().UTC().Format(time.RFC3339Nano),
-		"arb_id":            arb.Id,
-		"target_block":      bundle.BlockNumber,
-		"source_block":      arb.BlockNumber,
-		"path":              path,
-		"hops":              hopsOut,
-		"flashloan_token":   tokenLabel(arb.FlashloanToken),
-		"flashloan_amount":  new(big.Int).SetBytes(arb.FlashloanAmount).String(),
-		"net_profit_wei":    new(big.Int).SetBytes(arb.NetProfitWei).String(),
-		"net_profit_eth":    profitEth,
-		"total_gas":         arb.TotalGas,
-		"gas_price_gwei":    gasGwei,
-		"tip_share_pct":     tipSharePct,
-		"tx_count":          len(bundle.RawTxs),
-		"raw_tx_hex":        rawHex,
-		"calldata_hex":      fmt.Sprintf("0x%x", arb.Calldata),
+		"ts":               time.Now().UTC().Format(time.RFC3339Nano),
+		"arb_id":           arb.Id,
+		"target_block":     bundle.BlockNumber,
+		"source_block":     arb.BlockNumber,
+		"path":             path,
+		"hops":             hopsOut,
+		"flashloan_token":  tokenLabel(arb.FlashloanToken),
+		"flashloan_amount": new(big.Int).SetBytes(arb.FlashloanAmount).String(),
+		"net_profit_wei":   new(big.Int).SetBytes(arb.NetProfitWei).String(),
+		"net_profit_eth":   profitEth,
+		"total_gas":        arb.TotalGas,
+		"gas_price_gwei":   gasGwei,
+		"tip_share_pct":    tipSharePct,
+		"tx_count":         len(bundle.RawTxs),
+		"raw_tx_hex":       rawHex,
+		"calldata_hex":     fmt.Sprintf("0x%x", arb.Calldata),
 	}
 
 	out, err := json.MarshalIndent(payload, "", "  ")
@@ -1062,7 +1062,9 @@ func newMempoolShadowSessionDirOnce() func() string {
 
 // dumpMempoolShadowBundle writes the mempool-backrun bundle to a forensics
 // JSON per the #140 schema. Layout:
-//   ${AETHER_REPORTS_DIR:-reports}/shadow_mempool_<ts>/bundles/<arb_id>.json
+//
+//	${AETHER_REPORTS_DIR:-reports}/shadow_mempool_<ts>/bundles/<arb_id>.json
+//
 // One file per arb so the orchestrator can `ls | wc -l` straight into stage
 // gates. Gross profit is reconstructed as net + (gas × max_fee) since the
 // proto carries only net.

@@ -81,7 +81,12 @@ impl SnapshotManager {
     /// are dropped.
     pub fn publish(&self, graph: PriceGraph, block_number: u64, timestamp_ns: i64) {
         let version = self.version_counter.fetch_add(1, Ordering::SeqCst) + 1;
-        let snapshot = Arc::new(GraphSnapshot::new(graph, block_number, timestamp_ns, version));
+        let snapshot = Arc::new(GraphSnapshot::new(
+            graph,
+            block_number,
+            timestamp_ns,
+            version,
+        ));
         self.current.store(snapshot);
     }
 

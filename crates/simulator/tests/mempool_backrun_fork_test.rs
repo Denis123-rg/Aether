@@ -5,10 +5,10 @@
 use std::process::{Child, Command, Stdio};
 use std::time::Duration;
 
+use aether_simulator::fork::{ForkedState, RpcForkedState};
 use aether_simulator::mempool_backrun::{
     validate_backrun_cache, validate_backrun_rpc, ArbTx, RejectReason, ValidatorParams, VictimTx,
 };
-use aether_simulator::fork::{ForkedState, RpcForkedState};
 use alloy::primitives::{address, Address, Bytes, U256};
 use alloy::providers::{Provider, ProviderBuilder};
 
@@ -22,7 +22,13 @@ fn fork_prereqs() -> Option<String> {
     if url.trim().is_empty() {
         return None;
     }
-    if Command::new("anvil").arg("--version").output().ok()?.status.success() {
+    if Command::new("anvil")
+        .arg("--version")
+        .output()
+        .ok()?
+        .status
+        .success()
+    {
         Some(url)
     } else {
         None
@@ -156,8 +162,8 @@ async fn fork_backrun_victim_revert_skips_arb() {
     let parsed: url::Url = local.parse().unwrap();
     let provider = ProviderBuilder::new().connect_http(parsed).erased();
     let block = provider.get_block_number().await.expect("block");
-    let state = RpcForkedState::new_at_latest(provider, block, 4_000_000_000, 1_000_000_000)
-        .expect("fork");
+    let state =
+        RpcForkedState::new_at_latest(provider, block, 4_000_000_000, 1_000_000_000).expect("fork");
 
     // Victim calls INVALID opcode contract — inject via empty state override path
     // using cache validator with pre-seeded revert target.

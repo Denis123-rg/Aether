@@ -4,15 +4,15 @@ pub mod bancor;
 pub mod curve;
 pub mod registry;
 pub mod router_decoder;
-pub mod swap_encode;
 pub mod sushiswap;
+pub mod swap_encode;
 pub mod uniswap_v2;
 pub mod uniswap_v3;
 
 use std::sync::Arc;
 
-use alloy::primitives::{Address, U256};
 use aether_common::types::ProtocolType;
+use alloy::primitives::{Address, U256};
 use dashmap::DashMap;
 
 use crate::balancer::BalancerPool;
@@ -322,7 +322,10 @@ mod cache_tests {
             |reason| captured.borrow_mut().push(reason.to_string()),
         );
         assert!(result.is_none());
-        assert_eq!(captured.borrow().as_slice(), &["unknown_protocol".to_string()]);
+        assert_eq!(
+            captured.borrow().as_slice(),
+            &["unknown_protocol".to_string()]
+        );
     }
 
     #[test]
@@ -350,7 +353,10 @@ mod cache_tests {
             U256::from(100_000_000u64),
             |reason| captured.borrow_mut().push(reason.to_string()),
         );
-        assert!(result.is_some(), "small mid-bucket swap must stay analytical");
+        assert!(
+            result.is_some(),
+            "small mid-bucket swap must stay analytical"
+        );
         assert!(captured.borrow().is_empty(), "no fallback expected");
     }
 
@@ -377,7 +383,10 @@ mod cache_tests {
             |reason| captured.borrow_mut().push(reason.to_string()),
         );
         assert!(result.is_none());
-        assert_eq!(captured.borrow().as_slice(), &["v3_tick_crossed".to_string()]);
+        assert_eq!(
+            captured.borrow().as_slice(),
+            &["v3_tick_crossed".to_string()]
+        );
     }
 
     #[test]
@@ -478,7 +487,10 @@ mod cache_tests {
             |reason| captured.borrow_mut().push(reason.to_string()),
         );
         assert!(result.is_none());
-        assert!(captured.borrow().is_empty(), "no fallback expected on multihop bail");
+        assert!(
+            captured.borrow().is_empty(),
+            "no fallback expected on multihop bail"
+        );
     }
 
     #[test]
@@ -508,7 +520,10 @@ mod cache_tests {
                 None
             },
         );
-        assert!(result.is_none(), "closure returned None — final result is None");
+        assert!(
+            result.is_none(),
+            "closure returned None — final result is None"
+        );
         assert_eq!(
             captured_fallback.borrow().as_slice(),
             &["v3_tick_crossed".to_string()],
@@ -585,25 +600,89 @@ mod cache_tests {
             },
         );
         assert!(result.is_some(), "analytical predictor succeeded");
-        assert!(!called.get(), "replay closure must not run when analytical succeeds");
+        assert!(
+            !called.get(),
+            "replay closure must not run when analytical succeeds"
+        );
     }
 
     #[test]
     fn pool_state_address_all_variants() {
-        let v2 = UniswapV2Pool::new(address!("0101010101010101010101010101010101010101"), Address::ZERO, Address::ZERO, 30);
-        assert_eq!(PoolState::UniswapV2(v2).address(), address!("0101010101010101010101010101010101010101"));
-        let sushi = UniswapV2Pool::new(address!("0202020202020202020202020202020202020202"), Address::ZERO, Address::ZERO, 30);
-        assert_eq!(PoolState::SushiSwap(sushi).address(), address!("0202020202020202020202020202020202020202"));
-        let v3 = UniswapV3Pool::new(address!("0303030303030303030303030303030303030303"), Address::ZERO, Address::ZERO, 5, 10);
-        assert_eq!(PoolState::UniswapV3(v3).address(), address!("0303030303030303030303030303030303030303"));
-        let curve = CurvePool::new(address!("0404040404040404040404040404040404040404"), vec![Address::ZERO, Address::ZERO], 100, 4);
-        assert_eq!(PoolState::Curve(curve).address(), address!("0404040404040404040404040404040404040404"));
-        let bal = BalancerPool::new(address!("0505050505050505050505050505050505050505"), Address::ZERO, Address::ZERO, 500_000, 500_000, 30);
-        assert_eq!(PoolState::Balancer(bal).address(), address!("0505050505050505050505050505050505050505"));
-        let b3 = BalancerV3Pool::new(address!("0606060606060606060606060606060606060606"), Address::ZERO, Address::ZERO, 500_000, 500_000, 30);
-        assert_eq!(PoolState::BalancerV3(b3).address(), address!("0606060606060606060606060606060606060606"));
-        let bancor = BancorPool::new(address!("0707070707070707070707070707070707070707"), Address::ZERO, address!("1F573D6Fb3F13d689FF844B4cE37794d79a7FF1C"), 30);
-        assert_eq!(PoolState::Bancor(bancor).address(), address!("0707070707070707070707070707070707070707"));
+        let v2 = UniswapV2Pool::new(
+            address!("0101010101010101010101010101010101010101"),
+            Address::ZERO,
+            Address::ZERO,
+            30,
+        );
+        assert_eq!(
+            PoolState::UniswapV2(v2).address(),
+            address!("0101010101010101010101010101010101010101")
+        );
+        let sushi = UniswapV2Pool::new(
+            address!("0202020202020202020202020202020202020202"),
+            Address::ZERO,
+            Address::ZERO,
+            30,
+        );
+        assert_eq!(
+            PoolState::SushiSwap(sushi).address(),
+            address!("0202020202020202020202020202020202020202")
+        );
+        let v3 = UniswapV3Pool::new(
+            address!("0303030303030303030303030303030303030303"),
+            Address::ZERO,
+            Address::ZERO,
+            5,
+            10,
+        );
+        assert_eq!(
+            PoolState::UniswapV3(v3).address(),
+            address!("0303030303030303030303030303030303030303")
+        );
+        let curve = CurvePool::new(
+            address!("0404040404040404040404040404040404040404"),
+            vec![Address::ZERO, Address::ZERO],
+            100,
+            4,
+        );
+        assert_eq!(
+            PoolState::Curve(curve).address(),
+            address!("0404040404040404040404040404040404040404")
+        );
+        let bal = BalancerPool::new(
+            address!("0505050505050505050505050505050505050505"),
+            Address::ZERO,
+            Address::ZERO,
+            500_000,
+            500_000,
+            30,
+        );
+        assert_eq!(
+            PoolState::Balancer(bal).address(),
+            address!("0505050505050505050505050505050505050505")
+        );
+        let b3 = BalancerV3Pool::new(
+            address!("0606060606060606060606060606060606060606"),
+            Address::ZERO,
+            Address::ZERO,
+            500_000,
+            500_000,
+            30,
+        );
+        assert_eq!(
+            PoolState::BalancerV3(b3).address(),
+            address!("0606060606060606060606060606060606060606")
+        );
+        let bancor = BancorPool::new(
+            address!("0707070707070707070707070707070707070707"),
+            Address::ZERO,
+            address!("1F573D6Fb3F13d689FF844B4cE37794d79a7FF1C"),
+            30,
+        );
+        assert_eq!(
+            PoolState::Bancor(bancor).address(),
+            address!("0707070707070707070707070707070707070707")
+        );
     }
 
     #[test]
@@ -616,7 +695,8 @@ mod cache_tests {
         });
         assert_eq!(v3.amount_out(), U256::from(42u64));
         let curve = UnifiedPostState::Curve(crate::curve::CurvePostState {
-            i: 0, j: 1,
+            i: 0,
+            j: 1,
             new_balance_in: U256::from(1000u64),
             new_balance_out: U256::from(900u64),
             amount_out: U256::from(95u64),
@@ -688,22 +768,31 @@ mod cache_tests {
             |reason| captured.borrow_mut().push(reason.to_string()),
         );
         assert!(result.is_none());
-        assert_eq!(captured.borrow().as_slice(), &["balancer_unequal_weight".to_string()]);
+        assert_eq!(
+            captured.borrow().as_slice(),
+            &["balancer_unequal_weight".to_string()]
+        );
     }
 
     #[test]
     fn predict_with_fallback_sushiswap() {
-        let sushi = UniswapV2Pool::new(Address::ZERO, Address::ZERO, address!("0000000000000000000000000000000000000001"), 30);
+        let sushi = UniswapV2Pool::new(
+            Address::ZERO,
+            Address::ZERO,
+            address!("0000000000000000000000000000000000000001"),
+            30,
+        );
         let state = PoolState::SushiSwap(sushi);
         let captured = std::cell::RefCell::new(Vec::<String>::new());
-        let result = predict_post_state_with_fallback(
-            &state,
-            Address::ZERO,
-            U256::from(1u64),
-            |reason| captured.borrow_mut().push(reason.to_string()),
-        );
+        let result =
+            predict_post_state_with_fallback(&state, Address::ZERO, U256::from(1u64), |reason| {
+                captured.borrow_mut().push(reason.to_string())
+            });
         assert!(result.is_none());
-        assert_eq!(captured.borrow().as_slice(), &["unknown_protocol".to_string()]);
+        assert_eq!(
+            captured.borrow().as_slice(),
+            &["unknown_protocol".to_string()]
+        );
     }
 
     #[test]
@@ -712,7 +801,9 @@ mod cache_tests {
             Address::ZERO,
             address!("A0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"),
             address!("C02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2"),
-            500_000, 500_000, 30,
+            500_000,
+            500_000,
+            30,
         );
         bal.update_state(
             U256::from(1_000_000_000_000_000_000_000u128),
@@ -736,7 +827,8 @@ mod cache_tests {
             address!("88e6A0c2dDD26FEEb64F039a2c41296FcB3f5640"),
             address!("A0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"),
             address!("C02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2"),
-            30, 60,
+            30,
+            60,
         );
         let two_pow_96_f64: f64 = 79_228_162_514_264_337_593_543_950_336.0;
         let sqrt_norm = 1.0001f64.powi(15);
@@ -746,9 +838,14 @@ mod cache_tests {
         let fb = std::cell::Cell::new(false);
         let rp = std::cell::Cell::new(false);
         let result = predict_post_state_with_replay(
-            &state, v3.token0, U256::from(100_000_000u64),
+            &state,
+            v3.token0,
+            U256::from(100_000_000u64),
             |_| fb.set(true),
-            |_| { rp.set(true); None },
+            |_| {
+                rp.set(true);
+                None
+            },
         );
         assert!(result.is_some());
         assert!(!fb.get());
@@ -767,9 +864,14 @@ mod cache_tests {
         let state = PoolState::Curve(curve);
         let rp = std::cell::Cell::new(false);
         let result = predict_post_state_with_replay(
-            &state, usdc, U256::from(1_000_000_000u64),
+            &state,
+            usdc,
+            U256::from(1_000_000_000u64),
             |_| {},
-            |_| { rp.set(true); None },
+            |_| {
+                rp.set(true);
+                None
+            },
         );
         assert!(result.is_some());
         assert!(!rp.get());
@@ -781,7 +883,9 @@ mod cache_tests {
             Address::ZERO,
             address!("A0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"),
             address!("C02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2"),
-            500_000, 500_000, 30,
+            500_000,
+            500_000,
+            30,
         );
         bal.update_state(
             U256::from(1_000_000_000_000_000_000_000u128),
@@ -794,7 +898,10 @@ mod cache_tests {
             address!("A0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"),
             U256::from(1_000_000_000_000_000u64),
             |_| {},
-            |_| { rp.set(true); None },
+            |_| {
+                rp.set(true);
+                None
+            },
         );
         assert!(result.is_some());
         assert!(!rp.get());
@@ -806,7 +913,9 @@ mod cache_tests {
             Address::ZERO,
             address!("A0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"),
             address!("C02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2"),
-            800_000, 200_000, 30,
+            800_000,
+            200_000,
+            30,
         );
         bal.update_state(
             U256::from(1_000_000_000_000_000_000_000u128),
@@ -819,7 +928,10 @@ mod cache_tests {
             address!("A0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"),
             U256::from(1_000_000_000_000_000u64),
             |_| {},
-            |proto| { captured.borrow_mut().push(proto); None },
+            |proto| {
+                captured.borrow_mut().push(proto);
+                None
+            },
         );
         assert!(result.is_none());
         assert_eq!(captured.borrow().as_slice(), &[ReplayProtocol::Balancer]);
@@ -831,7 +943,9 @@ mod cache_tests {
             Address::ZERO,
             address!("A0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"),
             address!("C02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2"),
-            500_000, 500_000, 30,
+            500_000,
+            500_000,
+            30,
         );
         b3.update_state(
             U256::from(1_000_000_000_000_000_000_000u128),
@@ -844,7 +958,10 @@ mod cache_tests {
             address!("A0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"),
             U256::from(1_000_000_000_000_000u64),
             |_| {},
-            |_| { rp.set(true); None },
+            |_| {
+                rp.set(true);
+                None
+            },
         );
         assert!(result.is_some());
         assert!(!rp.get());
@@ -856,7 +973,9 @@ mod cache_tests {
             Address::ZERO,
             address!("A0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"),
             address!("C02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2"),
-            800_000, 200_000, 30,
+            800_000,
+            200_000,
+            30,
         );
         b3.update_state(
             U256::from(1_000_000_000_000_000_000_000u128),
@@ -869,7 +988,10 @@ mod cache_tests {
             address!("A0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"),
             U256::from(1_000_000_000_000_000u64),
             |_| {},
-            |proto| { captured.borrow_mut().push(proto); None },
+            |proto| {
+                captured.borrow_mut().push(proto);
+                None
+            },
         );
         assert!(result.is_none());
         assert_eq!(captured.borrow().as_slice(), &[ReplayProtocol::Balancer]);
@@ -894,7 +1016,10 @@ mod cache_tests {
             address!("C02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2"),
             U256::from(1_000_000_000_000_000_000u64),
             |_| {},
-            |_| { rp.set(true); None },
+            |_| {
+                rp.set(true);
+                None
+            },
         );
         assert!(matches!(result, Some(UnifiedPostState::Bancor(_))));
         assert!(!rp.get());
@@ -902,23 +1027,38 @@ mod cache_tests {
 
     #[test]
     fn predict_with_replay_sushiswap() {
-        let sushi = UniswapV2Pool::new(Address::ZERO, Address::ZERO, address!("0000000000000000000000000000000000000001"), 30);
+        let sushi = UniswapV2Pool::new(
+            Address::ZERO,
+            Address::ZERO,
+            address!("0000000000000000000000000000000000000001"),
+            30,
+        );
         let state = PoolState::SushiSwap(sushi);
         let captured = std::cell::RefCell::new(Vec::<String>::new());
         let result = predict_post_state_with_replay(
-            &state, Address::ZERO, U256::from(1u64),
+            &state,
+            Address::ZERO,
+            U256::from(1u64),
             |reason| captured.borrow_mut().push(reason.to_string()),
             |_| None,
         );
         assert!(result.is_none());
-        assert_eq!(captured.borrow().as_slice(), &["unknown_protocol".to_string()]);
+        assert_eq!(
+            captured.borrow().as_slice(),
+            &["unknown_protocol".to_string()]
+        );
     }
 
     #[test]
     fn new_pool_state_cache_insert_and_read() {
         let cache = new_pool_state_cache();
         let addr1 = address!("1111111111111111111111111111111111111111");
-        let v2 = UniswapV2Pool::new(addr1, address!("A0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"), address!("C02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2"), 30);
+        let v2 = UniswapV2Pool::new(
+            addr1,
+            address!("A0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"),
+            address!("C02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2"),
+            30,
+        );
         cache.insert(addr1, Arc::new(PoolState::UniswapV2(v2)));
         assert_eq!(cache.len(), 1);
         let entry = cache.get(&addr1).unwrap();
@@ -933,21 +1073,10 @@ mod cache_tests {
             PoolState::UniswapV2(v2.clone()).protocol(),
             ProtocolType::UniswapV2
         );
-        assert_eq!(
-            PoolState::SushiSwap(v2).protocol(),
-            ProtocolType::SushiSwap
-        );
+        assert_eq!(PoolState::SushiSwap(v2).protocol(), ProtocolType::SushiSwap);
         let v3 = UniswapV3Pool::new(Address::ZERO, Address::ZERO, Address::ZERO, 5, 10);
-        assert_eq!(
-            PoolState::UniswapV3(v3).protocol(),
-            ProtocolType::UniswapV3
-        );
-        let curve = CurvePool::new(
-            Address::ZERO,
-            vec![Address::ZERO, Address::ZERO],
-            100,
-            4,
-        );
+        assert_eq!(PoolState::UniswapV3(v3).protocol(), ProtocolType::UniswapV3);
+        let curve = CurvePool::new(Address::ZERO, vec![Address::ZERO, Address::ZERO], 100, 4);
         assert_eq!(PoolState::Curve(curve).protocol(), ProtocolType::Curve);
         let bal = BalancerPool::new(
             Address::ZERO,
@@ -968,8 +1097,18 @@ mod cache_tests {
             30,
         );
         assert_eq!(PoolState::Bancor(bancor).protocol(), ProtocolType::BancorV3);
-        let b3 = BalancerV3Pool::new(Address::ZERO, Address::ZERO, Address::ZERO, 500_000, 500_000, 30);
-        assert_eq!(PoolState::BalancerV3(b3).protocol(), ProtocolType::BalancerV3);
+        let b3 = BalancerV3Pool::new(
+            Address::ZERO,
+            Address::ZERO,
+            Address::ZERO,
+            500_000,
+            500_000,
+            30,
+        );
+        assert_eq!(
+            PoolState::BalancerV3(b3).protocol(),
+            ProtocolType::BalancerV3
+        );
     }
 
     #[test]
@@ -990,7 +1129,10 @@ mod cache_tests {
             |reason| captured.borrow_mut().push(reason.to_string()),
         );
         assert!(result.is_none());
-        assert!(captured.borrow().is_empty(), "predictor rejects before confidence check");
+        assert!(
+            captured.borrow().is_empty(),
+            "predictor rejects before confidence check"
+        );
     }
 
     #[test]
@@ -1009,12 +1151,10 @@ mod cache_tests {
         let bogus = address!("dddddddddddddddddddddddddddddddddddddddd");
         let state = PoolState::UniswapV3(v3);
         let captured = std::cell::RefCell::new(Vec::<String>::new());
-        let result = predict_post_state_with_fallback(
-            &state,
-            bogus,
-            U256::from(100u64),
-            |reason| captured.borrow_mut().push(reason.to_string()),
-        );
+        let result =
+            predict_post_state_with_fallback(&state, bogus, U256::from(100u64), |reason| {
+                captured.borrow_mut().push(reason.to_string())
+            });
         assert!(result.is_none());
         assert!(captured.borrow().is_empty());
     }
@@ -1030,12 +1170,9 @@ mod cache_tests {
         ];
         let state = PoolState::Curve(curve);
         let captured = std::cell::RefCell::new(Vec::<String>::new());
-        let result = predict_post_state_with_fallback(
-            &state,
-            usdc,
-            U256::ZERO,
-            |reason| captured.borrow_mut().push(reason.to_string()),
-        );
+        let result = predict_post_state_with_fallback(&state, usdc, U256::ZERO, |reason| {
+            captured.borrow_mut().push(reason.to_string())
+        });
         assert!(result.is_none());
         assert!(captured.borrow().is_empty());
     }
@@ -1077,12 +1214,9 @@ mod cache_tests {
         );
         let state = PoolState::Bancor(bancor);
         let captured = std::cell::RefCell::new(Vec::<String>::new());
-        let result = predict_post_state_with_fallback(
-            &state,
-            token,
-            U256::ZERO,
-            |reason| captured.borrow_mut().push(reason.to_string()),
-        );
+        let result = predict_post_state_with_fallback(&state, token, U256::ZERO, |reason| {
+            captured.borrow_mut().push(reason.to_string())
+        });
         assert!(result.is_none());
         assert!(captured.borrow().is_empty());
     }
@@ -1091,8 +1225,18 @@ mod cache_tests {
     fn pool_state_cache_overwrites_existing() {
         let cache = new_pool_state_cache();
         let addr = address!("1111111111111111111111111111111111111111");
-        let v2a = UniswapV2Pool::new(addr, address!("A0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"), address!("C02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2"), 30);
-        let v2b = UniswapV2Pool::new(addr, address!("A0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"), address!("C02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2"), 5);
+        let v2a = UniswapV2Pool::new(
+            addr,
+            address!("A0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"),
+            address!("C02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2"),
+            30,
+        );
+        let v2b = UniswapV2Pool::new(
+            addr,
+            address!("A0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"),
+            address!("C02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2"),
+            5,
+        );
         cache.insert(addr, Arc::new(PoolState::UniswapV2(v2a)));
         assert_eq!(cache.len(), 1);
         cache.insert(addr, Arc::new(PoolState::UniswapV2(v2b)));
@@ -1115,8 +1259,14 @@ mod cache_tests {
         cache.insert(addr1, Arc::new(PoolState::UniswapV2(v2)));
         cache.insert(addr2, Arc::new(PoolState::UniswapV3(v3)));
         assert_eq!(cache.len(), 2);
-        assert_eq!(cache.get(&addr1).unwrap().protocol(), ProtocolType::UniswapV2);
-        assert_eq!(cache.get(&addr2).unwrap().protocol(), ProtocolType::UniswapV3);
+        assert_eq!(
+            cache.get(&addr1).unwrap().protocol(),
+            ProtocolType::UniswapV2
+        );
+        assert_eq!(
+            cache.get(&addr2).unwrap().protocol(),
+            ProtocolType::UniswapV3
+        );
     }
 
     #[test]
@@ -1135,7 +1285,10 @@ mod cache_tests {
             address!("A0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"),
             U256::from(100u64),
             |_| {},
-            |_| { rp.set(true); None },
+            |_| {
+                rp.set(true);
+                None
+            },
         );
         assert!(result.is_none());
         assert!(!rp.get(), "predictor rejects before replay");
@@ -1158,7 +1311,10 @@ mod cache_tests {
             bogus,
             U256::from(1_000_000_000_000_000_000u64),
             |_| {},
-            |_| { rp.set(true); None },
+            |_| {
+                rp.set(true);
+                None
+            },
         );
         assert!(result.is_none());
         assert!(!rp.get());
@@ -1166,13 +1322,23 @@ mod cache_tests {
 
     #[test]
     fn predict_with_replay_v2_returns_none() {
-        let v2 = UniswapV2Pool::new(Address::ZERO, Address::ZERO, address!("0000000000000000000000000000000000000001"), 30);
+        let v2 = UniswapV2Pool::new(
+            Address::ZERO,
+            Address::ZERO,
+            address!("0000000000000000000000000000000000000001"),
+            30,
+        );
         let state = PoolState::UniswapV2(v2);
         let rp = std::cell::Cell::new(false);
         let result = predict_post_state_with_replay(
-            &state, Address::ZERO, U256::from(1u64),
+            &state,
+            Address::ZERO,
+            U256::from(1u64),
             |_| {},
-            |_| { rp.set(true); None },
+            |_| {
+                rp.set(true);
+                None
+            },
         );
         assert!(result.is_none());
         assert!(!rp.get());
@@ -1195,7 +1361,10 @@ mod cache_tests {
             bogus,
             U256::from(1_000_000_000u64),
             |_| {},
-            |_| { rp.set(true); None },
+            |_| {
+                rp.set(true);
+                None
+            },
         );
         assert!(result.is_none());
         assert!(!rp.get());
@@ -1248,7 +1417,10 @@ mod cache_tests {
             address!("A0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"),
             U256::ZERO,
             |_| {},
-            |_| { rp.set(true); None },
+            |_| {
+                rp.set(true);
+                None
+            },
         );
         assert!(result.is_none());
         assert!(!rp.get());
@@ -1275,7 +1447,10 @@ mod cache_tests {
             address!("A0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"),
             U256::ZERO,
             |_| {},
-            |_| { rp.set(true); None },
+            |_| {
+                rp.set(true);
+                None
+            },
         );
         assert!(result.is_none());
         assert!(!rp.get());
@@ -1330,7 +1505,10 @@ mod cache_tests {
             bogus,
             U256::from(1_000_000_000u64),
             |_| {},
-            |_| { rp.set(true); None },
+            |_| {
+                rp.set(true);
+                None
+            },
         );
         assert!(result.is_none());
         assert!(!rp.get());
@@ -1385,7 +1563,10 @@ mod cache_tests {
             bogus,
             U256::from(1_000_000_000u64),
             |_| {},
-            |_| { rp.set(true); None },
+            |_| {
+                rp.set(true);
+                None
+            },
         );
         assert!(result.is_none());
         assert!(!rp.get());
@@ -1420,7 +1601,10 @@ mod cache_tests {
             token,
             U256::from(1_000_000_000u64),
             |_| {},
-            |_| { rp.set(true); None },
+            |_| {
+                rp.set(true);
+                None
+            },
         );
         assert!(result.is_none());
         assert!(!rp.get());
@@ -1467,7 +1651,10 @@ mod cache_tests {
             usdc,
             U256::from(1_000_000_000u64),
             |_| {},
-            |_| { rp.set(true); None },
+            |_| {
+                rp.set(true);
+                None
+            },
         );
         assert!(result.is_none());
         assert!(!rp.get());
@@ -1510,7 +1697,10 @@ mod cache_tests {
             bnt,
             U256::from(1_000_000_000_000_000_000u64),
             |_| {},
-            |_| { rp.set(true); None },
+            |_| {
+                rp.set(true);
+                None
+            },
         );
         assert!(matches!(result, Some(UnifiedPostState::Bancor(_))));
         assert!(!rp.get());
@@ -1532,7 +1722,10 @@ mod cache_tests {
             token,
             U256::ZERO,
             |_| {},
-            |_| { rp.set(true); None },
+            |_| {
+                rp.set(true);
+                None
+            },
         );
         assert!(result.is_none());
         assert!(!rp.get());
@@ -1554,7 +1747,10 @@ mod cache_tests {
             usdc,
             U256::ZERO,
             |_| {},
-            |_| { rp.set(true); None },
+            |_| {
+                rp.set(true);
+                None
+            },
         );
         assert!(result.is_none());
         assert!(!rp.get());
@@ -1642,15 +1838,34 @@ mod cache_tests {
         let dbg = format!("{:?}", PoolState::Curve(curve));
         assert!(dbg.contains("Curve"));
 
-        let bal = BalancerPool::new(Address::ZERO, Address::ZERO, Address::ZERO, 500_000, 500_000, 30);
+        let bal = BalancerPool::new(
+            Address::ZERO,
+            Address::ZERO,
+            Address::ZERO,
+            500_000,
+            500_000,
+            30,
+        );
         let dbg = format!("{:?}", PoolState::Balancer(bal));
         assert!(dbg.contains("Balancer"));
 
-        let b3 = BalancerV3Pool::new(Address::ZERO, Address::ZERO, Address::ZERO, 500_000, 500_000, 30);
+        let b3 = BalancerV3Pool::new(
+            Address::ZERO,
+            Address::ZERO,
+            Address::ZERO,
+            500_000,
+            500_000,
+            30,
+        );
         let dbg = format!("{:?}", PoolState::BalancerV3(b3));
         assert!(dbg.contains("BalancerV3"));
 
-        let bancor = BancorPool::new(Address::ZERO, Address::ZERO, address!("1F573D6Fb3F13d689FF844B4cE37794d79a7FF1C"), 30);
+        let bancor = BancorPool::new(
+            Address::ZERO,
+            Address::ZERO,
+            address!("1F573D6Fb3F13d689FF844B4cE37794d79a7FF1C"),
+            30,
+        );
         let dbg = format!("{:?}", PoolState::Bancor(bancor));
         assert!(dbg.contains("Bancor"));
     }
@@ -1677,15 +1892,19 @@ mod cache_tests {
             |_| {},
             |proto| {
                 assert_eq!(proto, ReplayProtocol::Balancer);
-                Some(UnifiedPostState::Balancer(crate::balancer::BalancerPostState {
-                    new_balance0: U256::from(1000u64),
-                    new_balance1: U256::from(900u64),
-                    amount_out: U256::from(88u64),
-                    analytical: false,
-                }))
+                Some(UnifiedPostState::Balancer(
+                    crate::balancer::BalancerPostState {
+                        new_balance0: U256::from(1000u64),
+                        new_balance1: U256::from(900u64),
+                        amount_out: U256::from(88u64),
+                        analytical: false,
+                    },
+                ))
             },
         );
-        assert!(matches!(result, Some(UnifiedPostState::Balancer(ref p)) if p.amount_out == U256::from(88u64)));
+        assert!(
+            matches!(result, Some(UnifiedPostState::Balancer(ref p)) if p.amount_out == U256::from(88u64))
+        );
     }
 
     #[test]
@@ -1710,15 +1929,19 @@ mod cache_tests {
             |_| {},
             |proto| {
                 assert_eq!(proto, ReplayProtocol::Balancer);
-                Some(UnifiedPostState::Balancer(crate::balancer::BalancerPostState {
-                    new_balance0: U256::from(500u64),
-                    new_balance1: U256::from(400u64),
-                    amount_out: U256::from(77u64),
-                    analytical: false,
-                }))
+                Some(UnifiedPostState::Balancer(
+                    crate::balancer::BalancerPostState {
+                        new_balance0: U256::from(500u64),
+                        new_balance1: U256::from(400u64),
+                        amount_out: U256::from(77u64),
+                        analytical: false,
+                    },
+                ))
             },
         );
-        assert!(matches!(result, Some(UnifiedPostState::Balancer(ref p)) if p.amount_out == U256::from(77u64)));
+        assert!(
+            matches!(result, Some(UnifiedPostState::Balancer(ref p)) if p.amount_out == U256::from(77u64))
+        );
     }
 
     #[test]
@@ -1730,8 +1953,18 @@ mod cache_tests {
 
     #[test]
     fn pool_state_protocol_balancer_v3() {
-        let b3 = BalancerV3Pool::new(Address::ZERO, Address::ZERO, Address::ZERO, 500_000, 500_000, 30);
-        assert_eq!(PoolState::BalancerV3(b3).protocol(), ProtocolType::BalancerV3);
+        let b3 = BalancerV3Pool::new(
+            Address::ZERO,
+            Address::ZERO,
+            Address::ZERO,
+            500_000,
+            500_000,
+            30,
+        );
+        assert_eq!(
+            PoolState::BalancerV3(b3).protocol(),
+            ProtocolType::BalancerV3
+        );
     }
 
     #[test]
@@ -1759,7 +1992,8 @@ mod cache_tests {
     #[test]
     fn unified_post_state_curve_amount_out() {
         let curve = UnifiedPostState::Curve(crate::curve::CurvePostState {
-            i: 0, j: 1,
+            i: 0,
+            j: 1,
             new_balance_in: U256::from(100u64),
             new_balance_out: U256::from(90u64),
             amount_out: U256::from(8u64),
@@ -1892,7 +2126,10 @@ mod cache_tests {
             usdc,
             U256::from(1_000_000_000u64),
             |_| {},
-            |_| { rp.set(true); None },
+            |_| {
+                rp.set(true);
+                None
+            },
         );
         assert!(result.is_some());
         assert!(!rp.get());
@@ -1962,7 +2199,10 @@ mod cache_tests {
             bnt,
             U256::from(1_000_000_000_000_000_000u64),
             |_| {},
-            |_| { rp.set(true); None },
+            |_| {
+                rp.set(true);
+                None
+            },
         );
         assert!(result.is_some());
         assert!(!rp.get());
@@ -1974,16 +2214,16 @@ mod cache_tests {
             address!("88e6A0c2dDD26FEEb64F039a2c41296FcB3f5640"),
             address!("A0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"),
             address!("C02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2"),
-            30, 60,
+            30,
+            60,
         );
         let two_pow_96_f64: f64 = 79_228_162_514_264_337_593_543_950_336.0;
         let sqrt_norm = 1.0001f64.powi(15);
         let sqrt_x96 = (sqrt_norm * two_pow_96_f64) as u128;
         v3.update_sqrt_price(U256::from(sqrt_x96), 10_000_000_000_000_000u128, 30);
         let state = PoolState::UniswapV3(v3.clone());
-        let result = predict_post_state_with_fallback(
-            &state, v3.token0, U256::from(100_000_000u64), |_| {},
-        );
+        let result =
+            predict_post_state_with_fallback(&state, v3.token0, U256::from(100_000_000u64), |_| {});
         assert!(matches!(result, Some(UnifiedPostState::UniswapV3(_))));
     }
 
@@ -1997,9 +2237,8 @@ mod cache_tests {
             U256::from(10_000_000_000_000u64),
         ];
         let state = PoolState::Curve(curve);
-        let result = predict_post_state_with_fallback(
-            &state, usdc, U256::from(1_000_000_000u64), |_| {},
-        );
+        let result =
+            predict_post_state_with_fallback(&state, usdc, U256::from(1_000_000_000u64), |_| {});
         assert!(matches!(result, Some(UnifiedPostState::Curve(_))));
     }
 
@@ -2020,7 +2259,8 @@ mod cache_tests {
         assert_eq!(v3_a, v3_b);
 
         let curve = UnifiedPostState::Curve(crate::curve::CurvePostState {
-            i: 0, j: 1,
+            i: 0,
+            j: 1,
             new_balance_in: U256::from(1000u64),
             new_balance_out: U256::from(900u64),
             amount_out: U256::from(95u64),
@@ -2042,7 +2282,8 @@ mod cache_tests {
             address!("88e6A0c2dDD26FEEb64F039a2c41296FcB3f5640"),
             address!("A0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"),
             address!("C02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2"),
-            30, 60,
+            30,
+            60,
         );
         let two_pow_96_f64: f64 = 79_228_162_514_264_337_593_543_950_336.0;
         let sqrt_norm = 1.0001f64.powi(15);
@@ -2051,11 +2292,14 @@ mod cache_tests {
         let state = PoolState::UniswapV3(v3);
         let captured = std::cell::RefCell::new(Vec::<String>::new());
         let bogus = address!("dddddddddddddddddddddddddddddddddddddddd");
-        let result = predict_post_state_with_fallback(
-            &state, bogus, U256::from(100u64),
-            |reason| captured.borrow_mut().push(reason.to_string()),
-        );
+        let result =
+            predict_post_state_with_fallback(&state, bogus, U256::from(100u64), |reason| {
+                captured.borrow_mut().push(reason.to_string())
+            });
         assert!(result.is_none());
-        assert!(captured.borrow().is_empty(), "predictor rejected before confidence check");
+        assert!(
+            captured.borrow().is_empty(),
+            "predictor rejected before confidence check"
+        );
     }
 }

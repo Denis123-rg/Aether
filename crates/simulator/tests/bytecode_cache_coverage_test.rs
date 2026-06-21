@@ -73,11 +73,16 @@ fn path_returns_path_for_tempdir() {
 fn cache_error_from_database_error_via_corruption() {
     let tmp = tempfile::tempdir().unwrap();
     let path = tmp.path().join("cache.redb");
-    { let _cache = BytecodeCache::open(&path).unwrap(); }
+    {
+        let _cache = BytecodeCache::open(&path).unwrap();
+    }
     std::fs::write(&path, b"this is not a valid redb database file at all").unwrap();
     match BytecodeCache::open(&path) {
         Ok(_) => panic!("should fail on corrupted database"),
-        Err(err) => { let msg = format!("{}", err); assert!(msg.contains("redb")); }
+        Err(err) => {
+            let msg = format!("{}", err);
+            assert!(msg.contains("redb"));
+        }
     }
 }
 
@@ -102,7 +107,10 @@ fn get_disk_error_via_removed_file() {
     assert!(cache.get(addr).is_none());
     std::fs::remove_file(&path).unwrap();
     let result = cache.get(addr);
-    assert!(result.is_none(), "disk error must degrade gracefully after file removal");
+    assert!(
+        result.is_none(),
+        "disk error must degrade gracefully after file removal"
+    );
 }
 
 #[test]
@@ -163,12 +171,16 @@ fn cache_error_from_database_error() {
 
 async fn deploy_contract(url: &str) -> Address {
     let parsed: url::Url = url.parse().unwrap();
-    let provider = alloy::providers::ProviderBuilder::new().connect_http(parsed).erased();
+    let provider = alloy::providers::ProviderBuilder::new()
+        .connect_http(parsed)
+        .erased();
     let accounts = provider.get_accounts().await.unwrap();
     let from = accounts[0];
     let deploy_tx = alloy::rpc::types::TransactionRequest::default()
         .with_from(from)
-        .with_input(Bytes::from(vec![0x60, 0x01, 0x60, 0x00, 0x52, 0x60, 0x01, 0x60, 0x00, 0xf3]))
+        .with_input(Bytes::from(vec![
+            0x60, 0x01, 0x60, 0x00, 0x52, 0x60, 0x01, 0x60, 0x00, 0xf3,
+        ]))
         .with_gas_price(1_000_000_000u128);
     let pending = provider.send_transaction(deploy_tx).await.unwrap();
     let receipt = pending.get_receipt().await.unwrap();
@@ -178,7 +190,10 @@ async fn deploy_contract(url: &str) -> Address {
 #[tokio::test]
 async fn get_or_fetch_fetches_code_from_anvil() {
     let (mut anvil, url) = spawn_anvil();
-    if !wait_ready(&url).await { let _ = anvil.kill(); return; }
+    if !wait_ready(&url).await {
+        let _ = anvil.kill();
+        return;
+    }
     let contract_addr = deploy_contract(&url).await;
     let tmp = tempfile::tempdir().unwrap();
     let cache = BytecodeCache::open(tmp.path().join("cache.redb")).unwrap();
@@ -194,7 +209,10 @@ async fn get_or_fetch_fetches_code_from_anvil() {
 #[tokio::test]
 async fn get_or_fetch_returns_none_for_eoa() {
     let (mut anvil, url) = spawn_anvil();
-    if !wait_ready(&url).await { let _ = anvil.kill(); return; }
+    if !wait_ready(&url).await {
+        let _ = anvil.kill();
+        return;
+    }
     let provider = anvil_provider(&url);
     let accounts = provider.get_accounts().await.unwrap();
     let eoa = accounts[0];
@@ -208,7 +226,10 @@ async fn get_or_fetch_returns_none_for_eoa() {
 #[tokio::test]
 async fn get_or_fetch_caches_result() {
     let (mut anvil, url) = spawn_anvil();
-    if !wait_ready(&url).await { let _ = anvil.kill(); return; }
+    if !wait_ready(&url).await {
+        let _ = anvil.kill();
+        return;
+    }
     let contract_addr = deploy_contract(&url).await;
     let tmp = tempfile::tempdir().unwrap();
     let cache = BytecodeCache::open(tmp.path().join("cache.redb")).unwrap();
@@ -224,7 +245,10 @@ async fn get_or_fetch_caches_result() {
 #[tokio::test]
 async fn prewarm_bytecode_fetches_from_anvil() {
     let (mut anvil, url) = spawn_anvil();
-    if !wait_ready(&url).await { let _ = anvil.kill(); return; }
+    if !wait_ready(&url).await {
+        let _ = anvil.kill();
+        return;
+    }
     let contract_addr = deploy_contract(&url).await;
     let tmp = tempfile::tempdir().unwrap();
     let cache = BytecodeCache::open(tmp.path().join("cache.redb")).unwrap();
@@ -244,7 +268,10 @@ async fn prewarm_bytecode_returns_true_for_cached() {
     let hash = keccak256(&code);
     cache.put(addr, hash, &code).unwrap();
     let (mut anvil, url) = spawn_anvil();
-    if !wait_ready(&url).await { let _ = anvil.kill(); return; }
+    if !wait_ready(&url).await {
+        let _ = anvil.kill();
+        return;
+    }
     let provider = anvil_provider(&url);
     let result = cache.prewarm_bytecode(addr, &provider).await;
     assert!(result, "cache hit must return true");
@@ -286,7 +313,10 @@ fn put_then_get_after_reopen() {
     let addr = address!("C02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2");
     let code = sample_bytecode();
     let hash = keccak256(&code);
-    { let cache = BytecodeCache::open(&path).unwrap(); cache.put(addr, hash, &code).unwrap(); }
+    {
+        let cache = BytecodeCache::open(&path).unwrap();
+        cache.put(addr, hash, &code).unwrap();
+    }
     let cache2 = BytecodeCache::open(&path).unwrap();
     let (h, bc) = cache2.get(addr).unwrap();
     assert_eq!(h, hash);

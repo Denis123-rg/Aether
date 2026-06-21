@@ -142,7 +142,7 @@ func TestHandleHealth_ZeroCounters(t *testing.T) {
 
 func TestMetricsGaugesPrecision(t *testing.T) {
 	m := NewMetrics()
-	m.GasPriceGwei.Store(12345) // 123.45 gwei
+	m.GasPriceGwei.Store(12345)   // 123.45 gwei
 	m.ETHBalance.Store(1_500_000) // 1.5 ETH
 
 	req := httptest.NewRequest(http.MethodGet, "/metrics", nil)

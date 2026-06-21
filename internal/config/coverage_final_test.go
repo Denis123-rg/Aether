@@ -60,7 +60,6 @@ func TestLoadNodesConfig_MissingFile(t *testing.T) {
 	}
 }
 
-
 func TestProductionConfigPath_ReturnsPath(t *testing.T) {
 	p := ProductionConfigPath()
 	if p == "" {
@@ -77,7 +76,6 @@ func TestConfigPath_JoinsBase(t *testing.T) {
 		}
 	}
 }
-
 
 func TestLoadRiskConfig_ValidMinimal(t *testing.T) {
 	dir := t.TempDir()
