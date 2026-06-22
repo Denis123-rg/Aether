@@ -1509,7 +1509,11 @@ mod tests {
         use alloy::providers::{Provider, ProviderBuilder};
         use alloy_node_bindings::Anvil;
         // Skip if anvil is not installed (CI runners without foundry-toolchain)
-        if std::process::Command::new("anvil").arg("--version").output().is_err() {
+        if std::process::Command::new("anvil")
+            .arg("--version")
+            .output()
+            .is_err()
+        {
             eprintln!("anvil not found — skipping build_backrun_validator_config_with_provider");
             return;
         }
