@@ -176,6 +176,7 @@ jobs:
 
       - name: Validate architecture rules
         run: |
+          mkdir -p ${{ github.workspace }}/reports/arch-analysis/reports
           python3 scripts/arch-validate.py \
             --rules arch-rules.yaml \
             --report ${{ github.workspace }}/reports/arch-analysis/data/arch-report.json \
@@ -223,6 +224,9 @@ jobs:
           cargo clippy --workspace -- -D warnings 2>&1 | \
             tee ${{ github.workspace }}/reports/arch-analysis/logs/clippy.log || \
             echo "clippy found issues"
+
+      - name: Install rustfmt
+        run: rustup component add rustfmt
 
       - name: Run cargo fmt check
         run: |
