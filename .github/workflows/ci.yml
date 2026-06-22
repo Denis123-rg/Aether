@@ -302,6 +302,9 @@ jobs:
           sudo mv echidna /usr/local/bin/
           echidna --version
 
+      - name: Install crytic-compile
+        run: pip install crytic-compile
+
       - name: Run Echidna
         working-directory: contracts
         run: |
