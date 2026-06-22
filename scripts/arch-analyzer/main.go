@@ -13,27 +13,27 @@ import (
 )
 
 type FileInfo struct {
-	Path       string   `json:"path"`
-	Package    string   `json:"package"`
-	Imports    []string `json:"imports"`
-	Externs    []string `json:"external_imports"`
+	Path       string     `json:"path"`
+	Package    string     `json:"package"`
+	Imports    []string   `json:"imports"`
+	Externs    []string   `json:"external_imports"`
 	Types      []TypeInfo `json:"types"`
 	Functions  []FuncInfo `json:"functions"`
-	Interfaces []string `json:"interfaces"`
-	Structs    []string `json:"structs"`
-	Constants  []string `json:"constants"`
-	Variables  []string `json:"variables"`
-	Doc        string   `json:"doc"`
-	BuildTags  string   `json:"build_tags,omitempty"`
-	Generics   []string `json:"generic_types"`
+	Interfaces []string   `json:"interfaces"`
+	Structs    []string   `json:"structs"`
+	Constants  []string   `json:"constants"`
+	Variables  []string   `json:"variables"`
+	Doc        string     `json:"doc"`
+	BuildTags  string     `json:"build_tags,omitempty"`
+	Generics   []string   `json:"generic_types"`
 }
 
 type TypeInfo struct {
-	Name       string `json:"name"`
-	Kind       string `json:"kind"`
-	Methods    []string `json:"methods"`
-	Embedded   []string `json:"embedded"`
-	Generics   []string `json:"generics"`
+	Name     string   `json:"name"`
+	Kind     string   `json:"kind"`
+	Methods  []string `json:"methods"`
+	Embedded []string `json:"embedded"`
+	Generics []string `json:"generics"`
 }
 
 type FuncInfo struct {
@@ -46,9 +46,9 @@ type FuncInfo struct {
 }
 
 type PackageInfo struct {
-	Name     string     `json:"name"`
-	Path     string     `json:"path"`
-	Files    []FileInfo `json:"files"`
+	Name  string     `json:"name"`
+	Path  string     `json:"path"`
+	Files []FileInfo `json:"files"`
 }
 
 type ImportEdge struct {
@@ -64,11 +64,11 @@ type ImportGraph struct {
 }
 
 type ArchReport struct {
-	Packages        []PackageInfo `json:"packages"`
-	ImportGraph     ImportGraph   `json:"import_graph"`
+	Packages         []PackageInfo     `json:"packages"`
+	ImportGraph      ImportGraph       `json:"import_graph"`
 	ForbiddenImports []ForbiddenImport `json:"forbidden_imports"`
-	Warnings        []string      `json:"warnings"`
-	Stats           Stats         `json:"stats"`
+	Warnings         []string          `json:"warnings"`
+	Stats            Stats             `json:"stats"`
 }
 
 type ForbiddenImport struct {
@@ -90,9 +90,9 @@ type Stats struct {
 }
 
 type LayerRule struct {
-	Layer     string   `json:"layer"`
-	Packages  []string `json:"packages"`
-	CanImport []string `json:"can_import"`
+	Layer        string   `json:"layer"`
+	Packages     []string `json:"packages"`
+	CanImport    []string `json:"can_import"`
 	CannotImport []string `json:"cannot_import"`
 }
 
