@@ -135,11 +135,13 @@ jobs:
 
       - name: Run go vet
         run: |
+          mkdir -p ${{ github.workspace }}/reports/arch-analysis/logs
           go vet ./... 2>&1 | tee ${{ github.workspace }}/reports/arch-analysis/logs/go-vet.log
 
       - name: Run staticcheck
         continue-on-error: true
         run: |
+          mkdir -p ${{ github.workspace }}/reports/arch-analysis/logs
           which staticcheck && staticcheck ./... 2>&1 | \
             tee ${{ github.workspace }}/reports/arch-analysis/logs/staticcheck.log || \
             echo "staticcheck not available"
@@ -217,12 +219,14 @@ jobs:
       - name: Run clippy
         continue-on-error: true
         run: |
+          mkdir -p ${{ github.workspace }}/reports/arch-analysis/logs
           cargo clippy --workspace -- -D warnings 2>&1 | \
             tee ${{ github.workspace }}/reports/arch-analysis/logs/clippy.log || \
             echo "clippy found issues"
 
       - name: Run cargo fmt check
         run: |
+          mkdir -p ${{ github.workspace }}/reports/arch-analysis/logs
           cargo fmt --check 2>&1 | \
             tee ${{ github.workspace }}/reports/arch-analysis/logs/rustfmt.log
 
