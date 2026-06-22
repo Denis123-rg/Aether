@@ -103,7 +103,7 @@ jobs:
             forge-cache-${{ runner.os }}-
 
       - name: Forge build
-        run: forge build --deny-warnings
+        run: forge build --deny warnings
 
   unit-tests:
     name: Unit Tests

@@ -1508,6 +1508,11 @@ mod tests {
     fn build_backrun_validator_config_with_provider() {
         use alloy::providers::{Provider, ProviderBuilder};
         use alloy_node_bindings::Anvil;
+        // Skip if anvil is not installed (CI runners without foundry-toolchain)
+        if std::process::Command::new("anvil").arg("--version").output().is_err() {
+            eprintln!("anvil not found — skipping build_backrun_validator_config_with_provider");
+            return;
+        }
         std::env::set_var(
             "AETHER_EXECUTOR_ADDRESS",
             "0x1111111111111111111111111111111111111111",

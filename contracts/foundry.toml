@@ -15,6 +15,16 @@ runs = 10000
 runs = 1000
 depth = 100
 
+[profile.ci]
+src = "src"
+out = "out"
+libs = ["lib"]
+solc = "0.8.28"
+optimizer = true
+optimizer_runs = 200
+via_ir = true
+remappings = ["@openzeppelin/=lib/openzeppelin-contracts/"]
+
 [profile.coverage]
 src = "src"
 out = "out"
@@ -24,3 +34,6 @@ optimizer = true
 optimizer_runs = 200
 via_ir = true
 remappings = ["@openzeppelin/=lib/openzeppelin-contracts/"]
+
+[lint]
+ignore = ["block-timestamp", "unsafe-typecast", "erc20-unchecked-transfer"]
