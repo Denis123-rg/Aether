@@ -145,6 +145,9 @@ jobs:
       - name: Install Rust toolchain
         run: rustup show
 
+      - name: Install rustfmt
+        run: rustup component add rustfmt
+
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: aether-offchain-cd
@@ -233,6 +236,12 @@ jobs:
 
       - name: Install cargo-llvm-cov
         run: cargo install cargo-llvm-cov
+
+      - name: Install Foundry (anvil for integration tests)
+        uses: foundry-rs/foundry-toolchain@v1
+        with:
+          cache: true
+          cache-key: aether-foundry-${{ runner.os }}
 
       - name: Generate coverage
         run: cargo llvm-cov --workspace --lcov --output-path lcov.info
