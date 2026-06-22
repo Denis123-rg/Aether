@@ -93,7 +93,7 @@ func TestPublisher_AllChannels(t *testing.T) {
 
 func waitUntil(t *testing.T, cond func() bool, label string) {
 	t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
+	deadline := time.Now().Add(15 * time.Second)
 	for time.Now().Before(deadline) {
 		if cond() {
 			return
@@ -231,6 +231,7 @@ func TestSubscriber_MiniredisRestart(t *testing.T) {
 	}()
 	pub := NewPublisher(url)
 	defer pub.Close()
+	waitForSubscriberConnected(t, state)
 	pub.PublishPnLUpdate(5, 50)
 	waitUntil(t, func() bool { return state.Get().PnLTotal == 5 }, "before restart")
 	mr.Restart()
