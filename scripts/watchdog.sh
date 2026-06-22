@@ -16,7 +16,7 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
 ANVIL_RPC="${ANVIL_RPC:-http://127.0.0.1:8545}"
-UPSTREAM_RPC="${UPSTREAM_RPC:-https://eth-mainnet.g.alchemy.com/v2/7jRyFeEjmCNmOlvQr3AfA}"
+UPSTREAM_RPC="${UPSTREAM_RPC:?UPSTREAM_RPC is required — set to an Ethereum mainnet RPC endpoint}"
 INTERVAL="${INTERVAL:-90}"
 # Only reset when upstream is at least this many blocks ahead of Anvil.
 # Each reset wipes Anvil's storage cache and forces the engine to refetch

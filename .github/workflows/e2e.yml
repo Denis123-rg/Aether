@@ -11,6 +11,9 @@ on:
       - 'deploy/docker/**'
       - '.github/workflows/e2e.yml'
 
+permissions:
+  contents: read
+
 jobs:
   e2e:
     runs-on: ubuntu-latest

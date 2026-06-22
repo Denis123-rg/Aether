@@ -33,8 +33,6 @@ for addr in "${POOL_ADDRS[@]}"; do
       break
     fi
   done
-  # pools.toml entries are statically configured — always covered.
-  found=1
   if [[ $found -eq 0 ]]; then
     echo "uncovered pool: $addr" >&2
     missing=$((missing + 1))

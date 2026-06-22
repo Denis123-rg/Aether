@@ -34,6 +34,9 @@ on:
       - "**.md"
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 concurrency:
   group: offchain-ci-${{ github.ref }}
   cancel-in-progress: true
@@ -192,6 +195,10 @@ jobs:
         run: |
           go tool cover -func=coverage.out | tee cover-summary.txt
           COVERAGE=$(go tool cover -func=coverage.out | grep total | grep -oP '\d+\.\d+' | head -1)
+          if [ -z "$COVERAGE" ]; then
+            echo "FAIL: Could not parse coverage from output"
+            exit 1
+          fi
           echo "Total Go coverage: $COVERAGE%"
           if (( $(echo "$COVERAGE < 97" | bc -l) )); then
             echo "FAIL: Go coverage $COVERAGE% is below 97% threshold"
@@ -235,6 +242,10 @@ jobs:
         run: |
           cargo llvm-cov report --summary-only 2>&1 | tee rust-coverage.txt
           COVERAGE=$(cargo llvm-cov report --summary-only | grep -oP '\d+\.\d+(?=%)' | head -1)
+          if [ -z "$COVERAGE" ]; then
+            echo "FAIL: Could not parse Rust coverage from output"
+            exit 1
+          fi
           echo "Total Rust coverage: $COVERAGE%"
           if (( $(echo "$COVERAGE < 98" | bc -l) )); then
             echo "FAIL: Rust coverage $COVERAGE% is below 98% threshold"

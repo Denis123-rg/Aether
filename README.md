@@ -251,6 +251,7 @@ aether/
 │   ├── redis_events.md              # Redis pub/sub event documentation
 │   ├── telegram_dashboard.md        # Telegram bot setup and commands
 │   ├── discovery_service.md         # Pool discovery service docs
+│   ├── perf/                        # Performance tuning (cargo profiles, etc.)
 │   ├── research/                    # Tx ordering, builder matrix, strategy analysis
 │   ├── issues/staged/               # Staged issue bodies for upcoming workstreams
 │   └── runbook/                     # Mempool, AB selector, shutdown, recovery, alerts
@@ -268,8 +269,8 @@ aether/
 
 ## Prerequisites
 
-- **Rust** 1.81+ (via [rustup](https://rustup.rs/))
-- **Go** 1.22+ (see `go.mod`)
+- **Rust** 1.94.1 (minimum 1.81+, via [rustup](https://rustup.rs/), pinned in `rust-toolchain.toml`)
+- **Go** 1.26.1 (minimum 1.22+, in `go.mod`, see `go.mod`)
 - **Foundry** ([forge, cast, anvil](https://getfoundry.sh/))
 - **Protobuf compiler** (`protoc`)
 - **Docker & Docker Compose** (local infrastructure)

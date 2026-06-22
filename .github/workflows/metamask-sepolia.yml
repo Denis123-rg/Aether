@@ -36,6 +36,9 @@ on:
   schedule:
     - cron: "0 6 * * *"
 
+permissions:
+  contents: read
+
 concurrency:
   group: metamask-sepolia-${{ github.ref }}
   cancel-in-progress: true
@@ -49,16 +52,9 @@ jobs:
   sepolia-tests:
     name: Sepolia Testnet (${{ github.event.inputs.mode || 'quick' }})
     runs-on: ubuntu-latest
-    timeout-minutes: ${{ github.event.inputs.mode == 'extended' && env.EXTENDED_MODE_TIMEOUT_MINUTES || env.QUICK_MODE_TIMEOUT_MINUTES }}
+    timeout-minutes: ${{ github.event.inputs.mode == 'extended' && fromJSON(env.EXTENDED_MODE_TIMEOUT_MINUTES) || fromJSON(env.QUICK_MODE_TIMEOUT_MINUTES) }}
     steps:
       - uses: actions/checkout@v4
-
-      - name: Install Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: ${{ env.NODE_VERSION }}
-          cache: npm
-          cache-dependency-path: package.json
 
       - name: Create package.json
         run: |
@@ -72,6 +68,19 @@ jobs:
             }
           }
           EOF
+
+      - name: Install Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Cache npm dependencies
+        uses: actions/cache@v4
+        with:
+          path: ~/.npm
+          key: npm-sepolia-${{ hashFiles('package.json') }}
+          restore-keys: |
+            npm-sepolia-
 
       - name: Install dependencies
         run: npm install

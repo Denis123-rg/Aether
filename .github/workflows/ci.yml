@@ -7,16 +7,15 @@ on:
     branches: [main]
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
 env:
   FOUNDRY_PROFILE: ci
-  RPC_URL: ${{ secrets.RPC_URL }}
-  PRIVATE_KEY: ${{ secrets.PRIVATE_KEY }}
-  ETHERSCAN_API_KEY: ${{ secrets.ETHERSCAN_API_KEY }}
-  ETH_RPC_URL: ${{ secrets.ETH_RPC_URL }}
 
 defaults:
   run:
@@ -178,12 +177,17 @@ jobs:
       - name: Check coverage threshold
         run: |
           COVERAGE=$(forge coverage --no-match-path "test/*.fork.t.sol" | tail -1 | grep -oP '\d+\.\d+' | head -1)
+          if [ -z "$COVERAGE" ]; then
+            echo "Failed to parse coverage output"
+            exit 1
+          fi
           echo "Coverage: $COVERAGE%"
           if (( $(echo "$COVERAGE < 98" | bc -l) )); then
             echo "Coverage $COVERAGE% is below 98% threshold"
             exit 1
           fi
           echo "Coverage $COVERAGE% meets 98% threshold"
+        shell: bash
 
       - name: Upload coverage report
         if: always()
@@ -330,7 +334,8 @@ jobs:
     runs-on: ubuntu-latest
     needs: compile
     timeout-minutes: 30
-    if: env.ETH_RPC_URL != ''
+    env:
+      ETH_RPC_URL: ${{ secrets.ETH_RPC_URL }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -350,6 +355,13 @@ jobs:
           key: forge-cache-${{ runner.os }}-${{ hashFiles('contracts/src/**/*.sol', 'contracts/foundry.toml') }}
           restore-keys: |
             forge-cache-${{ runner.os }}-
+
+      - name: Check ETH_RPC_URL
+        run: |
+          if [ -z "$ETH_RPC_URL" ]; then
+            echo "ETH_RPC_URL not set — skipping fork tests"
+            exit 0
+          fi
 
       - name: Start Anvil fork
         run: |
