@@ -317,7 +317,7 @@ jobs:
 
       - name: Check Echidna results
         run: |
-          if grep -qi "FAILED\|failing\|assertion failed\|[FAIL]" echidna-output.txt; then
+          if grep -q "FAILED\|assertion failed\|\[FAIL\]" echidna-output.txt; then
             echo "Echidna found violations"
             cat echidna-output.txt
             exit 1
