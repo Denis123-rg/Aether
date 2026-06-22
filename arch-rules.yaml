@@ -1,0 +1,153 @@
+# Architecture Validation Rules for Aether
+# Each rule defines allowed and forbidden dependency directions between layers.
+
+layers:
+  - name: handler
+    description: Command entry points (cmd/executor, cmd/monitor, etc.)
+    packages:
+      - cmd/executor
+      - cmd/monitor
+      - cmd/reconciler
+      - cmd/signer
+      - cmd/telebot
+    can_import:
+      - internal
+      - github.com/aether-arb/aether/internal
+    cannot_import: []
+
+  - name: service
+    description: Internal service layer (risk, strategy, events, grpc, signer, tracing)
+    packages:
+      - internal/risk
+      - internal/strategy
+      - internal/events
+      - internal/metrics
+      - internal/grpc
+      - internal/signer
+      - internal/tracing
+    can_import:
+      - internal/config
+      - internal/pb
+      - github.com/aether-arb/aether/internal
+    cannot_import:
+      - cmd
+      - github.com/aether-arb/aether/cmd
+
+  - name: db
+    description: Database persistence layer
+    packages:
+      - internal/db
+    can_import:
+      - internal/config
+      - github.com/aether-arb/aether/internal/config
+    cannot_import:
+      - cmd
+      - github.com/aether-arb/aether/cmd
+      - internal/grpc
+      - internal/risk
+      - internal/strategy
+      - internal/events
+      - internal/signer
+      - internal/tracing
+
+  - name: config
+    description: Configuration layer
+    packages:
+      - internal/config
+    can_import:
+      - os
+      - fmt
+      - io
+    cannot_import:
+      - internal/db
+      - internal/grpc
+      - internal/risk
+      - internal/signer
+      - internal/events
+      - internal/metrics
+      - internal/strategy
+      - internal/pb
+      - internal/tracing
+      - cmd
+      - github.com/aether-arb/aether/cmd
+      - github.com/aether-arb/aether/internal
+
+# Rust layer rules
+rust_layers:
+  - name: common
+    packages:
+      - crates/common
+    can_import:
+      - crates
+    cannot_import:
+      - crates/grpc-server
+      - crates/integration-tests
+
+  - name: grpc
+    packages:
+      - crates/grpc-server
+    can_import:
+      - crates
+    cannot_import:
+      - crates/integration-tests
+
+rules:
+  - id: HANDLER_MUST_NOT_IMPORT_DB
+    description: Handlers must not directly import the database layer
+    severity: error
+    fail_pipeline: true
+
+  - id: SERVICE_MUST_NOT_IMPORT_DB
+    description: Service layer must not directly import database layer
+    severity: error
+    fail_pipeline: true
+
+  - id: DOMAIN_MUST_BE_INDEPENDENT
+    description: Domain/pb package must not depend on database or commands
+    severity: error
+    fail_pipeline: true
+
+  - id: CONFIG_MUST_BE_LEAF
+    description: Config package must be a leaf node with no internal dependencies
+    severity: error
+    fail_pipeline: true
+
+  - id: NO_CIRCULAR_IMPORTS
+    description: No circular imports between packages
+    severity: error
+    fail_pipeline: true
+
+  - id: INTERNAL_BOUNDARY
+    description: Internal packages must not import from cmd packages
+    severity: error
+    fail_pipeline: true
+
+  - id: LAYER_ISOLATION
+    description: Layers must maintain proper isolation boundaries
+    severity: error
+    fail_pipeline: true
+
+  - id: EXTERNAL_DEP_MANAGEMENT
+    description: External dependencies should be minimized and justified
+    severity: warning
+    fail_pipeline: false
+
+  - id: TEST_FILE_PLACEMENT
+    description: Test files should be colocated with source files
+    severity: warning
+    fail_pipeline: false
+
+  - id: UNUSED_SYMBOLS
+    description: Unused exported symbols should be removed
+    severity: warning
+    fail_pipeline: false
+
+thresholds:
+  max_cyclomatic_complexity: 15
+  max_function_length: 100
+  max_file_length: 1000
+  min_coverage_go: 96
+  min_coverage_rust: 98
+  max_dependency_depth: 5
+  max_circular_deps: 0
+  max_forbidden_deps: 0
