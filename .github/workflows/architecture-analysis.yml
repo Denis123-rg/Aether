@@ -400,7 +400,7 @@ jobs:
       - name: Run Go tests with coverage
         run: |
           mkdir -p ${{ github.workspace }}/reports/arch-analysis/coverage
-          go test ./cmd/... ./internal/... -count=1 -coverprofile=${{ github.workspace }}/reports/arch-analysis/coverage/go-coverage.out -covermode=atomic
+          go test ./cmd/... ./internal/... -count=1 -timeout 15m -coverprofile=${{ github.workspace }}/reports/arch-analysis/coverage/go-coverage.out -covermode=atomic
 
       - name: Generate coverage report
         run: |

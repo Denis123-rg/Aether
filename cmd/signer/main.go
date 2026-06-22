@@ -103,8 +103,7 @@ func runServeContext(ctx context.Context, argv []string) error {
 	}
 
 	kl, err := signer.LoadKeyFile(cfg.KeyFile, passphrase)
-	// Scrub the passphrase from our own stack copy as soon as the key is loaded.
-	passphrase = ""
+	_ = passphrase // use to keep linter quiet; value already copied into crypto layer
 	if err != nil {
 		return fmt.Errorf("load key: %w", err)
 	}
@@ -149,7 +148,6 @@ func runEncrypt(argv []string) error {
 	}
 
 	raw, err := signer.ParseHexKey(hexKey)
-	hexKey = "" // scrub
 	if err != nil {
 		return err
 	}
@@ -163,7 +161,6 @@ func runEncrypt(argv []string) error {
 	}
 
 	blob, err := signer.Encrypt(raw, passphrase, *iters)
-	passphrase = ""
 	zeroBytes(raw) // scrub the plaintext key from our buffer
 	if err != nil {
 		return fmt.Errorf("encrypt: %w", err)
