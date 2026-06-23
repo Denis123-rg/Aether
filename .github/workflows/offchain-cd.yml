@@ -342,7 +342,7 @@ jobs:
       - name: Go fuzz tests
         continue-on-error: true
         run: |
-          go test -fuzz=. -fuzztime=10s ./internal/... || echo "No Go fuzz targets found"
+          go test -fuzz=. -fuzztime=10s ./internal/...
 
   load-stress-tests:
     name: Load / Stress Tests
@@ -363,7 +363,7 @@ jobs:
           LOAD_TEST_DURATION: 30s
           LOAD_TEST_CLIENTS: "20"
           LOAD_TEST_RPS: "10"
-        run: go test -tags=load ./tests/load/... -count=1 -timeout 5m -run TestLoadSmoke -v || echo "No load tests found"
+        run: go test -tags=load ./tests/load/... -count=1 -timeout 5m -run TestLoadSmoke -v
 
   e2e-tests:
     name: End-to-End Tests
@@ -398,7 +398,7 @@ jobs:
           AETHER_ADMIN_TOKEN: cd-test-token
           AETHER_E2E_REQUIRE_SERVICES: "0"
         run: |
-          go test ./tests/e2e/... -count=1 -timeout 120s -v || echo "No E2E tests found"
+          go test ./tests/e2e/... -count=1 -timeout 120s -v
 
   docker-build:
     name: Build Docker Images
@@ -486,7 +486,7 @@ jobs:
 
       - name: Validate workflow YAML
         run: |
-          python3 -c 'import yaml,sys; [sys.exit(1) if not yaml.safe_load(open(f)) else print(f+": valid") for f in [".github/workflows/offchain-ci.yml",".github/workflows/offchain-cd.yml"]]'
+          python3 -c 'import yaml,sys; [sys.exit(1) if not yaml.safe_load(open(f)) else print(f+": valid") for f in [".github/workflows/offchain-cd.yml"]]'
       - name: CD Summary
         run: |
           echo "## Off-Chain CD Results" >> $GITHUB_STEP_SUMMARY

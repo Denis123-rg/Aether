@@ -1,5 +1,3 @@
-version: '3.8'
-
 services:
   rust-core:
     build:
@@ -21,7 +19,7 @@ services:
   go-executor:
     build:
       context: .
-      dockerfile: deploy/docker/Dockerfile.go
+      dockerfile: deploy/docker/go.Dockerfile
     container_name: go-executor
     ports:
       - "3000:3000"

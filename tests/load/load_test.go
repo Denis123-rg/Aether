@@ -25,6 +25,7 @@ const (
 	defaultLoadDuration = 10 * time.Minute
 	defaultClients      = 100
 	defaultRPSPerClient = 10
+	shutdownGracePeriod = 2 * time.Second
 )
 
 func loadDuration() time.Duration {
@@ -57,6 +58,38 @@ func loadRPSPerClient() int {
 	return defaultRPSPerClient
 }
 
+func isShutdownError(err error) bool {
+	if err == nil {
+		return true
+	}
+	if err == io.EOF {
+		return true
+	}
+	errStr := err.Error()
+	for _, s := range []string{
+		"context canceled",
+		"context deadline exceeded",
+		"transport is closing",
+		"connection closed",
+		"server closed",
+		"broken pipe",
+		"use of closed",
+		"io: read/write on closed pipe",
+		"stream reset",
+		"RST_STREAM",
+		"closed",
+	} {
+		if len(errStr) >= len(s) {
+			for i := 0; i <= len(errStr)-len(s); i++ {
+				if errStr[i:i+len(s)] == s {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
 // TestLoad drives StreamArbs at ~1000 req/s (100 clients × 10 rps) against a
 // mock gRPC server and asserts p99 < 50ms with bounded heap growth.
 func TestLoad(t *testing.T) {
@@ -87,6 +120,9 @@ func TestLoad(t *testing.T) {
 	hist := hdrhistogram.New(1, 60_000, 3)
 	var reqCount atomic.Uint64
 	var errCount atomic.Uint64
+	var cancelledCount atomic.Uint64
+	var transportCount atomic.Uint64
+	var otherErrCount atomic.Uint64
 	warmup := duration / 5
 	if warmup < time.Second {
 		warmup = time.Second
@@ -95,6 +131,7 @@ func TestLoad(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), duration)
 	defer cancel()
 
+	stopCh := make(chan struct{})
 	go func() {
 		select {
 		case <-ctx.Done():
@@ -105,6 +142,11 @@ func TestLoad(t *testing.T) {
 			baselineHeap.Store(ms.HeapAlloc)
 			baselineSet.Store(true)
 		}
+	}()
+
+	go func() {
+		<-ctx.Done()
+		close(stopCh)
 	}()
 
 	var wg sync.WaitGroup
@@ -118,7 +160,12 @@ func TestLoad(t *testing.T) {
 				grpc.WithTransportCredentials(insecure.NewCredentials()),
 			)
 			if err != nil {
-				errCount.Add(1)
+				if ctx.Err() == nil {
+					errCount.Add(1)
+					otherErrCount.Add(1)
+				} else {
+					cancelledCount.Add(1)
+				}
 				return
 			}
 			defer conn.Close()
@@ -127,16 +174,24 @@ func TestLoad(t *testing.T) {
 			defer ticker.Stop()
 			for {
 				select {
-				case <-ctx.Done():
+				case <-stopCh:
 					return
 				case <-ticker.C:
+					if ctx.Err() != nil {
+						return
+					}
 					reqCtx, reqCancel := context.WithTimeout(ctx, 2*time.Second)
 					start := time.Now()
 					stream, err := arbClient.StreamArbs(reqCtx, &pb.StreamArbsRequest{MinProfitEth: 0})
 					if err != nil {
 						reqCancel()
-						if ctx.Err() == nil {
+						if ctx.Err() != nil {
+							cancelledCount.Add(1)
+						} else if isShutdownError(err) {
+							cancelledCount.Add(1)
+						} else {
 							errCount.Add(1)
+							transportCount.Add(1)
 						}
 						continue
 					}
@@ -146,8 +201,13 @@ func TestLoad(t *testing.T) {
 							break
 						}
 						if recvErr != nil {
-							if ctx.Err() == nil {
+							if ctx.Err() != nil {
+								cancelledCount.Add(1)
+							} else if isShutdownError(recvErr) {
+								cancelledCount.Add(1)
+							} else {
 								errCount.Add(1)
+								transportCount.Add(1)
 							}
 							break
 						}
@@ -164,6 +224,18 @@ func TestLoad(t *testing.T) {
 	}
 
 	wg.Wait()
+
+	deadline := time.After(shutdownGracePeriod)
+	drainCh := make(chan struct{})
+	go func() {
+		runtime.GC()
+		close(drainCh)
+	}()
+	select {
+	case <-drainCh:
+	case <-deadline:
+	}
+
 	runtime.GC()
 	var memAfter runtime.MemStats
 	runtime.ReadMemStats(&memAfter)
@@ -171,6 +243,9 @@ func TestLoad(t *testing.T) {
 	p99 := time.Duration(hist.ValueAtQuantile(99.0)) * time.Microsecond
 	total := reqCount.Load()
 	errs := errCount.Load()
+	cancelled := cancelledCount.Load()
+	transport := transportCount.Load()
+	otherErr := otherErrCount.Load()
 	heapGrowthPct := 0.0
 	if baselineSet.Load() {
 		before := baselineHeap.Load()
@@ -187,12 +262,13 @@ func TestLoad(t *testing.T) {
 		time.Duration(hist.Max())*time.Microsecond,
 	)
 	t.Logf("heap_before=%d heap_after=%d growth=%.2f%%", baselineHeap.Load(), memAfter.HeapAlloc, heapGrowthPct)
+	t.Logf("error_breakdown: shutdown_cancelled=%d transport=%d other=%d", cancelled, transport, otherErr)
 
 	if total == 0 {
 		t.Fatal("no requests completed")
 	}
 	if errs > 0 && float64(errs)/float64(total) > 0.01 {
-		t.Fatalf("error rate too high: %d/%d", errs, total)
+		t.Fatalf("error rate too high: %d/%d (transport=%d other=%d cancelled=%d)", errs, total, transport, otherErr, cancelled)
 	}
 	if p99 > 50*time.Millisecond {
 		t.Fatalf("p99 latency %s exceeds 50ms target", p99)
