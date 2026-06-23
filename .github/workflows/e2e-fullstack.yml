@@ -29,8 +29,7 @@ jobs:
   full-e2e:
     name: Aether E2E (${{ github.event.inputs.timeout || '15' }} мин)
     runs-on: ubuntu-latest
-    timeout-minutes: ${{ github.event.inputs.timeout || 15 }}
-
+    timeout-minutes: ${{ fromJSON(github.event.inputs.timeout || '15') }}
     steps:
       - uses: actions/checkout@v4
 
@@ -99,7 +98,7 @@ jobs:
           S3_ACCESS_KEY: minioadmin
           S3_SECRET_KEY: minioadmin
           S3_BUCKET: aether-test
-          TIMEOUT_MINUTES: ${{ github.event.inputs.timeout || 15 }}
+          TIMEOUT_MINUTES: ${{ github.event.inputs.timeout || '15' }}
           REPORT_DIR: /tmp/aether-report
         run: node scripts/e2e-fullstack.mjs
 
