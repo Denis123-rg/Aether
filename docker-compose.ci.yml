@@ -1,0 +1,91 @@
+version: '3.8'
+
+services:
+  rust-core:
+    build:
+      context: .
+      dockerfile: deploy/docker/Dockerfile.rust
+    container_name: rust-core
+    environment:
+      RUST_LOG: info
+      ETH_RPC_URL: ${SEPOLIA_RPC_URL}
+      REDIS_URL: redis://redis:6379
+      POSTGRES_URL: postgresql://aether:secret@postgres:5432/aether
+    depends_on:
+      - postgres
+      - redis
+    networks:
+      - aether-net
+    restart: unless-stopped
+
+  go-executor:
+    build:
+      context: .
+      dockerfile: deploy/docker/Dockerfile.go
+    container_name: go-executor
+    ports:
+      - "3000:3000"
+    environment:
+      GO_ENV: test
+      PORT: 3000
+      DATABASE_URL: postgresql://aether:secret@postgres:5432/aether
+      REDIS_URL: redis://redis:6379
+      S3_ENDPOINT: http://minio:9000
+      S3_ACCESS_KEY: minioadmin
+      S3_SECRET_KEY: minioadmin
+      S3_BUCKET: aether-test
+      SEPOLIA_RPC_URL: ${SEPOLIA_RPC_URL}
+      METAMASK_PRIVATE_KEY: ${METAMASK_PRIVATE_KEY}
+      METAMASK_ADDRESS: ${METAMASK_ADDRESS}
+      CONTRACT_ADDRESS: ${CONTRACT_ADDRESS}
+    depends_on:
+      - postgres
+      - redis
+      - minio
+    networks:
+      - aether-net
+    restart: unless-stopped
+
+  postgres:
+    image: postgres:15-alpine
+    container_name: postgres
+    environment:
+      POSTGRES_USER: aether
+      POSTGRES_PASSWORD: secret
+      POSTGRES_DB: aether
+    ports:
+      - "5432:5432"
+    networks:
+      - aether-net
+    volumes:
+      - ./migrations:/docker-entrypoint-initdb.d
+
+  redis:
+    image: redis:7-alpine
+    container_name: redis
+    ports:
+      - "6379:6379"
+    networks:
+      - aether-net
+
+  minio:
+    image: minio/minio:latest
+    container_name: minio
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    command: server /data --console-address ":9001"
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    networks:
+      - aether-net
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+networks:
+  aether-net:
+    driver: bridge
