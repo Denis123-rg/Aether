@@ -52,22 +52,29 @@ jobs:
       - name: Install Foundry
         uses: foundry-rs/foundry-toolchain@v1
 
-      - name: Build and deploy contract
+      - name: Build and deploy contract using Forge script
         id: deploy
         env:
           AAVE_POOL: ${{ secrets.AAVE_POOL }}
           BALANCER_VAULT: ${{ secrets.BALANCER_VAULT }}
           BANCOR_NETWORK: ${{ secrets.BANCOR_NETWORK }}
+          SEPOLIA_RPC_URL: ${{ secrets.SEPOLIA_RPC_URL }}
+          METAMASK_PRIVATE_KEY: ${{ secrets.METAMASK_PRIVATE_KEY }}
         run: |
           cd contracts
           forge build
-          DEPLOY_OUTPUT=$(forge create \
-            --rpc-url "${{ secrets.SEPOLIA_RPC_URL }}" \
-            --private-key "${{ secrets.METAMASK_PRIVATE_KEY }}" \
-            src/AetherExecutor.sol:AetherExecutor \
-            --constructor-args "$AAVE_POOL" "$BALANCER_VAULT" "$BANCOR_NETWORK" \
-            --broadcast)
-          CONTRACT_ADDRESS=$(echo "$DEPLOY_OUTPUT" | grep -oP 'Deployed to: \K(0x[a-fA-F0-9]{40})')
+          # Запускаем скрипт деплоя, который сам прочитает переменные окружения
+          forge script script/DeployAetherExecutor.s.sol:DeployAetherExecutor \
+            --rpc-url "$SEPOLIA_RPC_URL" \
+            --private-key "$METAMASK_PRIVATE_KEY" \
+            --broadcast
+          # Извлекаем адрес из логов (скрипт печатает "AetherExecutor deployed at: 0x...")
+          DEPLOY_OUTPUT=$(forge script script/DeployAetherExecutor.s.sol:DeployAetherExecutor \
+            --rpc-url "$SEPOLIA_RPC_URL" \
+            --private-key "$METAMASK_PRIVATE_KEY" \
+            --broadcast --silent)
+          # В логах будет строка "AetherExecutor deployed at: 0x..."
+          CONTRACT_ADDRESS=$(echo "$DEPLOY_OUTPUT" | grep -oP 'AetherExecutor deployed at: \K(0x[a-fA-F0-9]{40})')
           echo "contract_address=$CONTRACT_ADDRESS" >> $GITHUB_OUTPUT
           echo "✅ Contract deployed to $CONTRACT_ADDRESS"
 
