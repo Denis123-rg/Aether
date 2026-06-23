@@ -64,17 +64,12 @@ jobs:
         run: |
           cd contracts
           forge build
-          # Запускаем скрипт деплоя (файл Deploy.s.sol, контракт DeployAetherExecutor)
+          # Деплоим и одновременно захватываем вывод для извлечения адреса
           forge script script/Deploy.s.sol:DeployAetherExecutor \
             --rpc-url "$SEPOLIA_RPC_URL" \
             --private-key "$METAMASK_PRIVATE_KEY" \
-            --broadcast
-          # Извлекаем адрес из логов (скрипт выводит "AetherExecutor deployed at: 0x...")
-          DEPLOY_OUTPUT=$(forge script script/Deploy.s.sol:DeployAetherExecutor \
-            --rpc-url "$SEPOLIA_RPC_URL" \
-            --private-key "$METAMASK_PRIVATE_KEY" \
-            --broadcast --silent 2>&1)
-          CONTRACT_ADDRESS=$(echo "$DEPLOY_OUTPUT" | grep -oP 'AetherExecutor deployed at: \K(0x[a-fA-F0-9]{40})')
+            --broadcast 2>&1 | tee /tmp/deploy-output.txt
+          CONTRACT_ADDRESS=$(grep -oP 'AetherExecutor deployed at: \K(0x[a-fA-F0-9]{40})' /tmp/deploy-output.txt)
           echo "contract_address=$CONTRACT_ADDRESS" >> $GITHUB_OUTPUT
           echo "✅ Contract deployed to $CONTRACT_ADDRESS"
 
