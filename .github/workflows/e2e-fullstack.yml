@@ -86,6 +86,9 @@ jobs:
           echo "✅ ABI extracted"
 
       # ========== Запуск бэкенда ==========
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
       - name: Start backend services (Rust + Go + Postgres + MinIO)
         env:
           SEPOLIA_RPC_URL: ${{ secrets.SEPOLIA_RPC_URL }}
@@ -93,8 +96,8 @@ jobs:
           METAMASK_ADDRESS: ${{ secrets.METAMASK_ADDRESS }}
           CONTRACT_ADDRESS: ${{ steps.deploy.outputs.contract_address }}
         run: |
-          docker compose -f ${{ env.COMPOSE_FILE }} up -d
-          timeout 120 bash -c 'until curl -s http://localhost:3000/health; do sleep 2; done'
+          docker compose -f ${{ env.COMPOSE_FILE }} up -d --build
+          timeout 600 bash -c 'until curl -s http://localhost:3000/health; do sleep 5; done'
           echo "✅ All backend services are ready"
 
       # ========== Запуск E2E-тестов ==========
