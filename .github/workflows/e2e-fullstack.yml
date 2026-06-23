@@ -52,7 +52,8 @@ jobs:
       - name: Install Foundry
         uses: foundry-rs/foundry-toolchain@v1
 
-      - name: Build and deploy contract using Forge script
+      # ========== Деплой контракта через forge script ==========
+      - name: Build and deploy contract
         id: deploy
         env:
           AAVE_POOL: ${{ secrets.AAVE_POOL }}
@@ -63,21 +64,21 @@ jobs:
         run: |
           cd contracts
           forge build
-          # Запускаем скрипт деплоя, который сам прочитает переменные окружения
-          forge script script/DeployAetherExecutor.s.sol:DeployAetherExecutor \
+          # Запускаем скрипт деплоя (файл Deploy.s.sol, контракт DeployAetherExecutor)
+          forge script script/Deploy.s.sol:DeployAetherExecutor \
             --rpc-url "$SEPOLIA_RPC_URL" \
             --private-key "$METAMASK_PRIVATE_KEY" \
             --broadcast
-          # Извлекаем адрес из логов (скрипт печатает "AetherExecutor deployed at: 0x...")
-          DEPLOY_OUTPUT=$(forge script script/DeployAetherExecutor.s.sol:DeployAetherExecutor \
+          # Извлекаем адрес из логов (скрипт выводит "AetherExecutor deployed at: 0x...")
+          DEPLOY_OUTPUT=$(forge script script/Deploy.s.sol:DeployAetherExecutor \
             --rpc-url "$SEPOLIA_RPC_URL" \
             --private-key "$METAMASK_PRIVATE_KEY" \
-            --broadcast --silent)
-          # В логах будет строка "AetherExecutor deployed at: 0x..."
+            --broadcast --silent 2>&1)
           CONTRACT_ADDRESS=$(echo "$DEPLOY_OUTPUT" | grep -oP 'AetherExecutor deployed at: \K(0x[a-fA-F0-9]{40})')
           echo "contract_address=$CONTRACT_ADDRESS" >> $GITHUB_OUTPUT
           echo "✅ Contract deployed to $CONTRACT_ADDRESS"
 
+      # ========== Извлечение ABI ==========
       - name: Extract ABI from compiled contract
         id: abi
         run: |
@@ -89,6 +90,7 @@ jobs:
           echo "abi=$ABI" >> $GITHUB_OUTPUT
           echo "✅ ABI extracted"
 
+      # ========== Запуск бэкенда ==========
       - name: Start backend services (Rust + Go + Postgres + MinIO)
         env:
           SEPOLIA_RPC_URL: ${{ secrets.SEPOLIA_RPC_URL }}
@@ -100,6 +102,7 @@ jobs:
           timeout 120 bash -c 'until curl -s http://localhost:3000/health; do sleep 2; done'
           echo "✅ All backend services are ready"
 
+      # ========== Запуск E2E-тестов ==========
       - name: Run Full E2E Tests
         env:
           SEPOLIA_RPC_URL: ${{ secrets.SEPOLIA_RPC_URL }}
@@ -117,6 +120,7 @@ jobs:
           REPORT_DIR: /tmp/aether-report
         run: node scripts/e2e-fullstack.mjs
 
+      # ========== Сбор логов и артефактов ==========
       - name: Collect container logs
         if: always()
         run: |
