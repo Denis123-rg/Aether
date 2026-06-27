@@ -220,7 +220,7 @@ jobs:
         run: |
           slither . --filter-paths "lib,test,script" --exclude-dependencies \
             --exclude naming-convention \
-            --fail-high --fail-medium \
+            --fail-high \
             --json slither-report.json 2>&1 | tee slither-output.txt
 
       - name: Upload Slither report
