@@ -20,7 +20,7 @@ env:
 
 jobs:
   unit-and-invariant-tests:
-    name: Unit + Invariant Tests
+    name: Unit + Invariant Tests (190 tests)
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -130,38 +130,6 @@ jobs:
       - name: Run base fork tests
         working-directory: contracts
         run: forge test -vvv --match-path "test/AetherExecutor.fork.t.sol" --fork-url "$ETH_RPC_URL"
-
-  fork-group-adapters:
-    name: Fork Tests Group C — DEX Adapters (53 tests)
-    runs-on: ubuntu-latest
-    timeout-minutes: 45
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          submodules: recursive
-
-      - uses: foundry-rs/foundry-toolchain@v1
-        with:
-          cache: true
-          cache-key: aether-foundry-${{ runner.os }}
-
-      - name: Restore Foundry cache
-        uses: actions/cache@v4
-        with:
-          path: |
-            contracts/cache
-            contracts/out
-          key: forge-cache-${{ runner.os }}-${{ hashFiles('contracts/src/**/*.sol', 'contracts/foundry.toml') }}
-          restore-keys: |
-            forge-cache-${{ runner.os }}-
-
-      - name: Compile
-        working-directory: contracts
-        run: forge build
-
-      - name: Run Group C — DEX Adapters
-        working-directory: contracts
-        run: forge test -vvv --match-path "test/AetherExecutor.fork.groupC_adapters.t.sol" --fork-url "$ETH_RPC_URL"
 
   coverage:
     name: Coverage Report

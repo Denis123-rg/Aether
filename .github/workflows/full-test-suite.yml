@@ -162,7 +162,7 @@ jobs:
           retention-days: 30
 
   unit-tests:
-    name: Unit + Invariant Tests (186 tests)
+    name: Unit + Invariant Tests (190 tests)
     runs-on: ubuntu-latest
     timeout-minutes: 30
 
@@ -213,7 +213,7 @@ jobs:
             echo "| Fork Tests (426) | ${{ needs.fork-tests-all.result }} |"
             echo "| Unit + Invariant (186) | ${{ needs.unit-tests.result }} |"
             echo ""
-            echo "Total Foundry tests: **616** (186 unit + 426 fork/anvil)"
+            echo "Total Foundry tests: **616** (190 unit + 426 fork/anvil)"
             echo ""
             if [ "${{ needs.fork-tests-all.result }}" = "failure" ] || [ "${{ needs.unit-tests.result }}" = "failure" ]; then
               echo "**Some tests failed — check individual job logs.**"
