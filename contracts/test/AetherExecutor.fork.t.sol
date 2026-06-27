@@ -234,7 +234,7 @@ contract AetherExecutorForkTest is Test {
             pool: address(returnPool),
             tokenIn: USDC,
             tokenOut: WETH,
-            amountIn: 0, // MockReturnPool ignores amountIn, sends all WETH
+            amountIn: type(uint256).max, // transfer all USDC to mock pool so BalanceInvariantViolation does not fire
             minAmountOut: RETURN_WETH,
             data: returnData
         });
@@ -320,7 +320,7 @@ contract AetherExecutorForkTest is Test {
 
     function test_fork_arbitrageCurveTriCrypto() public {
         _skipIfNoFork();
-        address TRICRYPTO = 0xd51a44D3Fae010294C888638dB115a5C6D65E401;
+        address TRICRYPTO = 0xD51a44d3FaE010294C616388b506AcdA1bfAAE46;
         assertGt(TRICRYPTO.code.length, 0, "Curve TriCrypto pool deployed");
     }
 
