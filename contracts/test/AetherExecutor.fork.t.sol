@@ -318,10 +318,10 @@ contract AetherExecutorForkTest is Test {
         assertGt(DAI.code.length, 0, "DAI contract on fork");
     }
 
-    function test_fork_arbitrageCurveTriCrypto() public {
+    function test_fork_arbitrageCurve3pool() public {
         _skipIfNoFork();
-        address TRICRYPTO = 0xD51a44d3FaE010294C616388b506AcdA1bfAAE46;
-        assertGt(TRICRYPTO.code.length, 0, "Curve TriCrypto pool deployed");
+        address CURVE_3POOL = 0xbEbc44782C7dB0a1A60Cb6fe97d0b483032FF1C7;
+        assertGt(CURVE_3POOL.code.length, 0, "Curve 3pool deployed");
     }
 
     function test_fork_arbitrageBalancerWeightedPool() public {
