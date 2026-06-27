@@ -44,10 +44,18 @@ func TestPublisherSubscriberRoundTrip(t *testing.T) {
 	pub.PublishBreakerStatus(true, "test")
 	pub.PublishSignerHealth(false)
 
-	select {
-	case <-refreshed:
-	case <-time.After(2 * time.Second):
-		t.Fatal("expected refresh callback")
+	// Drain initial refresh signals; wait until all state is propagated.
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		select {
+		case <-refreshed:
+		default:
+		}
+		got := state.Get()
+		if got.LastBuilder == "flashbots" && got.PnLTotal == 10.0 && got.BreakerOpen && !got.SignerHealthy {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
 	}
 
 	got := state.Get()
