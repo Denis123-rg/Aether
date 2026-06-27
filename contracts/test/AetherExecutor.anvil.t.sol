@@ -115,31 +115,31 @@ contract AetherExecutorAnvilTest is Test {
         assertEq(IERC20(DAI).balanceOf(bob), 1000 ether, "whale transfer failed");
     }
 
-    function test_anvil_snapshotAndRevert() public {
+    function test_anvil_snapshotStateAndRevert() public {
         _skipIfNoFork();
         address alice = address(0x1111);
         uint256 amount = 5 ether;
         deal(WETH, alice, amount);
         assertEq(IERC20(WETH).balanceOf(alice), amount);
-        uint256 snap = vm.snapshot();
+        uint256 snap = vm.snapshotState();
         deal(WETH, alice, 0);
         assertEq(IERC20(WETH).balanceOf(alice), 0, "balance should be 0 after re-deal");
-        vm.revertTo(snap);
-        assertEq(IERC20(WETH).balanceOf(alice), amount, "snapshot revert failed");
+        vm.revertToState(snap);
+        assertEq(IERC20(WETH).balanceOf(alice), amount, "snapshotState revert failed");
     }
 
-    function test_anvil_snapshotMultiple() public {
+    function test_anvil_snapshotStateMultiple() public {
         _skipIfNoFork();
         address alice = address(0x2222);
         deal(WETH, alice, 1 ether);
-        uint256 snap1 = vm.snapshot();
+        uint256 snap1 = vm.snapshotState();
         deal(WETH, alice, 2 ether);
-        uint256 snap2 = vm.snapshot();
+        uint256 snap2 = vm.snapshotState();
         deal(WETH, alice, 3 ether);
         assertEq(IERC20(WETH).balanceOf(alice), 3 ether);
-        vm.revertTo(snap2);
+        vm.revertToState(snap2);
         assertEq(IERC20(WETH).balanceOf(alice), 2 ether, "revert to snap2 failed");
-        vm.revertTo(snap1);
+        vm.revertToState(snap1);
         assertEq(IERC20(WETH).balanceOf(alice), 1 ether, "revert to snap1 failed");
     }
 
@@ -186,15 +186,15 @@ contract AetherExecutorAnvilTest is Test {
         _skipIfNoFork();
         address alice = address(0xabcd);
         deal(WETH, alice, 100 ether);
-        bytes memory codeBefore = WETH.code;
         address malicious = address(0xdead0001);
-        vm.etch(malicious, abi.encodePacked(type(uint256).max));
-        assertGt(malicious.code.length, codeBefore.length, "etch should set code");
+        assertEq(malicious.code.length, 0, "malicious should start with no code");
+        vm.etch(malicious, hex"deadbeef");
+        assertGt(malicious.code.length, 0, "etch should set code");
     }
 
     function test_anvil_largeStorageWrite() public {
         _skipIfNoFork();
-        address target = address(0x1);
+        address target = address(0x1234567890123456789012345678901234567890);
         bytes32 slot = bytes32(uint256(42));
         bytes32 value = keccak256(abi.encode("anvil-storage-test"));
         vm.store(target, slot, value);
@@ -217,10 +217,10 @@ contract AetherExecutorAnvilTest is Test {
         _skipIfNoFork();
         uint256[] memory snaps = new uint256[](10);
         for (uint256 i = 0; i < 10; i++) {
-            snaps[i] = vm.snapshot();
+            snaps[i] = vm.snapshotState();
         }
         for (uint256 i = 10; i > 0; i--) {
-            assertTrue(vm.revertTo(snaps[i - 1]), string.concat("revertTo snap ", vm.toString(i - 1), " failed"));
+            assertTrue(vm.revertToState(snaps[i - 1]), string.concat("revertToState snap ", vm.toString(i - 1), " failed"));
         }
     }
 
