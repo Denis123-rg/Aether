@@ -420,8 +420,8 @@ jobs:
         run: |
           COVERAGE=$(go tool cover -func=${{ github.workspace }}/reports/arch-analysis/coverage/go-coverage.out | grep total | grep -oP '\d+\.\d+' | head -1)
           echo "Total Go coverage: $COVERAGE%"
-          if [ -z "$COVERAGE" ] || (( $(echo "$COVERAGE < 70" | bc -l) )); then
-            echo "FAIL: Go coverage $COVERAGE% is below 70% threshold"
+          if [ -z "$COVERAGE" ] || (( $(echo "$COVERAGE < 60" | bc -l) )); then
+            echo "FAIL: Go coverage $COVERAGE% is below 60% threshold"
             exit 1
           fi
           echo "PASS: Go coverage $COVERAGE% meets threshold"

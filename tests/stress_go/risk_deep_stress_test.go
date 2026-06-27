@@ -78,8 +78,8 @@ func TestStressRiskStateMachineDegradationPath(t *testing.T) {
 
 	rm := risk.NewRiskManager(risk.DefaultRiskConfig())
 	var (
-		ops       int64
-		states    [4]int64
+		ops    int64
+		states [4]int64
 	)
 
 	err := generateLoad(ctx, cfg.Concurrency, cfg.RatePerSecond, func(ctx context.Context) error {

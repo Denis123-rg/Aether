@@ -17,9 +17,9 @@ func TestStressReconcilerHistoricalReplay(t *testing.T) {
 	defer cancel()
 
 	type blockEvent struct {
-		number  uint64
-		hash    string
-		txs     []uuid.UUID
+		number uint64
+		hash   string
+		txs    []uuid.UUID
 	}
 
 	store := newStressPredictionStore(50000)
@@ -90,11 +90,6 @@ func TestStressReconcilerMultiForkDivergence(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), cfg.Duration)
 	defer cancel()
 
-	type fork struct {
-		id      int
-		head    uint64
-		txs     map[uuid.UUID]bool
-	}
 	var (
 		mainStore = newStressPredictionStore(20000)
 		forkStore = newStressPredictionStore(20000)

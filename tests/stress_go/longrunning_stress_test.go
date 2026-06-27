@@ -66,8 +66,8 @@ func TestStressProductionLoadProfile(t *testing.T) {
 	rm := risk.NewRiskManager(risk.DefaultRiskConfig())
 
 	var (
-		arbs     int64
-		submits  int64
+		arbs    int64
+		submits int64
 	)
 
 	before := measureMemoryUsage()

@@ -118,7 +118,7 @@ func TestStressBuilderSubmission(t *testing.T) {
 	defer cancel()
 
 	var (
-		resultsMu       sync.Mutex
+		resultsMu        sync.Mutex
 		totalSubmissions int
 		totalSuccesses   int
 	)

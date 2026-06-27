@@ -2,6 +2,7 @@ package stress_test
 
 import (
 	"context"
+	crand "crypto/rand"
 	"fmt"
 	"math/rand"
 	"sync"
@@ -150,14 +151,14 @@ func TestStressDatabaseDeadlockSimulation(t *testing.T) {
 			muA.Lock()
 			time.Sleep(time.Microsecond)
 			muB.Lock()
-			muB.Unlock()
 			muA.Unlock()
+			muB.Unlock()
 		} else {
 			muB.Lock()
 			time.Sleep(time.Microsecond)
 			muA.Lock()
-			muA.Unlock()
 			muB.Unlock()
+			muA.Unlock()
 		}
 		return nil
 	})
@@ -181,7 +182,7 @@ func TestStressInvalidCalldataFlood(t *testing.T) {
 
 	err := generateLoadUnlimited(ctx, cfg.Concurrency, func(ctx context.Context) error {
 		calldata := make([]byte, rand.Intn(256))
-		_, _ = rand.Read(calldata)
+		_, _ = crand.Read(calldata)
 		_, buildErr := bc.BuildBundle(calldata, "", 0, 0)
 		atomic.AddInt64(&ops, 1)
 		if buildErr != nil {
@@ -205,7 +206,7 @@ func TestStressCorruptedPayloadHandling(t *testing.T) {
 	var ops int64
 	err := generateLoad(ctx, cfg.Concurrency, cfg.RatePerSecond, func(ctx context.Context) error {
 		payload := make([]byte, 1024)
-		_, _ = rand.Read(payload)
+		_, _ = crand.Read(payload)
 		if len(payload) < 4 {
 			return fmt.Errorf("payload too short")
 		}
@@ -334,9 +335,9 @@ func TestStressGracefulDegradationUnderLoad(t *testing.T) {
 	defer cancel()
 
 	var (
-		full      atomic.Bool
-		ops       int64
-		degraded  int64
+		full     atomic.Bool
+		ops      int64
+		degraded int64
 	)
 	full.Store(true)
 

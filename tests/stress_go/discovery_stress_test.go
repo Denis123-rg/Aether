@@ -59,9 +59,9 @@ func TestStressDiscoveryStaleEdgeCleanup(t *testing.T) {
 	defer cancel()
 
 	type edge struct {
-		src       string
-		dst       string
-		lastSeen  time.Time
+		src      string
+		dst      string
+		lastSeen time.Time
 	}
 	var (
 		mu      sync.Mutex
@@ -114,9 +114,9 @@ func TestStressDiscoveryConcurrentFactoryEvents(t *testing.T) {
 		block    uint64
 	}
 	var (
-		mu      sync.Mutex
-		events  []factoryEvent
-		ops     int64
+		mu     sync.Mutex
+		events []factoryEvent
+		ops    int64
 	)
 
 	err := generateLoad(ctx, cfg.Concurrency, cfg.RatePerSecond, func(ctx context.Context) error {

@@ -83,12 +83,12 @@ func TestStressConfigHotReloadConsistency(t *testing.T) {
 	var (
 		mu     sync.RWMutex
 		config = map[string]string{
-			"max_gas_gwei":     "300",
-			"min_profit_eth":   "0.001",
-			"max_concurrency":  "50",
-			"rpc_timeout_ms":   "5000",
+			"max_gas_gwei":    "300",
+			"min_profit_eth":  "0.001",
+			"max_concurrency": "50",
+			"rpc_timeout_ms":  "5000",
 		}
-		ops    int64
+		ops int64
 	)
 
 	err := generateLoad(ctx, cfg.Concurrency, cfg.RatePerSecond, func(ctx context.Context) error {
@@ -147,9 +147,9 @@ func TestStressMultiTenantIsolation(t *testing.T) {
 		count int64
 	}
 	var (
-		mu     sync.Mutex
+		mu      sync.Mutex
 		tenants = make(map[string]*tenantState)
-		ops    int64
+		ops     int64
 	)
 
 	err := generateLoad(ctx, cfg.Concurrency, cfg.RatePerSecond, func(ctx context.Context) error {
@@ -183,7 +183,7 @@ func TestStressCrossServiceRetryStorm(t *testing.T) {
 	}
 
 	var (
-		ops       int64
+		ops          int64
 		totalRetries int64
 	)
 
@@ -235,8 +235,8 @@ func TestStressFailurePropagationAcrossServices(t *testing.T) {
 	defer cancel()
 
 	type service struct {
-		name   string
-		alive  atomic.Bool
+		name  string
+		alive atomic.Bool
 	}
 	services := []*service{
 		{name: "pipeline"},
@@ -263,8 +263,8 @@ func TestStressFailurePropagationAcrossServices(t *testing.T) {
 	}()
 
 	var (
-		ops          int64
-		totalFails   int64
+		ops        int64
+		totalFails int64
 	)
 	err := generateLoad(ctx, cfg.Concurrency, cfg.RatePerSecond, func(ctx context.Context) error {
 		atomic.AddInt64(&ops, 1)
@@ -380,9 +380,9 @@ func TestStressSystemWideDegradationMode(t *testing.T) {
 	defer cancel()
 
 	var (
-		normal    atomic.Bool
-		ops       int64
-		degraded  int64
+		normal   atomic.Bool
+		ops      int64
+		degraded int64
 	)
 	normal.Store(true)
 

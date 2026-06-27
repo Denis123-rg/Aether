@@ -54,10 +54,10 @@ func TestStressMempoolDuplicateTxFlood(t *testing.T) {
 	defer cancel()
 
 	var (
-		mu       sync.RWMutex
-		seen     = make(map[string]bool)
-		unique   int64
-		dupes    int64
+		mu     sync.RWMutex
+		seen   = make(map[string]bool)
+		unique int64
+		dupes  int64
 	)
 
 	err := generateLoadUnlimited(ctx, cfg.Concurrency, func(ctx context.Context) error {
@@ -86,9 +86,9 @@ func TestStressMempoolReplaceByFeeHighFreq(t *testing.T) {
 	defer cancel()
 
 	var (
-		mu    sync.RWMutex
-		pool  = make(map[string]int64)
-		ops   int64
+		mu   sync.RWMutex
+		pool = make(map[string]int64)
+		ops  int64
 	)
 
 	err := generateLoadUnlimited(ctx, cfg.Concurrency, func(ctx context.Context) error {
@@ -153,14 +153,14 @@ func TestStressMempoolCleanupExpired(t *testing.T) {
 	defer cancel()
 
 	type pendingTx struct {
-		hash      string
-		addedAt   time.Time
+		hash    string
+		addedAt time.Time
 	}
 	var (
-		mu       sync.Mutex
-		pending  = make(map[string]pendingTx)
-		added    int64
-		cleaned  int64
+		mu      sync.Mutex
+		pending = make(map[string]pendingTx)
+		added   int64
+		cleaned int64
 	)
 
 	err := generateLoad(ctx, cfg.Concurrency, cfg.RatePerSecond, func(ctx context.Context) error {

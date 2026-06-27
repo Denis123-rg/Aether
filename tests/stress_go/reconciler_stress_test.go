@@ -28,10 +28,10 @@ func TestStressHighVolumePredictionReconciliation(t *testing.T) {
 	defer cancel()
 
 	var (
-		mu                sync.Mutex
-		headersProcessed  int
+		mu                  sync.Mutex
+		headersProcessed    int
 		predictionsResolved int
-		lookupErrors      int
+		lookupErrors        int
 	)
 
 	store := newStressPredictionStore(10_000)

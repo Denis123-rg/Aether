@@ -215,14 +215,14 @@ func TestStressDeadlockProbabilitySimulation(t *testing.T) {
 			resourceA.Lock()
 			time.Sleep(time.Microsecond)
 			resourceB.Lock()
-			resourceB.Unlock()
 			resourceA.Unlock()
+			resourceB.Unlock()
 		} else {
 			resourceB.Lock()
 			time.Sleep(time.Microsecond)
 			resourceA.Lock()
-			resourceA.Unlock()
 			resourceB.Unlock()
+			resourceA.Unlock()
 		}
 		return nil
 	})
@@ -287,9 +287,9 @@ func TestStressConcurrentMapRehashing(t *testing.T) {
 	defer cancel()
 
 	var (
-		mu   sync.RWMutex
-		m    = make(map[int64]int64)
-		ops  int64
+		mu  sync.RWMutex
+		m   = make(map[int64]int64)
+		ops int64
 	)
 
 	err := generateLoad(ctx, cfg.Concurrency, cfg.RatePerSecond, func(ctx context.Context) error {
@@ -317,7 +317,6 @@ func TestStressParallelPipelineOrdering(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), cfg.Duration)
 	defer cancel()
 
-	type pipelineStage func(int64) int64
 	stage1 := func(v int64) int64 { return v + 1 }
 	stage2 := func(v int64) int64 { return v * 2 }
 	stage3 := func(v int64) int64 { return v - 3 }
@@ -344,9 +343,9 @@ func TestStressCondBroadcastUnderLoad(t *testing.T) {
 	defer cancel()
 
 	var (
-		signals int64
+		signals  int64
 		received int64
-		wg sync.WaitGroup
+		wg       sync.WaitGroup
 	)
 	ch := make(chan int, 1000)
 
@@ -413,9 +412,9 @@ func TestStressOnceInitializationRace(t *testing.T) {
 	defer cancel()
 
 	var (
-		once     sync.Once
-		initVal  int64
-		ops      int64
+		once    sync.Once
+		initVal int64
+		ops     int64
 	)
 
 	err := generateLoad(ctx, cfg.Concurrency, cfg.RatePerSecond, func(ctx context.Context) error {
@@ -441,17 +440,18 @@ func TestStressPoolObjectContention(t *testing.T) {
 
 	var pool = sync.Pool{
 		New: func() interface{} {
-			return make([]byte, 1024)
+			buf := make([]byte, 1024)
+			return &buf
 		},
 	}
 
 	var ops int64
 	err := generateLoadUnlimited(ctx, cfg.Concurrency, func(ctx context.Context) error {
-		buf := pool.Get().([]byte)
+		buf := *pool.Get().(*[]byte)
 		for i := range buf {
 			buf[i] = byte(i)
 		}
-		pool.Put(buf)
+		pool.Put(&buf)
 		atomic.AddInt64(&ops, 1)
 		return nil
 	})

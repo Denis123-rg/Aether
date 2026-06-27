@@ -46,9 +46,9 @@ func TestStressSimulatorArbitrageBurst(t *testing.T) {
 	}
 
 	var (
-		mu     sync.Mutex
-		opps   []arbOpp
-		ops    int64
+		mu   sync.Mutex
+		opps []arbOpp
+		ops  int64
 	)
 
 	err := generateLoadUnlimited(ctx, cfg.Concurrency, func(ctx context.Context) error {

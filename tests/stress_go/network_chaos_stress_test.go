@@ -2,6 +2,7 @@ package stress_test
 
 import (
 	"context"
+	crand "crypto/rand"
 	"fmt"
 	"math/rand"
 	"sync/atomic"
@@ -454,8 +455,8 @@ func TestStressTLSHandshakeStorm(t *testing.T) {
 		atomic.AddInt64(&ops, 1)
 		cert := make([]byte, 2048)
 		key := make([]byte, 2048)
-		_, _ = rand.Read(cert)
-		_, _ = rand.Read(key)
+		_, _ = crand.Read(cert)
+		_, _ = crand.Read(key)
 		_ = cert
 		_ = key
 		return nil

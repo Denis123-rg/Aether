@@ -224,10 +224,10 @@ func TestStressMetricsRecording(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 type stressPipelineMetrics struct {
-	ArbsTotal       prometheus.Counter
-	BundlesTotal    prometheus.Counter
+	ArbsTotal        prometheus.Counter
+	BundlesTotal     prometheus.Counter
 	SubmissionsTotal *prometheus.CounterVec
-	LatencyMs       prometheus.Histogram
+	LatencyMs        prometheus.Histogram
 }
 
 func newStressPipelineMetrics(reg prometheus.Registerer) *stressPipelineMetrics {
@@ -281,8 +281,8 @@ func TestStressEndToEndPipeline(t *testing.T) {
 	metrics := newStressPipelineMetrics(reg)
 
 	var (
-		arbs       int64
-		reverts    int64
+		arbs            int64
+		reverts         int64
 		publishedEvents int64
 	)
 
@@ -350,5 +350,3 @@ func TestStressEndToEndPipeline(t *testing.T) {
 		t.Error("zero operations in e2e pipeline stress test")
 	}
 }
-
-

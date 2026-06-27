@@ -247,5 +247,3 @@ func newStressMetricsStore(ctx context.Context, t testing.TB) (db.MetricsStore, 
 	}
 	return store, pool
 }
-
-

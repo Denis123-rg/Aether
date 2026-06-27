@@ -74,11 +74,11 @@ func TestStressPoolsConcurrentUpdateConflictResolution(t *testing.T) {
 	defer cancel()
 
 	var (
-		mu          sync.Mutex
-		reserve0    = big.NewInt(1000000000)
-		reserve1    = big.NewInt(1000000000)
-		conflicts   int64
-		updates     int64
+		mu        sync.Mutex
+		reserve0  = big.NewInt(1000000000)
+		reserve1  = big.NewInt(1000000000)
+		conflicts int64
+		updates   int64
 	)
 
 	err := generateLoadUnlimited(ctx, cfg.Concurrency, func(ctx context.Context) error {
@@ -112,9 +112,9 @@ func TestStressPoolsReservePersistenceWrite(t *testing.T) {
 	defer cancel()
 
 	var (
-		mu    sync.Mutex
+		mu        sync.Mutex
 		snapshots []string
-		ops   int64
+		ops       int64
 	)
 
 	err := generateLoad(ctx, cfg.Concurrency, cfg.RatePerSecond, func(ctx context.Context) error {

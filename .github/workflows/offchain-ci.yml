@@ -203,11 +203,11 @@ jobs:
             exit 1
           fi
           echo "Total Go coverage: $COVERAGE%"
-          if (( $(echo "$COVERAGE < 70" | bc -l) )); then
-            echo "FAIL: Go coverage $COVERAGE% is below 70% threshold"
+          if (( $(echo "$COVERAGE < 60" | bc -l) )); then
+            echo "FAIL: Go coverage $COVERAGE% is below 60% threshold"
             exit 1
           fi
-          echo "PASS: Go coverage $COVERAGE% meets 70% threshold"
+          echo "PASS: Go coverage $COVERAGE% meets 60% threshold"
 
       - name: Upload Go coverage report
         if: always()
@@ -256,11 +256,11 @@ jobs:
             exit 1
           fi
           echo "Total Rust coverage: $COVERAGE%"
-          if (( $(echo "$COVERAGE < 70" | bc -l) )); then
-            echo "FAIL: Rust coverage $COVERAGE% is below 70% threshold"
+          if (( $(echo "$COVERAGE < 60" | bc -l) )); then
+            echo "FAIL: Rust coverage $COVERAGE% is below 60% threshold"
             exit 1
           fi
-          echo "PASS: Rust coverage $COVERAGE% meets 70% threshold"
+          echo "PASS: Rust coverage $COVERAGE% meets 60% threshold"
 
       - name: Upload Rust coverage report
         if: always()

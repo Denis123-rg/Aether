@@ -25,7 +25,7 @@ func TestStressDatabaseReconnection(t *testing.T) {
 	defer cancel()
 
 	var (
-		connected   atomic.Bool
+		connected    atomic.Bool
 		opsAttempted int64
 		opsDropped   int64
 	)
@@ -144,7 +144,7 @@ func TestStressConfigReload(t *testing.T) {
 	)
 
 	configData = map[string]string{
-		"max_gas_gwei":  "300",
+		"max_gas_gwei":   "300",
 		"min_profit_eth": "0.001",
 	}
 

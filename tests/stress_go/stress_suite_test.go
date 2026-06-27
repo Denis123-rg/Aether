@@ -10,10 +10,10 @@ package stress_test
 
 import (
 	"context"
+	crand "crypto/rand"
 	"fmt"
 	"log/slog"
 	"math/big"
-	"math/rand"
 	"os"
 	"runtime"
 	"sync"
@@ -38,10 +38,10 @@ import (
 type LoadProfile string
 
 const (
-	LoadLow      LoadProfile = "low"
-	LoadMedium   LoadProfile = "medium"
-	LoadHigh     LoadProfile = "high"
-	LoadBurst    LoadProfile = "burst"
+	LoadLow       LoadProfile = "low"
+	LoadMedium    LoadProfile = "medium"
+	LoadHigh      LoadProfile = "high"
+	LoadBurst     LoadProfile = "burst"
 	LoadSustained LoadProfile = "sustained"
 )
 
@@ -65,13 +65,13 @@ type StressTestConfig struct {
 // Tests may override fields inline.
 func DefaultStressConfig(profile LoadProfile) StressTestConfig {
 	cfg := StressTestConfig{
-		Profile:          profile,
-		Duration:         2 * time.Second,
-		Concurrency:      10,
-		WarmupDuration:   100 * time.Millisecond,
-		CooldownDuration: 100 * time.Millisecond,
-		RatePerSecond:    100,
-		BatchSize:        50,
+		Profile:           profile,
+		Duration:          2 * time.Second,
+		Concurrency:       10,
+		WarmupDuration:    100 * time.Millisecond,
+		CooldownDuration:  100 * time.Millisecond,
+		RatePerSecond:     100,
+		BatchSize:         50,
 		ChannelBufferSize: 256,
 	}
 	switch profile {
@@ -107,23 +107,21 @@ func DefaultStressConfig(profile LoadProfile) StressTestConfig {
 // StressSuite holds shared state across stress tests. One instance is created
 // per test run via TestMain and reused by every stress test that needs it.
 type StressSuite struct {
-	DBPool        *pgxpool.Pool
-	Ledger        db.Ledger
-	MetricsStore  db.MetricsStore
-	RiskManager   *risk.RiskManager
+	DBPool         *pgxpool.Pool
+	Ledger         db.Ledger
+	MetricsStore   db.MetricsStore
+	RiskManager    *risk.RiskManager
 	EventPublisher *events.Publisher
 
-	mu        sync.Mutex
-	startTime time.Time
-	metrics   *StressMetrics
+	metrics *StressMetrics
 }
 
 // StressMetrics records the prometheus-style counters collected during a run.
 type StressMetrics struct {
-	OpsTotal      prometheus.Counter
-	OpsFailed     prometheus.Counter
-	LatencyMs     prometheus.Histogram
-	DroppedTotal  prometheus.Counter
+	OpsTotal         prometheus.Counter
+	OpsFailed        prometheus.Counter
+	LatencyMs        prometheus.Histogram
+	DroppedTotal     prometheus.Counter
 	ActiveGoroutines prometheus.GaugeFunc
 }
 
@@ -288,72 +286,8 @@ func generateLoadUnlimited(
 }
 
 // ---------------------------------------------------------------------------
-// Helpers: measureLatency, measureThroughput, measureMemoryUsage
+// Helper: measureMemoryUsage
 // ---------------------------------------------------------------------------
-
-// measureLatency runs f and records the wall-clock duration via the suite's
-// histogram. Returns the measured latency.
-func measureLatency(f func() error) (time.Duration, error) {
-	start := time.Now()
-	err := f()
-	elapsed := time.Since(start)
-	suite.metrics.LatencyMs.Observe(float64(elapsed.Milliseconds()))
-	return elapsed, err
-}
-
-// measureLatencyN runs f n times and returns the min, max, avg, and p99
-// latencies. Useful for a quick latency profile without pulling in a full
-// benchmark harness.
-func measureLatencyN(n int, f func() error) (min, max, avg, p99 time.Duration, err error) {
-	durations := make([]time.Duration, 0, n)
-	for i := 0; i < n; i++ {
-		start := time.Now()
-		if e := f(); e != nil && err == nil {
-			err = e
-		}
-		durations = append(durations, time.Since(start))
-	}
-	if len(durations) == 0 {
-		return
-	}
-	min = durations[0]
-	max = durations[0]
-	var total time.Duration
-	for _, d := range durations {
-		if d < min {
-			min = d
-		}
-		if d > max {
-			max = d
-		}
-		total += d
-	}
-	avg = total / time.Duration(len(durations))
-	idx99 := (len(durations) * 99) / 100
-	if idx99 >= len(durations) {
-		idx99 = len(durations) - 1
-	}
-	p99 = durations[idx99]
-	return
-}
-
-// measureThroughput runs f for the given duration and returns the total ops
-// count, the effective throughput (ops/sec), and any error from the last
-// invocation.
-func measureThroughput(duration time.Duration, f func() error) (total int, throughput float64, err error) {
-	deadline := time.Now().Add(duration)
-	for time.Now().Before(deadline) {
-		if e := f(); e != nil {
-			err = e
-		}
-		total++
-	}
-	elapsed := duration.Seconds()
-	if elapsed > 0 {
-		throughput = float64(total) / elapsed
-	}
-	return
-}
 
 // MemorySnapshot captures heap metrics at a point in time.
 type MemorySnapshot struct {
@@ -384,7 +318,7 @@ func measureMemoryUsage() MemorySnapshot {
 // randomHexAddr returns a 20-byte hex address for test usage.
 func randomHexAddr() string {
 	b := make([]byte, 20)
-	_, _ = rand.Read(b)
+	_, _ = crand.Read(b)
 	return fmt.Sprintf("0x%x", b)
 }
 
@@ -399,33 +333,6 @@ func bigIntWei(eth float64) *big.Int {
 	f.Mul(f, new(big.Float).SetFloat64(1e18))
 	wei, _ := f.Int(nil)
 	return wei
-}
-
-// waitForChannel blocks until a message is received on the error channel or
-// the context expires. Used by tests that need to observe an async event.
-func waitForChannel(ctx context.Context, ch <-chan error) error {
-	select {
-	case err := <-ch:
-		return err
-	case <-ctx.Done():
-		return ctx.Err()
-	}
-}
-
-// ensurePool pings dbPool until it responds or ctx expires.
-func ensurePool(ctx context.Context, pool *pgxpool.Pool) error {
-	ticker := time.NewTicker(200 * time.Millisecond)
-	defer ticker.Stop()
-	for {
-		if err := pool.Ping(ctx); err == nil {
-			return nil
-		}
-		select {
-		case <-ticker.C:
-		case <-ctx.Done():
-			return ctx.Err()
-		}
-	}
 }
 
 func max(a, b int) int {

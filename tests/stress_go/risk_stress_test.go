@@ -108,9 +108,9 @@ func TestStressCircuitBreaker(t *testing.T) {
 	rm := risk.NewRiskManager(risk.DefaultRiskConfig())
 
 	var (
-		trips        int64
-		bugReverts   int64
-		compReverts  int64
+		trips       int64
+		bugReverts  int64
+		compReverts int64
 	)
 
 	err := generateLoadUnlimited(ctx, cfg.Concurrency, func(ctx context.Context) error {
@@ -160,9 +160,9 @@ func TestStressRiskMixedWorkload(t *testing.T) {
 	rm := risk.NewRiskManager(risk.DefaultRiskConfig())
 
 	var (
-		preflights  int64
-		reverts     int64
-		trades      int64
+		preflights int64
+		reverts    int64
+		trades     int64
 	)
 
 	err := generateLoad(ctx, cfg.Concurrency, cfg.RatePerSecond, func(ctx context.Context) error {

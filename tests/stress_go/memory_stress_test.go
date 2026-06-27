@@ -237,10 +237,10 @@ func TestStressHotPathObjectExplosion(t *testing.T) {
 	var ops int64
 	err := generateLoadUnlimited(ctx, cfg.Concurrency, func(ctx context.Context) error {
 		type hotObject struct {
-			ID    int64
-			Data  [64]byte
-			Refs  []int64
-			Tags  map[string]string
+			ID   int64
+			Data [64]byte
+			Refs []int64
+			Tags map[string]string
 		}
 		o := hotObject{
 			ID:   atomic.AddInt64(&ops, 1),
@@ -323,9 +323,9 @@ func TestStressMapHeavyConcurrentAccess(t *testing.T) {
 	defer cancel()
 
 	var (
-		mu       sync.RWMutex
-		m        = make(map[int64]int64)
-		ops      int64
+		mu  sync.RWMutex
+		m   = make(map[int64]int64)
+		ops int64
 	)
 
 	err := generateLoad(ctx, cfg.Concurrency, cfg.RatePerSecond, func(ctx context.Context) error {
