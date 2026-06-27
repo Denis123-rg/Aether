@@ -126,7 +126,7 @@ jobs:
             forge-cache-${{ runner.os }}-
 
       - name: Run unit tests
-        run: forge test -vvv --match-path "test/*.t.sol" --no-match-path "test/*.{fork,invariant}.t.sol"
+        run: forge test -vvv --match-path "test/*.t.sol" --no-match-path "test/*.{fork,invariant,anvil}.t.sol"
 
       - name: Run invariant tests
         run: forge test -vvv --match-path "test/*.invariant.t.sol"
@@ -166,12 +166,12 @@ jobs:
 
       - name: Generate coverage report
         run: |
-          forge coverage --report lcov --no-match-path "test/*.fork.t.sol"
-          forge coverage --report summary --no-match-path "test/*.fork.t.sol"
+          forge coverage --report lcov --no-match-path "test/*.{fork,anvil}.t.sol"
+          forge coverage --report summary --no-match-path "test/*.{fork,anvil}.t.sol"
 
       - name: Check coverage threshold
         run: |
-          forge coverage --report summary --no-match-path "test/*.fork.t.sol" > coverage_summary.txt 2>&1
+          forge coverage --report summary --no-match-path "test/*.{fork,anvil}.t.sol" > coverage_summary.txt 2>&1
           cat coverage_summary.txt
           COVERAGE=$(grep -oP '\d+\.\d+(?=%)' coverage_summary.txt | head -1)
           if [ -z "$COVERAGE" ]; then
@@ -373,10 +373,12 @@ jobs:
           sleep 5
           curl -s -o /dev/null -w "%{http_code}" http://localhost:8545 || exit 1
           echo "Anvil ready"
+          # Point ETH_RPC_URL to Anvil so vm.createSelectFork() uses Anvil
+          echo "ETH_RPC_URL=http://localhost:8545" >> "$GITHUB_ENV"
 
-      - name: Run fork tests
+      - name: Run fork + anvil tests
         if: steps.check_rpc.outputs.skip != 'true'
-        run: forge test -vvv --match-path "test/*.fork.t.sol" --fork-url http://localhost:8545
+        run: forge test -vvv --match-path "test/*.{fork,anvil}.t.sol" --fork-url http://localhost:8545
 
       - name: Stop Anvil
         if: always()
