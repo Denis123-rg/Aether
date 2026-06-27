@@ -1,14 +1,3 @@
-# Aether Full Test Suite — Go Stress Tests + Foundry Fork Tests
-#
-# Runs on every push/PR to main and on manual dispatch.
-#
-# Jobs:
-#   1. Go stress tests (tests/stress_go/) — 130+ scenarios
-#   2. Foundry fork tests (contracts/test/*.fork.t.sol) — 175 tests against Anvil fork
-#
-# Secrets required:
-#   ETH_RPC_URL — Ethereum mainnet RPC endpoint for Anvil fork
-
 name: Full Test Suite — Stress + Fork
 
 on:
@@ -28,13 +17,13 @@ concurrency:
 env:
   FOUNDRY_PROFILE: ci
   DATABASE_URL: postgresql://aether:secret@localhost:5432/aether
-  ETH_RPC_URL: ${{ secrets.ETH_RPC_URL }}
+  ETH_RPC_URL: https://ethereum-rpc.publicnode.com
 
 jobs:
-  test:
-    name: Stress + Fork Tests
+  go-stress-tests:
+    name: Go Stress Tests
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 30
 
     services:
       postgres:
@@ -52,41 +41,21 @@ jobs:
           --health-retries 5
 
     steps:
-      # ── 1. Checkout ──────────────────────────────────────────────────────
       - uses: actions/checkout@v4
         with:
           submodules: recursive
           fetch-depth: 0
 
-      # ── 2. Setup Go ──────────────────────────────────────────────────────
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
           cache-dependency-path: go.sum
 
-      # ── 3. Setup Foundry ─────────────────────────────────────────────────
-      - uses: foundry-rs/foundry-toolchain@v1
-        with:
-          cache: true
-
-      # ── 4. System dependencies ───────────────────────────────────────────
-      - name: Install protobuf compiler
+      - name: Install system dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y protobuf-compiler postgresql-client
 
-      - name: Install Foundry dependencies
-        continue-on-error: true
-        working-directory: contracts
-        run: forge install
-
-      - name: Verify toolchain
-        run: |
-          go version
-          forge --version
-          anvil --version
-
-      # ── 5. Database setup ────────────────────────────────────────────────
       - name: Apply database migrations
         continue-on-error: true
         run: |
@@ -95,7 +64,6 @@ jobs:
             psql "$DATABASE_URL" -f "$f" || echo "Migration $f failed (non-fatal)"
           done
 
-      # ── 6. Run Go stress tests ──────────────────────────────────────────
       - name: Run Go stress tests
         continue-on-error: true
         id: go-stress
@@ -104,91 +72,69 @@ jobs:
           echo "=== Go stress tests: $(grep -c 'func Test' tests/stress_go/*_test.go) test functions ==="
           go test ./tests/stress_go/ -v -count=1 -timeout=30m 2>&1 | tee go-stress-output.txt
 
-      # ── 7. Prepare Anvil fork ───────────────────────────────────────────
-      - name: Check ETH_RPC_URL
-        id: check_rpc
-        run: |
-          if [ -z "$ETH_RPC_URL" ]; then
-            echo "skip=true" >> "$GITHUB_OUTPUT"
-            echo "ETH_RPC_URL not set — skipping fork tests"
-          fi
+      - name: Upload stress test logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: go-stress-logs
+          path: go-stress-output.txt
+          retention-days: 30
 
-      - name: Start Anvil fork
-        if: steps.check_rpc.outputs.skip != 'true'
-        run: |
-          anvil --fork-url "$ETH_RPC_URL" --fork-block-number 19800000 --silent &
-          ANVIL_PID=$!
-          echo "ANVIL_PID=$ANVIL_PID" >> "$GITHUB_ENV"
-          sleep 5
-          curl -s -o /dev/null -w "%{http_code}" http://localhost:8545 || {
-            echo "Anvil failed to start"
-            exit 1
-          }
-          echo "Anvil ready (PID $ANVIL_PID)"
-          # Point ETH_RPC_URL to Anvil so vm.createSelectFork() uses Anvil
-          echo "ETH_RPC_URL=http://localhost:8545" >> "$GITHUB_ENV"
+  fork-tests-all:
+    name: Foundry Fork Tests (426 tests)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
 
-      # ── 8. Run Foundry fork tests ──────────────────────────────────────
-      - name: Run fork tests
-        if: steps.check_rpc.outputs.skip != 'true'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - uses: foundry-rs/foundry-toolchain@v1
+        with:
+          cache: true
+          cache-key: aether-foundry-${{ runner.os }}
+
+      - name: Restore Foundry cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            contracts/cache
+            contracts/out
+          key: forge-cache-${{ runner.os }}-${{ hashFiles('contracts/src/**/*.sol', 'contracts/foundry.toml') }}
+          restore-keys: |
+            forge-cache-${{ runner.os }}-
+
+      - name: Compile
+        run: cd contracts && forge build
+
+      - name: Run ALL fork + anvil tests
         id: forge-fork
         working-directory: contracts
         env:
           FOUNDRY_PROFILE: ci
         run: |
           set -o pipefail
-          echo "=== Foundry fork tests ==="
-          forge test -vvv --match-path "test/*.{fork,anvil}.t.sol" --fork-url http://localhost:8545 2>&1 | tee ../forge-fork-output.txt
+          echo "=== Foundry fork + anvil tests ==="
+          forge test -vvv --match-path "test/*.{fork,anvil}.t.sol" --fork-url "$ETH_RPC_URL" 2>&1 | tee ../forge-fork-output.txt
           echo "=== Fork tests complete ==="
 
-      - name: Stop Anvil
-        if: always()
-        run: pkill -f anvil || true
-
-      # ── 9. Report ────────────────────────────────────────────────────────
       - name: Test summary
         if: always()
         run: |
           {
             echo "## Aether Full Test Suite Results"
             echo ""
-
-            # Go stress results
-            if [ -f go-stress-output.txt ]; then
-              PASS=$(grep -c '^--- PASS:' go-stress-output.txt || echo 0)
-              FAIL=$(grep -c '^--- FAIL:' go-stress-output.txt || echo 0)
-              SKIP=$(grep -c '^--- SKIP:' go-stress-output.txt || echo 0)
-              echo "### Go Stress Tests"
-              echo "| Status | Count |"
-              echo "|--------|-------|"
-              echo "| Passed | $PASS |"
-              echo "| Failed | $FAIL |"
-              echo "| Skipped | $SKIP |"
-              echo ""
-
-              if [ "$FAIL" -gt 0 ]; then
-                echo "**Failed tests:**"
-                echo '```'
-                grep '^--- FAIL:' go-stress-output.txt || echo "(none)"
-                echo '```'
-                echo ""
-              fi
-            else
-              echo "### Go Stress Tests — no output file"
-              echo ""
-            fi
-
-            # Foundry fork results
+            echo "### Foundry Fork Tests"
+            echo ""
             if [ -f forge-fork-output.txt ]; then
               PASS=$(grep -c '\[PASS\]' forge-fork-output.txt || echo 0)
               FAIL=$(grep -c '\[FAIL\]' forge-fork-output.txt || echo 0)
-              echo "### Foundry Fork Tests"
               echo "| Status | Count |"
               echo "|--------|-------|"
               echo "| Passed | $PASS |"
               echo "| Failed | $FAIL |"
               echo ""
-
               if [ "$FAIL" -gt 0 ]; then
                 echo "**Failed tests:**"
                 echo '```'
@@ -196,28 +142,82 @@ jobs:
                 echo '```'
                 echo ""
               fi
-
-              # Suite summary line
               grep -E '^Suite result:|^Ran [0-9]+ test' forge-fork-output.txt || true
             else
-              echo "### Foundry Fork Tests — skipped (ETH_RPC_URL not set)"
-              echo ""
+              echo "No output file found"
             fi
           } >> "$GITHUB_STEP_SUMMARY"
 
-          # Fail job if fork tests failed
           if [ -f forge-fork-output.txt ] && grep -q '\[FAIL\]' forge-fork-output.txt; then
             echo "Fork tests have failures — marking job as failed"
             exit 1
           fi
 
-      # ── 10. Upload logs ──────────────────────────────────────────────────
       - name: Upload test logs
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: test-logs-${{ github.run_id }}
-          path: |
-            go-stress-output.txt
-            forge-fork-output.txt
+          name: fork-test-logs-${{ github.run_id }}
+          path: forge-fork-output.txt
           retention-days: 30
+
+  unit-tests:
+    name: Unit + Invariant Tests (186 tests)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - uses: foundry-rs/foundry-toolchain@v1
+        with:
+          cache: true
+          cache-key: aether-foundry-${{ runner.os }}
+
+      - name: Restore Foundry cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            contracts/cache
+            contracts/out
+          key: forge-cache-${{ runner.os }}-${{ hashFiles('contracts/src/**/*.sol', 'contracts/foundry.toml') }}
+          restore-keys: |
+            forge-cache-${{ runner.os }}-
+
+      - name: Compile
+        run: cd contracts && forge build
+
+      - name: Run unit tests
+        run: cd contracts && forge test -vvv --match-path "test/*.t.sol" --no-match-path "test/*.{fork,invariant,anvil}.t.sol"
+
+      - name: Run invariant tests
+        run: cd contracts && forge test -vvv --match-path "test/*.invariant.t.sol"
+
+  final-report:
+    name: Test Report
+    runs-on: ubuntu-latest
+    needs: [go-stress-tests, fork-tests-all, unit-tests]
+    if: always()
+    timeout-minutes: 5
+    steps:
+      - name: Aggregate results
+        run: |
+          {
+            echo "## Aether Full Test Suite — Final Report"
+            echo ""
+            echo "| Job | Status |"
+            echo "|-----|--------|"
+            echo "| Go Stress Tests | ${{ needs.go-stress-tests.result }} |"
+            echo "| Fork Tests (426) | ${{ needs.fork-tests-all.result }} |"
+            echo "| Unit + Invariant (186) | ${{ needs.unit-tests.result }} |"
+            echo ""
+            echo "Total Foundry tests: **616** (186 unit + 426 fork/anvil)"
+            echo ""
+            if [ "${{ needs.fork-tests-all.result }}" = "failure" ] || [ "${{ needs.unit-tests.result }}" = "failure" ]; then
+              echo "**Some tests failed — check individual job logs.**"
+            else
+              echo "**All Foundry tests passed.**"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"

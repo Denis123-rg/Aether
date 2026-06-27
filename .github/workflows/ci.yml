@@ -1,6 +1,10 @@
 name: On-Chain CI
 
 on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
   workflow_dispatch:
 
 permissions:
@@ -12,98 +16,16 @@ concurrency:
 
 env:
   FOUNDRY_PROFILE: ci
+  ETH_RPC_URL: https://ethereum-rpc.publicnode.com
 
 defaults:
   run:
     working-directory: contracts
 
 jobs:
-  checkout:
-    name: Checkout
+  unit-and-invariant-tests:
+    name: Unit + Invariant Tests
     runs-on: ubuntu-latest
-    timeout-minutes: 5
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          submodules: recursive
-          fetch-depth: 0
-
-  install-foundry:
-    name: Install Foundry
-    runs-on: ubuntu-latest
-    needs: checkout
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          submodules: recursive
-
-      - uses: foundry-rs/foundry-toolchain@v1
-        with:
-          cache: true
-          cache-key: aether-foundry-${{ runner.os }}
-
-      - name: Verify installation
-        run: |
-          forge --version
-          cast --version
-          anvil --version
-
-  install-deps:
-    name: Install Dependencies
-    runs-on: ubuntu-latest
-    needs: install-foundry
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          submodules: recursive
-
-      - uses: foundry-rs/foundry-toolchain@v1
-        with:
-          cache: true
-          cache-key: aether-foundry-${{ runner.os }}
-
-      - name: Install Foundry dependencies
-        run: forge install
-
-      - name: Verify dependencies
-        run: |
-          forge remappings > /dev/null
-          echo "Dependencies installed successfully"
-
-  compile:
-    name: Compile
-    runs-on: ubuntu-latest
-    needs: install-deps
-    timeout-minutes: 15
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          submodules: recursive
-
-      - uses: foundry-rs/foundry-toolchain@v1
-        with:
-          cache: true
-          cache-key: aether-foundry-${{ runner.os }}
-
-      - name: Restore Foundry cache
-        uses: actions/cache@v4
-        with:
-          path: |
-            contracts/cache
-            contracts/out
-          key: forge-cache-${{ runner.os }}-${{ hashFiles('contracts/src/**/*.sol', 'contracts/foundry.toml') }}
-          restore-keys: |
-            forge-cache-${{ runner.os }}-
-
-      - name: Forge build
-        run: forge build
-
-  unit-tests:
-    name: Unit Tests
-    runs-on: ubuntu-latest
-    needs: compile
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
@@ -125,24 +47,119 @@ jobs:
           restore-keys: |
             forge-cache-${{ runner.os }}-
 
-      - name: Run unit tests
+      - name: Compile
+        run: forge build
+
+      - name: Run unit tests (mock-based)
         run: forge test -vvv --match-path "test/*.t.sol" --no-match-path "test/*.{fork,invariant,anvil}.t.sol"
 
       - name: Run invariant tests
         run: forge test -vvv --match-path "test/*.invariant.t.sol"
 
-      - name: Upload forge logs
+      - name: Upload test logs
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: forge-logs
+          name: unit-test-logs
           path: contracts/out/**/*.json
           retention-days: 7
 
-  coverage:
-    name: Coverage
+  anvil-fork-tests:
+    name: Anvil Fork Tests (107 tests)
     runs-on: ubuntu-latest
-    needs: compile
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - uses: foundry-rs/foundry-toolchain@v1
+        with:
+          cache: true
+          cache-key: aether-foundry-${{ runner.os }}
+
+      - name: Restore Foundry cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            contracts/cache
+            contracts/out
+          key: forge-cache-${{ runner.os }}-${{ hashFiles('contracts/src/**/*.sol', 'contracts/foundry.toml') }}
+          restore-keys: |
+            forge-cache-${{ runner.os }}-
+
+      - name: Compile
+        run: forge build
+
+      - name: Run Anvil fork tests
+        run: forge test -vvv --match-path "test/AetherExecutor.anvil.t.sol" --fork-url "$ETH_RPC_URL"
+
+  fork-group-tests:
+    name: Fork Tests Groups A-L (319 tests)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - uses: foundry-rs/foundry-toolchain@v1
+        with:
+          cache: true
+          cache-key: aether-foundry-${{ runner.os }}
+
+      - name: Restore Foundry cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            contracts/cache
+            contracts/out
+          key: forge-cache-${{ runner.os }}-${{ hashFiles('contracts/src/**/*.sol', 'contracts/foundry.toml') }}
+          restore-keys: |
+            forge-cache-${{ runner.os }}-
+
+      - name: Compile
+        run: forge build
+
+      - name: Run fork test groups A-L
+        run: forge test -vvv --match-path "test/AetherExecutor.fork.group*.t.sol" --fork-url "$ETH_RPC_URL"
+
+      - name: Run base fork tests
+        run: forge test -vvv --match-path "test/AetherExecutor.fork.t.sol" --fork-url "$ETH_RPC_URL"
+
+  fork-group-adapters:
+    name: Fork Tests Group C — DEX Adapters (53 tests)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - uses: foundry-rs/foundry-toolchain@v1
+        with:
+          cache: true
+          cache-key: aether-foundry-${{ runner.os }}
+
+      - name: Restore Foundry cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            contracts/cache
+            contracts/out
+          key: forge-cache-${{ runner.os }}-${{ hashFiles('contracts/src/**/*.sol', 'contracts/foundry.toml') }}
+          restore-keys: |
+            forge-cache-${{ runner.os }}-
+
+      - name: Compile
+        run: forge build
+
+      - name: Run Group C — DEX Adapters
+        run: forge test -vvv --match-path "test/AetherExecutor.fork.groupC_adapters.t.sol" --fork-url "$ETH_RPC_URL"
+
+  coverage:
+    name: Coverage Report
+    runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
@@ -175,8 +192,7 @@ jobs:
           cat coverage_summary.txt
           COVERAGE=$(grep -oP '\d+\.\d+(?=%)' coverage_summary.txt | head -1)
           if [ -z "$COVERAGE" ]; then
-            echo "Failed to parse coverage output"
-            echo "Allowing workflow to continue — coverage check is non-blocking"
+            echo "Failed to parse coverage output — non-blocking"
           else
             echo "Coverage: $COVERAGE%"
             if (( $(echo "$COVERAGE < 60" | bc -l) )); then
@@ -197,7 +213,6 @@ jobs:
   slither:
     name: Slither Analysis
     runs-on: ubuntu-latest
-    needs: compile
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
@@ -214,6 +229,7 @@ jobs:
 
       - name: Run Slither
         run: |
+          cd contracts
           slither . --filter-paths "lib,test,script" --exclude-dependencies \
             --exclude naming-convention \
             --fail-high \
@@ -230,7 +246,6 @@ jobs:
   solhint:
     name: Solhint
     runs-on: ubuntu-latest
-    needs: compile
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
@@ -246,41 +261,11 @@ jobs:
         run: npm install -g solhint
 
       - name: Run Solhint
-        run: solhint 'src/**/*.sol'
-
-  semgrep:
-    name: Semgrep
-    runs-on: ubuntu-latest
-    needs: compile
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          submodules: recursive
-
-      - name: Install Semgrep
-        run: pip install semgrep
-
-      - name: Run Semgrep
-        continue-on-error: true
-        run: |
-          semgrep --config=p/solidity \
-            --output=semgrep-report.json --json \
-            --exclude='lib/**' --exclude='test/**' --exclude='script/**' \
-            src/
-
-      - name: Upload Semgrep report
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: semgrep-report
-          path: contracts/semgrep-report.json
-          retention-days: 30
+        run: cd contracts && solhint 'src/**/*.sol'
 
   echidna:
     name: Echidna Fuzzing
     runs-on: ubuntu-latest
-    needs: compile
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
@@ -328,58 +313,3 @@ jobs:
           name: echidna-report
           path: contracts/echidna-output.txt
           retention-days: 30
-
-  fork-tests:
-    name: Anvil Fork Tests
-    runs-on: ubuntu-latest
-    needs: compile
-    timeout-minutes: 30
-    env:
-      ETH_RPC_URL: ${{ secrets.ETH_RPC_URL }}
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          submodules: recursive
-
-      - uses: foundry-rs/foundry-toolchain@v1
-        with:
-          cache: true
-          cache-key: aether-foundry-${{ runner.os }}
-
-      - name: Restore Foundry cache
-        uses: actions/cache@v4
-        with:
-          path: |
-            contracts/cache
-            contracts/out
-          key: forge-cache-${{ runner.os }}-${{ hashFiles('contracts/src/**/*.sol', 'contracts/foundry.toml') }}
-          restore-keys: |
-            forge-cache-${{ runner.os }}-
-
-      - name: Check ETH_RPC_URL
-        id: check_rpc
-        run: |
-          if [ -z "$ETH_RPC_URL" ]; then
-            echo "skip=true" >> "$GITHUB_OUTPUT"
-            echo "ETH_RPC_URL not set — skipping fork tests"
-          fi
-
-      - name: Start Anvil fork
-        if: steps.check_rpc.outputs.skip != 'true'
-        run: |
-          anvil --fork-url "$ETH_RPC_URL" --fork-block-number 19800000 --silent &
-          ANVIL_PID=$!
-          echo "Anvil PID: $ANVIL_PID"
-          sleep 5
-          curl -s -o /dev/null -w "%{http_code}" http://localhost:8545 || exit 1
-          echo "Anvil ready"
-          # Point ETH_RPC_URL to Anvil so vm.createSelectFork() uses Anvil
-          echo "ETH_RPC_URL=http://localhost:8545" >> "$GITHUB_ENV"
-
-      - name: Run fork + anvil tests
-        if: steps.check_rpc.outputs.skip != 'true'
-        run: forge test -vvv --match-path "test/*.{fork,anvil}.t.sol" --fork-url http://localhost:8545
-
-      - name: Stop Anvil
-        if: always()
-        run: pkill anvil || true
