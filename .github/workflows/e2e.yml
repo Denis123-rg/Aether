@@ -2,14 +2,6 @@ name: E2E
 
 on:
   workflow_dispatch:
-  push:
-    branches: [main]
-    paths:
-      - 'cmd/**'
-      - 'internal/**'
-      - 'tests/e2e/**'
-      - 'deploy/docker/**'
-      - '.github/workflows/e2e.yml'
 
 permissions:
   contents: read
