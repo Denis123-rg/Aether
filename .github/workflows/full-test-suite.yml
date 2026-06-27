@@ -12,6 +12,10 @@
 name: Full Test Suite — Stress + Fork
 
 on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
   workflow_dispatch:
 
 permissions:
@@ -72,6 +76,7 @@ jobs:
           sudo apt-get install -y protobuf-compiler postgresql-client
 
       - name: Install Foundry dependencies
+        continue-on-error: true
         working-directory: contracts
         run: forge install
 
@@ -126,9 +131,11 @@ jobs:
         if: steps.check_rpc.outputs.skip != 'true'
         id: forge-fork
         working-directory: contracts
+        env:
+          FOUNDRY_PROFILE: ci
         run: |
           set -o pipefail
-          echo "=== Running 175 Foundry fork tests against Anvil ==="
+          echo "=== Foundry fork tests ==="
           forge test -vvv --match-path "test/*.fork.t.sol" --fork-url http://localhost:8545 2>&1 | tee ../forge-fork-output.txt
           echo "=== Fork tests complete ==="
 
