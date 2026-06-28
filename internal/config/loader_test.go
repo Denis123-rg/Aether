@@ -291,7 +291,7 @@ func TestLoadBuildersConfig_ValidFile(t *testing.T) {
 		t.Fatalf("LoadBuildersConfig(%q): %v", path, err)
 	}
 
-	wantNames := []string{"flashbots", "titan", "eden", "rsync"}
+	wantNames := []string{"flashbots", "titan", "buildernet", "quasar", "rsync"}
 	if len(cfg.Builders) != len(wantNames) {
 		t.Fatalf("expected %d builders, got %d", len(wantNames), len(cfg.Builders))
 	}

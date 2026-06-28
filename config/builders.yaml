@@ -1,42 +1,77 @@
+# Aether MEV Bot - Block Builder Configuration
+# Ethereum Mainnet - 2026
+#
+# Order: top builders first (by market share / reliability).
+# All five builders actively accept eth_sendBundle bundles.
+#
+# ── Bundle submission tips ──────────────────────────────────────────────────
+# - All builders below accept the standard eth_sendBundle JSON-RPC method.
+# - Flashbots and BuilderNet require X-Flashbots-Signature authentication
+#   (derived from SEARCHER_KEY). Titan, Quasar, and Rsync accept bundles without
+#   auth (optional X-Flashbots-Signature for reputation/priority).
+# - In "fanout" mode the executor sends every bundle to ALL enabled builders
+#   concurrently. In "select" mode the A/B selector picks one per round.
+# - Fanout maximises inclusion probability at the cost of revealing your
+#   strategy to more parties. "select" reduces information leakage but may
+#   miss blocks where the selected builder doesn't win the slot.
+# - Recommended: fanout in production (routing_mode: fanout).
+
 builders:
+  # ── Flashbots ──────────────────────────────────────────────────────────────
+  # Reference implementation. Requires X-Flashbots-Signature auth (searcher key).
+  # ~7% market share. OFAC-compliant filtering.
   - name: "flashbots"
     url: "https://relay.flashbots.net"
     enabled: true
     timeout_ms: 2000
     auth_type: "flashbots"
+
+  # ── Titan ──────────────────────────────────────────────────────────────────
+  # #1 block builder by market share (~49%). Neutral builder (does no searching).
+  # No authentication required for bundle submission. Co-located in Frankfurt
+  # and Northern Virginia.
   - name: "titan"
     url: "https://rpc.titanbuilder.xyz"
     enabled: true
     timeout_ms: 2000
     auth_type: "none"
-    # To use API key auth, set auth_type: "api_key" and auth_key: "${TITAN_API_KEY}"
-  - name: "eden"
-    url: "https://api.edennetwork.io/v1/bundle"
+
+  # ── BuilderNet ─────────────────────────────────────────────────────────────
+  # #2 block builder (~28%). Decentralised, open-source (Flashbots + Beaverbuild
+  # + Nethermind). Multiple TEE-guarded operators using rbuilder.
+  # Requires X-Flashbots-Signature for refund eligibility and authentication.
+  # Rate limit: 3 req/s/IP (expected to increase).
+  - name: "buildernet"
+    url: "https://rpc.buildernet.org"
+    enabled: true
+    timeout_ms: 3000
+    auth_type: "flashbots"
+
+  # ── Quasar ─────────────────────────────────────────────────────────────────
+  # #3 block builder (~17%). Neutral, non-censoring. No auth required.
+  - name: "quasar"
+    url: "https://rpc.quasar.win"
     enabled: true
     timeout_ms: 2000
     auth_type: "none"
-    # Eden requires an API key for production. Set auth_type: "api_key" and
-    # auth_key: "${EDEN_API_KEY}" once the env var is provisioned in .env.
-    # Validation rejects api_key entries with empty keys, so this defaults to
-    # "none" to keep startup clean — submissions without auth will be rejected
-    # by the relay until the key is wired.
+
+  # ── Rsync ──────────────────────────────────────────────────────────────────
+  # ~8% market share. Backed by Coinbase Ventures. US-East focused, low-latency.
+  # No authentication required.
   - name: "rsync"
     url: "https://rsync-builder.xyz"
     enabled: true
     timeout_ms: 2000
     auth_type: "none"
-    # Same opt-in pattern as Eden. Set auth_type: "api_key" and
-    # auth_key: "${RSYNC_API_KEY}" once the env var is provisioned in .env.
 
 submission:
-  # routing_mode: fanout (all builders) | select (A/B selector Best() picks one)
-  routing_mode: select
+  # routing_mode: fanout (all builders) | select (A/B selector picks one)
+  routing_mode: fanout
   fan_out: true   # deprecated — used only when routing_mode is omitted
   max_retries: 2
 
-# A/B builder selector tuning (internal/strategy). When routing_mode=select the
-# executor submits each bundle to selector.Best() only; fanout mode still sends
-# to all enabled builders. Record() tracks outcomes for both modes.
+# A/B builder selector tuning (internal/strategy). Used when routing_mode=select.
+# Fanout mode still records outcomes for the selector's learning.
 strategy:
   exploration_floor: 0.15
   prior_attempts: 1.0
