@@ -18,7 +18,10 @@ use std::sync::Arc;
 fn test_expand_env_vars_known() {
     std::env::set_var("AETHER_TEST_RPC_URL", "https://example.com");
     let result = expand_env_vars("https://eth-mainnet.g.alchemy.com/v2/${AETHER_TEST_RPC_URL}");
-    assert_eq!(result, "https://eth-mainnet.g.alchemy.com/v2/https://example.com");
+    assert_eq!(
+        result,
+        "https://eth-mainnet.g.alchemy.com/v2/https://example.com"
+    );
     std::env::remove_var("AETHER_TEST_RPC_URL");
 }
 

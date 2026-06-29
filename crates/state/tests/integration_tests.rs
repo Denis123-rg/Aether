@@ -16,8 +16,12 @@ use std::sync::Arc;
 #[test]
 fn test_token_index_get_or_insert() {
     let mut index = TokenIndex::new();
-    let addr1: Address = "0x0000000000000000000000000000000000000001".parse().unwrap();
-    let addr2: Address = "0x0000000000000000000000000000000000000002".parse().unwrap();
+    let addr1: Address = "0x0000000000000000000000000000000000000001"
+        .parse()
+        .unwrap();
+    let addr2: Address = "0x0000000000000000000000000000000000000002"
+        .parse()
+        .unwrap();
 
     let idx1 = index.get_or_insert(addr1);
     let idx2 = index.get_or_insert(addr2);
@@ -32,7 +36,9 @@ fn test_token_index_get_or_insert() {
 #[test]
 fn test_token_index_get_index() {
     let mut index = TokenIndex::new();
-    let addr: Address = "0x0000000000000000000000000000000000000001".parse().unwrap();
+    let addr: Address = "0x0000000000000000000000000000000000000001"
+        .parse()
+        .unwrap();
 
     assert!(index.get_index(&addr).is_none());
     index.get_or_insert(addr);
@@ -42,7 +48,9 @@ fn test_token_index_get_index() {
 #[test]
 fn test_token_index_get_address() {
     let mut index = TokenIndex::new();
-    let addr: Address = "0x0000000000000000000000000000000000000001".parse().unwrap();
+    let addr: Address = "0x0000000000000000000000000000000000000001"
+        .parse()
+        .unwrap();
 
     assert!(index.get_address(0).is_none());
     index.get_or_insert(addr);
@@ -88,22 +96,52 @@ fn make_test_graph() -> (PriceGraph, TokenIndex) {
     let mut graph = PriceGraph::new(4);
     let mut index = TokenIndex::new();
 
-    let weth: Address = "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2".parse().unwrap();
-    let usdc: Address = "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48".parse().unwrap();
-    let dai: Address = "0x6B175474E89094C44Da98b954EedeAC495271d0F".parse().unwrap();
+    let weth: Address = "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2"
+        .parse()
+        .unwrap();
+    let usdc: Address = "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"
+        .parse()
+        .unwrap();
+    let dai: Address = "0x6B175474E89094C44Da98b954EedeAC495271d0F"
+        .parse()
+        .unwrap();
 
     let weth_idx = index.get_or_insert(weth);
     let usdc_idx = index.get_or_insert(usdc);
     let dai_idx = index.get_or_insert(dai);
 
     // WETH -> USDC (1 WETH = 2000 USDC)
-    graph.add_edge(weth_idx, usdc_idx, 2000.0, make_pool_id(1), Address::ZERO, ProtocolType::UniswapV3, U256::from(1_000_000_000_000_000_000u64));
+    graph.add_edge(
+        weth_idx,
+        usdc_idx,
+        2000.0,
+        make_pool_id(1),
+        Address::ZERO,
+        ProtocolType::UniswapV3,
+        U256::from(1_000_000_000_000_000_000u64),
+    );
 
     // USDC -> DAI (1 USDC = 1 DAI)
-    graph.add_edge(usdc_idx, dai_idx, 1.0, make_pool_id(2), Address::ZERO, ProtocolType::UniswapV2, U256::from(500_000_000_000_000_000u64));
+    graph.add_edge(
+        usdc_idx,
+        dai_idx,
+        1.0,
+        make_pool_id(2),
+        Address::ZERO,
+        ProtocolType::UniswapV2,
+        U256::from(500_000_000_000_000_000u64),
+    );
 
     // DAI -> WETH (4000 DAI = 1 WETH)
-    graph.add_edge(dai_idx, weth_idx, 1.0 / 4000.0, make_pool_id(3), Address::ZERO, ProtocolType::SushiSwap, U256::from(2_000_000_000_000_000_000u64));
+    graph.add_edge(
+        dai_idx,
+        weth_idx,
+        1.0 / 4000.0,
+        make_pool_id(3),
+        Address::ZERO,
+        ProtocolType::SushiSwap,
+        U256::from(2_000_000_000_000_000_000u64),
+    );
 
     (graph, index)
 }
@@ -118,11 +156,15 @@ fn test_price_graph_add_edge() {
 #[test]
 fn test_price_graph_edges_from() {
     let (graph, index) = make_test_graph();
-    let weth: Address = "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2".parse().unwrap();
+    let weth: Address = "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2"
+        .parse()
+        .unwrap();
     let weth_idx = index.get_index(&weth).unwrap();
     let edges = graph.edges_from(weth_idx);
     assert_eq!(edges.len(), 1); // WETH -> USDC
-    let usdc: Address = "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48".parse().unwrap();
+    let usdc: Address = "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"
+        .parse()
+        .unwrap();
     assert_eq!(edges[0].to, index.get_index(&usdc).unwrap());
 }
 
@@ -142,8 +184,12 @@ fn test_price_graph_vertex_count() {
 #[test]
 fn test_price_graph_set_edge_filtered() {
     let (mut graph, index) = make_test_graph();
-    let weth: Address = "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2".parse().unwrap();
-    let usdc: Address = "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48".parse().unwrap();
+    let weth: Address = "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2"
+        .parse()
+        .unwrap();
+    let usdc: Address = "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"
+        .parse()
+        .unwrap();
     let weth_idx = index.get_index(&weth).unwrap();
     let usdc_idx = index.get_index(&usdc).unwrap();
 
@@ -214,7 +260,9 @@ fn test_price_graph_affected_vertices() {
 #[test]
 fn test_token_index_concurrent_read() {
     let mut index = TokenIndex::new();
-    let addr: Address = "0x0000000000000000000000000000000000000001".parse().unwrap();
+    let addr: Address = "0x0000000000000000000000000000000000000001"
+        .parse()
+        .unwrap();
     index.get_or_insert(addr);
     let index = Arc::new(index);
 
