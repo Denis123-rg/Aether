@@ -1,76 +1,87 @@
+<p align="center">
+  <img src="images/banner.png" alt="Aether" width="100%">
+</p>
+
 # Aether
 
-**Production-grade, cross-DEX arbitrage engine for Ethereum Mainnet.**
+**Production-grade cross-DEX MEV arbitrage engine for Ethereum Mainnet.**
 
-Multi-DEX arbitrage detection across Uniswap V2/V3, SushiSwap, Curve, Balancer, Bancor, 1inch v6, and the Uniswap Universal Router — with Flashbots-native bundle execution, on-chain simulation via `revm`, mempool-backrun support, and an extensible pool registry.
+Aether detects and executes arbitrage opportunities across Uniswap V2/V3, SushiSwap, Curve, Balancer V2/V3, and Bancor V3. It uses a Rust core for low-latency detection and simulation, Go services for execution orchestration, and a Solidity smart contract for on-chain flash-loan-backed execution.
+
+---
+
+## Table of Contents
+
+- [Features](#features)
+- [Architecture](#architecture)
+- [Technology Stack](#technology-stack)
+- [Prerequisites](#prerequisites)
+- [Installation](#installation)
+- [Configuration](#configuration)
+- [Environment Variables](#environment-variables)
+- [Running](#running)
+- [Testing](#testing)
+- [Project Structure](#project-structure)
+- [Mempool Backrun Mode](#mempool-backrun-mode)
+- [Adding a New DEX](#adding-a-new-dex)
+- [Risk Management](#risk-management)
+- [Security](#security)
+- [Troubleshooting](#troubleshooting)
+- [License](#license)
 
 ---
 
 ## Features
 
-- **Multi-DEX arbitrage detection** — Bellman-Ford (SPFA + SLF) negative cycle detection across 6+ protocols
+- **Multi-DEX arbitrage detection** — Bellman-Ford (SPFA + SLF) negative cycle detection across 7 DEX protocols
 - **Mempool backrun** — Decodes pending swaps from Alchemy `alchemy_pendingTransactions`, predicts victim post-state, and atomically backruns via `[victim_tx, arb_tx]` bundles
 - **EVM simulation** — Fork-mode `revm` engine validates every opportunity before submission
 - **Flash loan execution** — Aave V3 `flashLoanSimple` with no upfront capital
-- **Multi-builder submission** — Fan-out to Flashbots, Titan, Eden, rsync concurrently
-- **Risk management** — Automatic circuit breakers, position limits, system state machine
-- **Observability** — Prometheus, Grafana, Loki, Tempo, Alertmanager, Telegram dashboard
-- **Extensible pool registry** — New DEX = implement one Rust `Pool` trait + one Solidity swap function
-
----
-
-## Tech Stack
-
-| Layer | Language | Key Libraries |
-|---|---|---|
-| Data Ingestion & ABI Parsing | **Rust** | `tokio`, `alloy`, WebSocket |
-| Pool State Management | **Rust** | `DashMap`, arena allocators |
-| Arbitrage Detection | **Rust** | Bellman-Ford (SPFA), SIMD math |
-| EVM Simulation | **Rust** | `revm` (fork mode) |
-| Mempool Tracking | **Rust** | Alchemy `alchemy_pendingTransactions`, calldata decoders |
-| Caches | **Rust** | `redb` (bytecode disk cache), `DashMap` (WS-fed V2 reserves) |
-| Bundle Construction & Submission | **Go** | `go-ethereum`, `flashbotsrpc` |
-| Risk Management & Circuit Breakers | **Go** | Stateful controllers, `sync/atomic` |
-| Monitoring & API | **Go** | Prometheus, gRPC, Telegram bot |
-| Remote Signer | **Go** | AES-256-GCM encrypted key over Unix socket |
-| On-Chain Executor | **Solidity** | Aave V3 Flash Loans, OpenZeppelin `Ownable2Step`, `AccessControl`, `ReentrancyGuard` |
-| Inter-Service Communication | Both | gRPC + Protobuf over Unix Domain Sockets |
-| Persistence | — | PostgreSQL (trade ledger, mempool predictions, metrics) |
-| Observability | — | Prometheus, Grafana, Loki, Tempo (OpenTelemetry) |
-| Alerting | — | PagerDuty, Telegram, Discord |
+- **Multi-builder submission** — Fan-out to Flashbots, Titan, BuilderNet, Quasar, rsync concurrently
+- **A/B builder selection** — Explore/exploit strategy with configurable exploration floor and smoothing prior
+- **Risk management** — Automatic circuit breakers, position limits, system state machine (Running → Degraded → Paused → Halted)
+- **Dynamic pool discovery** — Factory-event listener with TVL/volume scoring for new pool onboarding
+- **Observability** — Prometheus metrics, Grafana dashboards (8), Loki logs, Tempo traces, Alertmanager, Telegram bot
+- **Remote signer** — AES-256-GCM encrypted private key over Unix domain socket, zeroed on SIGTERM
+- **OpenTelemetry tracing** — OTLP/gRPC export to Tempo for distributed tracing
+- **Postgres trade ledger** — Non-blocking async writes with bounded channels, optional TimescaleDB hypertable
+- **Redis event bus** — Pub/sub for real-time bundle, PnL, breaker, and signer health events
 
 ---
 
 ## Architecture
 
-Two execution paths share the same downstream: the block-driven detector and the mempool-backrun pipeline.
+Aether uses a two-layer architecture: a **Rust core** handles the latency-critical detection and simulation pipeline, while **Go services** manage execution, risk, monitoring, and external integrations.
+
+### System Overview
 
 ```mermaid
 graph TB
-    ETH["Eth Nodes (WS/IPC)"]
+    ETH["Ethereum Nodes (WS/IPC)"]
     ALCH["Alchemy WS<br/>pendingTransactions"]
 
-    subgraph RUST["Rust Core — Latency-Critical"]
+    subgraph RUST["Rust Core — Latency-Critical Path"]
         direction LR
-        IG["Ingestion"] --> PR["Pool Registry"] --> SM["State + Price Graph"]
-        SM --> DT["Detector<br/>Bellman-Ford"] --> SIM["Simulator<br/>revm"]
+        IG["Ingestion<br/>alloy + tokio"] --> PR["Pool Registry<br/>DashMap"] --> SM["State + Price Graph<br/>MVCC snapshots"]
+        SM --> DT["Detector<br/>Bellman-Ford SPFA"] --> SIM["Simulator<br/>revm fork"]
         MP["Mempool<br/>Decoder"] --> PP["Post-State<br/>Predictor"] --> MV["Backrun<br/>Validator"]
         MV -->|revm fork| SIM
     end
 
     subgraph GO["Go Execution Layer — Coordination"]
         direction LR
-        EX["Bundle Builder"] --> SUB["Multi-Builder Submitter"]
+        EX["Bundle Builder"] --> SUB["Multi-Builder<br/>Fan-out"]
         RM["Risk Manager"] -.->|preflight| EX
-        SG["Remote Signer<br/>in-memory key"]
+        SG["Remote Signer<br/>AES-256-GCM"]
+        REC["Reconciler"] -.->|mempool outcomes| LED
     end
 
     subgraph OPS["Operations Layer"]
         TB["Telegram Bot"]
-        ADM["Admin HTTP"]
+        MON["Monitor + HTTP Dashboard"]
     end
 
-    BUILDERS["Flashbots · Titan · Eden · rsync"]
+    BUILDERS["Flashbots · Titan · BuilderNet<br/>Quasar · rsync"]
 
     subgraph CHAIN["On-Chain"]
         AE["AetherExecutor.sol"] --> AAVE["Aave V3 Flash Loan"]
@@ -78,7 +89,7 @@ graph TB
         AE --> DEXES["DEX Pools"]
     end
 
-    LEDGER[("PostgreSQL<br/>Ledger + TimescaleDB")]
+    LEDGER[("PostgreSQL<br/>Trade Ledger + TimescaleDB")]
 
     ETH --> IG
     ALCH --> MP
@@ -108,17 +119,364 @@ sequenceDiagram
     Node->>Rust: WS log (Swap/Sync) or pending tx
     Note over Rust: decode + state update
     Note over Rust: Bellman-Ford SPFA
-    Note over Rust: revm fork + execute
+    Note over Rust: revm fork + simulate
     Rust->>Go: ValidatedArb (gRPC/UDS)
-    Note over Go: risk gates + build + sign
+    Note over Go: risk preflight + bundle build + sign
     par fan-out
         Go->>B: eth_sendBundle (Flashbots)
     and
         Go->>B: eth_sendBundle (Titan)
     and
-        Go->>B: eth_sendBundle (Eden)
+        Go->>B: eth_sendBundle (BuilderNet)
+        Go->>B: eth_sendBundle (Quasar)
         Go->>B: eth_sendBundle (rsync)
     end
+```
+
+### Component Responsibilities
+
+| Layer | Component | Language | Responsibility |
+|---|---|---|---|
+| **Core** | `aether-ingestion` | Rust | WebSocket/IPC event ingestion, multi-provider node pool, ABI event decoding |
+| **Core** | `aether-pools` | Rust | 7 DEX protocol adapters with unified `Pool` trait, calldata encoding |
+| **Core** | `aether-state` | Rust | Directed price graph (`-ln(rate)` edges), MVCC snapshots via `arc-swap` |
+| **Core** | `aether-detector` | Rust | Bellman-Ford SPFA with SLF optimization, ternary search input optimizer |
+| **Core** | `aether-simulator` | Rust | revm fork-mode simulation, bytecode disk cache (`redb`), ERC20 profit measurement |
+| **Core** | `aether-discovery` | Rust | Factory-event pool discovery, TVL/volume scoring, validation |
+| **Core** | `aether-grpc-server` | Rust | tonic gRPC server, main binary entry point, wiring layer |
+| **Execution** | `aether-executor` | Go | Bundle construction, multi-builder fan-out, A/B strategy selection |
+| **Execution** | `aether-reconciler` | Go | Mempool prediction outcome reconciliation (confirmed/dropped/replaced) |
+| **Execution** | `aether-signer` | Go | Remote signing daemon, AES-256-GCM key, UDS JSON-RPC |
+| **Execution** | `aether-telebot` | Go | Telegram dashboard with live metrics and admin controls |
+| **Execution** | `aether-monitor` | Go | Prometheus metrics, HTTP dashboard, alerting |
+| **Risk** | `internal/risk` | Go | Circuit breakers, preflight checks, system state machine, adaptive tip strategy |
+| **On-Chain** | `AetherExecutor.sol` | Solidity | Flash-loan-backed multi-DEX swap router, role-based access control |
+
+---
+
+## Technology Stack
+
+| Category | Technology |
+|---|---|
+| **Languages** | Rust 1.94.1, Go 1.26.1, Solidity 0.8.28 |
+| **Async Runtime** | Tokio (Rust), goroutines (Go) |
+| **Ethereum** | alloy (Rust), go-ethereum (Go) |
+| **EVM Simulation** | revm (fork mode, Cancun spec) |
+| **gRPC** | tonic + prost (Rust), google.golang.org/grpc (Go) |
+| **Smart Contracts** | Aave V3 flash loans, OpenZeppelin (Ownable2Step, AccessControl, ReentrancyGuard) |
+| **Database** | PostgreSQL 15+, TimescaleDB (optional), Redis 7 |
+| **Embedded KV** | redb (bytecode disk cache) |
+| **Concurrency** | DashMap, arc-swap (MVCC), bounded mpsc channels |
+| **Observability** | Prometheus, Grafana, Loki, Tempo (OpenTelemetry), Alertmanager |
+| **Alerting** | PagerDuty, Telegram, Discord, Slack |
+| **Testing** | cargo test, go test, forge test, cargo-fuzz, Echidna, testcontainers |
+| **CI/CD** | GitHub Actions (6 workflows) |
+| **Deployment** | Docker Compose, Ansible, systemd |
+
+---
+
+## Prerequisites
+
+| Tool | Version | Purpose |
+|---|---|---|
+| [Rust](https://rustup.rs/) | 1.94.1 (pinned in `rust-toolchain.toml`) | Core engine |
+| [Go](https://go.dev/dl/) | 1.26.1 (in `go.mod`) | Execution services |
+| [Foundry](https://getfoundry.sh/) | forge, cast, anvil | Solidity build, test, fork |
+| [protoc](https://grpc.io/docs/protoc-installation/) | any recent | Protobuf compilation |
+| [Docker](https://docs.docker.com/get-docker/) | 24+ with Compose v2 | Local infrastructure |
+| [PostgreSQL](https://www.postgresql.org/) | 15+ | Trade ledger (optional in dev) |
+| [Redis](https://redis.io/) | 7+ | Event pub/sub (optional in dev) |
+
+---
+
+## Installation
+
+```bash
+# Clone the repository
+git clone https://github.com/aether-arb/aether.git
+cd aether
+
+# Copy environment config
+cp .env.example .env
+chmod 600 .env
+
+# Edit .env — set at minimum:
+#   ALCHEMY_API_KEY=<your_key>
+#   ETH_RPC_URL=https://eth-mainnet.g.alchemy.com/v2/${ALCHEMY_API_KEY}
+
+# Install Rust toolchain (if not already installed)
+rustup install 1.94.1
+
+# Build Rust core (release with LTO)
+RUSTFLAGS="-C target-cpu=native" cargo build --release
+
+# Build Go services
+make build
+
+# Build Solidity contracts
+cd contracts && forge build && cd ..
+```
+
+### Quick Build (all at once)
+
+```bash
+make build
+```
+
+This builds:
+- `target/release/aether-rust` — Rust core engine
+- `bin/aether-executor` — Go bundle builder
+- `bin/aether-monitor` — Go metrics/dashboard server
+- `bin/aether-telebot` — Go Telegram bot
+- `bin/aether-signer` — Go remote signing daemon
+
+---
+
+## Configuration
+
+All runtime configuration lives in `config/`. Environment variables support `${VAR}` expansion in YAML files.
+
+### Configuration Files
+
+| File | Purpose | Hot-Reload |
+|---|---|---|
+| `config/pools.toml` | Pool registry — 130+ monitored DEX pools with protocol, address, tokens, fee, tier | Yes (gRPC `ReloadConfig`) |
+| `config/discovery.toml` | Factory-event pool discovery service configuration | Yes |
+| `config/risk.yaml` | Risk parameters, circuit breaker thresholds, position limits, system state | No |
+| `config/nodes.yaml` | Ethereum node provider endpoints (Alchemy WS, local Reth IPC) | No |
+| `config/builders.yaml` | Block builder API endpoints, auth, timeouts, A/B strategy params | No |
+| `config/executor.yaml` | Executor contract address, expected chain ID | No |
+| `config/signer.yaml` | Remote signer socket path and encrypted key file path | No |
+| `config/production.toml` | Cross-service settings: Telegram, Redis, HTTP ports, alerting | No |
+| `config/pools_staging.toml` | Reduced pool set for staging environment | No |
+| `config/pools_shadow.toml` | Shadow-mode pool registry | No |
+
+### Risk Parameters (`config/risk.yaml`)
+
+| Parameter | Default | Description |
+|---|---|---|
+| `gas_price_halt_gwei` | 300 | Halt when gas exceeds this |
+| `revert_count_halt` | 10 | Halt after N consecutive reverts in window |
+| `revert_window_sec` | 600 | Rolling window for revert counting |
+| `daily_loss_halt_eth` | 0.5 | Halt on daily loss exceeding this |
+| `min_balance_halt_eth` | 0.1 | Halt when ETH balance drops below |
+| `latency_degrade_ms` | 500 | Degrade when node latency exceeds |
+| `miss_rate_alert` | 0.8 | Alert when bundle miss rate exceeds |
+| `single_trade_limit_eth` | 50 | Max single trade size |
+| `daily_volume_limit_eth` | 500 | Max daily volume |
+| `min_profit_eth` | 0.001 | Minimum profit threshold |
+| `tip_share_range_bps` | 50–95 | Adaptive tip share bounds |
+
+---
+
+## Environment Variables
+
+| Variable | Required | Default | Description |
+|---|---|---|---|
+| `ALCHEMY_API_KEY` | Yes | — | Alchemy API key for Ethereum RPC |
+| `ETH_RPC_URL` | Yes | — | Ethereum RPC endpoint (WS preferred) |
+| `RUST_LOG` | No | `info` | Rust log level |
+| `AETHER_CONFIG_DIR` | No | `./config` | Config directory path |
+| `GOMAXPROCS` | No | `2` | Go processor count |
+| `GOGC` | No | `200` | Go GC target |
+| `GRPC_ADDRESS` | No | `localhost:50051` | gRPC server address |
+| `METRICS_PORT` | No | `9090` | Prometheus metrics port |
+| `DASHBOARD_PORT` | No | `8080` | HTTP dashboard port |
+| `SEARCHER_KEY` | For live | — | Hot-wallet private key (~0.5 ETH) |
+| `DATABASE_URL` | No | — | Postgres DSN (omit for `NoopLedger`) |
+| `REDIS_URL` | No | — | Redis for pub/sub events |
+| `MEMPOOL_TRACKING` | No | `0` | Set `1` to enable Alchemy mempool subscription |
+| `AETHER_SHADOW` | No | `0` | Set `1` for shadow mode (no submissions) |
+| `AETHER_EXECUTOR_ADDRESS` | For live | — | Deployed executor contract address |
+| `AETHER_SIGNER_PASSPHRASE` | For signer | — | Passphrase for signer key decryption |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | No | — | OTLP/gRPC collector for Tempo |
+| `SLACK_WEBHOOK_URL` | No | — | Slack alert webhook |
+
+> **Security:** Never commit `.env`. It is git-ignored by default. For production, use the remote signer (`cmd/signer`) so `SEARCHER_KEY` never lives in an environment variable.
+
+---
+
+## Running
+
+### Shadow Mode (Recommended First)
+
+```bash
+# Start in shadow mode — logs forensics without submitting bundles
+AETHER_SHADOW=1 ./scripts/demo.sh
+```
+
+Shadow mode writes bundle forensics to `reports/bundles/` and disables all on-chain submissions. Run for at least 24 hours before going live.
+
+### Docker Compose (Local Development)
+
+```bash
+docker compose -f deploy/docker/docker-compose.yml up -d
+```
+
+Starts: `aether-rust`, `aether-executor`, PostgreSQL, Redis, Prometheus, Grafana, Loki, Tempo, Alertmanager.
+
+### Manual Start
+
+```bash
+# 1. Infrastructure
+docker compose -f deploy/docker/docker-compose.yml up -d prometheus grafana loki
+
+# 2. Rust core engine
+cargo run --release --bin aether-rust
+
+# 3. Go executor (in a separate terminal)
+go run ./cmd/executor
+
+# 4. Monitor + dashboard
+go run ./cmd/monitor
+
+# 5. Telegram bot (optional)
+go run ./cmd/telebot
+
+# 6. Remote signer (production)
+go run ./cmd/signer serve
+```
+
+### Production Deployment
+
+```bash
+# Deploy via Ansible
+ansible-playbook -i deploy/ansible/inventory.yml deploy/ansible/playbook.yml
+
+# Or via deploy script
+./scripts/deploy.sh deploy production
+./scripts/deploy.sh status production
+```
+
+### Startup Scripts
+
+| Script | Description |
+|---|---|
+| `scripts/demo.sh` | Full 1-day shadow demo with all services, auto-restart, live Postgres polling |
+| `scripts/start.sh` | Simplified dev start with PID tracking and cleanup |
+| `scripts/deploy.sh` | Build, test, deploy automation for staging/production |
+
+---
+
+## Testing
+
+### Test Commands
+
+```bash
+# All off-chain tests (Go + Rust + integration)
+make test
+
+# Go unit tests with coverage
+make test-offchain-go
+
+# Rust unit tests
+make test-offchain-rust
+
+# Cross-language gRPC integration tests
+make test-offchain-integration
+
+# Rust fuzz targets (5 targets, 30s each)
+make test-offchain-fuzz
+
+# Historical replay tests
+make test-offchain-replay
+
+# Full E2E pipeline test
+make test-offchain-e2e
+
+# Coverage report (Go + Rust)
+make test-offchain-coverage
+
+# Solidity tests
+cd contracts && forge test -vvv
+
+# Solidity fuzz tests (1000 runs)
+cd contracts && forge test --fuzz-runs 1000 -vvv
+
+# Solidity invariant tests
+cd contracts && forge test --match-path "test/*.invariant.t.sol" -vvv
+
+# Fork tests (requires ETH_RPC_URL)
+./scripts/run_fork_tests.sh
+```
+
+### Test Coverage Targets
+
+| Layer | Minimum | Tool |
+|---|---|---|
+| Go | 96% | `go test -coverprofile` |
+| Rust | 98% | `cargo-tarpaulin` |
+| Solidity | 98% | `forge coverage` |
+
+### Test Types
+
+| Type | Scope | Tool |
+|---|---|---|
+| Unit tests | Rust crates, Go packages, Solidity contracts | `cargo test`, `go test`, `forge test` |
+| Integration tests | Cross-language gRPC, Postgres, full pipeline | Go integration + Rust integration crate |
+| Fork tests | Mainnet fork via Anvil | Foundry fork tests |
+| Invariant tests | Solidity post-condition safety properties | Foundry invariant runner |
+| Fuzz tests | 12 Rust libfuzzer targets + Solidity fuzz | `cargo-fuzz`, `forge test --fuzz` |
+| Echidna | Formal property-based Solidity fuzzing | Echidna |
+| Load tests | Detection cycle simulation | Go load test suite |
+| E2E tests | Full pipeline against Docker Compose stack | Go E2E test suite |
+
+---
+
+## Project Structure
+
+```
+aether/
+├── Cargo.toml                        # Rust workspace root (9 crates)
+├── go.mod                            # Go module (github.com/aether-arb/aether)
+├── rust-toolchain.toml               # Rust 1.94.1 pinned
+├── Makefile                          # Build + test targets
+├── proto/
+│   └── aether.proto                  # gRPC contract (ArbService, HealthService, ControlService)
+│
+├── crates/                           # ── Rust Core ──
+│   ├── common/                       # Shared types, errors, DB schema, protocol constants
+│   ├── ingestion/                    # WS event + Alchemy mempool subscription, node pool
+│   ├── pools/                        # 7 DEX adapters (V2, V3, SushiSwap, Curve, Balancer, Bancor)
+│   ├── state/                        # Price graph, MVCC snapshots, token index, hot cache
+│   ├── detector/                     # Bellman-Ford SPFA + SLF, ternary search optimizer
+│   ├── simulator/                    # revm fork sim, bytecode cache, mempool backrun validator
+│   ├── discovery/                    # Factory-event pool discovery + scoring + validation
+│   ├── grpc-server/                  # tonic gRPC server + 3 binaries (rust, replay, profit-scorer)
+│   └── integration-tests/            # Cross-crate integration test suite
+│
+├── cmd/                              # ── Go Services ──
+│   ├── executor/                     # Bundle construction + multi-builder submission
+│   ├── monitor/                      # Prometheus metrics, HTTP dashboard, alerting
+│   ├── reconciler/                   # Mempool prediction outcome reconciler
+│   ├── signer/                       # Remote signing daemon (AES-256-GCM, UDS)
+│   └── telebot/                      # Telegram bot with live metrics
+│
+├── internal/                         # ── Go Shared Packages ──
+│   ├── config/                       # YAML/TOML config loading + validation
+│   ├── db/                           # Postgres trade/mempool ledger + TimescaleDB metrics
+│   ├── grpc/                         # gRPC client to Rust core (UDS/TCP + TLS)
+│   ├── pb/                           # Generated protobuf bindings
+│   ├── risk/                         # Circuit breakers, preflight, state machine, tip strategy
+│   ├── signer/                       # Remote signer client + memory guard (mlock)
+│   ├── tracing/                      # OpenTelemetry tracer initialization
+│   ├── events/                       # Redis pub/sub publisher + subscriber
+│   ├── strategy/                     # A/B builder selection (explore/exploit)
+│   └── testutil/                     # Test fixtures + mock gRPC server
+│
+├── contracts/                        # ── Solidity ──
+│   ├── src/AetherExecutor.sol        # Flash-loan receiver + multi-DEX swap router (987 lines)
+│   ├── test/                         # 80+ unit tests, fork tests, invariant tests, Echidna harness
+│   └── script/Deploy.s.sol           # Foundry deployment script
+│
+├── config/                           # Runtime configuration (YAML/TOML)
+├── migrations/                       # PostgreSQL schema (8 migrations: ledger, mempool, metrics, views)
+├── fuzz/                             # 12 Rust fuzz targets (libfuzzer)
+├── tests/                            # Go integration, E2E, load tests
+├── scripts/                          # Deploy, test, monitoring, key management scripts
+├── deploy/                           # Docker Compose, Dockerfiles, Ansible, systemd, Grafana dashboards
+├── docs/                             # Architecture, runbooks, incident response, research
+└── docs-site/                        # Documentation website source
 ```
 
 ---
@@ -127,416 +485,21 @@ sequenceDiagram
 
 Alongside block-driven cyclic arbitrage, Aether runs a pending-transaction backrun strategy:
 
-1. **Decode pending swaps** — an Alchemy `pendingTransactions` subscription feeds a calldata decoder that understands Uniswap V2/V3 routers, SushiSwap, the Uniswap **Universal Router**, **1inch v6** AggregationRouter, Balancer V2 Vault, Bancor V3, and Curve (pool-direct) flows.
-2. **Predict victim post-state** — the affected pools are advanced past the victim swap either analytically (Curve, Bancor) or by replaying the swap in `revm` (Balancer, UniV3), producing the reserves the block will actually settle with.
-3. **Validate the backrun** — the detector/simulator search for a profitable backrun against that predicted state, with the `AetherExecutor` bytecode injected into the `revm` `CacheDB` so the flash-loan path is exercised.
-4. **Bundle atomically** — the bundle is `[victim_raw_tx, arb_tx]`, where `victim_raw_tx` is the victim's raw signed transaction captured from the mempool, so the backrun only lands if the victim lands.
+1. **Decode pending swaps** — Alchemy `pendingTransactions` subscription feeds a calldata decoder supporting Uniswap V2/V3 routers, SushiSwap, Universal Router, Balancer V2 Vault, Bancor V3, and Curve pool-direct flows.
 
-The path is shadow-gated by default (`AETHER_SHADOW`): it logs and dumps forensics instead of submitting until explicitly promoted.
+2. **Predict victim post-state** — Affected pools are advanced past the victim swap either analytically (V2 constant product, Curve, Bancor) or by replaying the swap in `revm` (Balancer, UniV3), producing the reserves the block will actually settle with.
 
----
+3. **Validate the backrun** — The detector/simulator search for a profitable backrun against the predicted state, with the `AetherExecutor` bytecode injected into the `revm` `CacheDB` so the flash-loan path is exercised.
 
-## Repository Structure
+4. **Bundle atomically** — The bundle is `[victim_raw_tx, arb_tx]`, where `victim_raw_tx` is the victim's raw signed transaction captured from the mempool. The backrun only lands if the victim lands.
 
-```
-aether/
-├── Cargo.toml                       # Rust workspace root
-├── go.mod                           # Go module root
-├── rust-toolchain.toml              # Rust toolchain pinning
-├── proto/
-│   └── aether.proto                 # Shared Protobuf schema (gRPC contract)
-│
-├── crates/                          # ── Rust Crates ──
-│   ├── ingestion/                   # WS event + Alchemy mempool subscription
-│   ├── pools/                       # DEX pool implementations + router decoders
-│   ├── state/                       # Price graph, MVCC snapshots
-│   ├── detector/                    # Bellman-Ford (SPFA) cycle detection + gas models
-│   ├── simulator/                   # revm fork sim + caches + mempool backrun validator
-│   ├── grpc-server/                 # tonic gRPC server (main binary entry point)
-│   ├── common/                      # Shared types, Protobuf bindings, DB schema
-│   ├── discovery/                   # Factory-event pool discovery + hot cache
-│   └── integration-tests/           # Cross-crate integration test suite
-│
-├── cmd/                             # ── Go Services ──
-│   ├── executor/                    # Bundle construction & multi-builder submission
-│   ├── monitor/                     # Prometheus metrics, HTTP dashboard, alerting
-│   ├── reconciler/                  # Mempool prediction outcome reconciler
-│   ├── signer/                      # Remote signing daemon (AES-256-GCM encrypted key)
-│   └── telebot/                     # Telegram bot with live metrics & admin controls
-│
-├── internal/                        # ── Go Shared Packages ──
-│   ├── config/                      # Config loading (YAML/TOML) & validation
-│   ├── db/                          # Postgres trade/mempool ledger
-│   ├── grpc/                        # gRPC client to the Rust core
-│   ├── pb/                          # Generated protobuf bindings
-│   ├── risk/                        # Circuit breakers, preflight checks, state machine
-│   ├── signer/                      # Remote signer client
-│   ├── tracing/                     # OpenTelemetry / structured logging
-│   ├── events/                      # Redis pub/sub event publishing
-│   ├── metrics/                     # Prometheus metric definitions
-│   ├── strategy/                    # Strategy classification & selection
-│   └── testutil/                    # Test fixtures & helpers
-│
-├── contracts/                       # ── Solidity ──
-│   ├── src/AetherExecutor.sol       # Flashloan receiver + multi-DEX swap router
-│   ├── test/
-│   │   ├── AetherExecutor.t.sol     # Unit tests (80+ tests, 30+ mocks)
-│   │   ├── AetherExecutor.fork.t.sol # Mainnet fork integration tests
-│   │   ├── AetherExecutor.invariant.t.sol # Invariant/post-condition tests
-│   │   ├── Deploy.t.sol             # Deployment script tests
-│   │   ├── ExecutorRoles.t.sol      # Role/access-control tests
-│   │   └── echidna/
-│   │       └── EchidnaAether.sol    # Echidna fuzzing harness
-│   ├── script/Deploy.s.sol          # Foundry deployment script
-│   ├── echidna.yaml                 # Echidna fuzzer configuration
-│   ├── slither.config.json          # Slither static analyzer configuration
-│   └── foundry.toml                 # Foundry project configuration
-│
-├── config/                          # Runtime configuration
-│   ├── pools.toml                   # Pool registry (130+ pools, hot-reloadable)
-│   ├── pools_staging.toml           # Reduced registry for staging
-│   ├── pools_historical_replay.toml # Snapshot used by replay tooling
-│   ├── pools_shadow.toml            # Shadow-mode registry
-│   ├── discovery.toml               # Factory-event discovery service config
-│   ├── risk.yaml                    # Risk parameters & circuit breaker thresholds
-│   ├── nodes.yaml                   # Ethereum node provider endpoints
-│   ├── builders.yaml                # Block builder API endpoints
-│   ├── executor.yaml                # Bundle build + tip parameters
-│   ├── signer.yaml                  # Remote signer socket & key config
-│   └── production.toml              # Cross-service production configuration
-│
-├── migrations/                      # Postgres schema migrations
-│   └── 0001-0008                    # Trade ledger, mempool predictions,
-│                                    # reconciliation, profitability, TimescaleDB,
-│                                    # metrics, dashboard views
-│
-├── deploy/
-│   ├── systemd/                     # aether-rust.service, aether-go.service
-│   ├── ansible/                     # Server provisioning playbooks + inventory
-│   ├── docker/                      # Docker Compose (dev/prod/e2e), Dockerfiles,
-│   │                                # Prometheus/Grafana/Loki/Tempo/Alertmanager config,
-│   │                                # Grafana dashboards (8 dashboards)
-│   └── remote-deploy.sh             # Remote deployment script
-│
-├── scripts/                         # ── Tooling ──
-│   ├── deploy.sh                    # Build, test, deploy automation
-│   ├── shadow_mode_live.sh          # Full production pipeline in shadow mode
-│   ├── historical_replay_e2e.sh     # Replay past blocks against current pipeline
-│   ├── staging_test.sh              # Staging end-to-end validation
-│   ├── mempool_capture.sh           # Capture raw pending-tx stream
-│   ├── mempool_smoke.sh             # Mempool path smoke test
-│   ├── mempool_backrun_shadow.sh    # Shadow-mode mempool backrun orchestrator
-│   ├── test_integration.sh          # Cross-language gRPC integration tests
-│   ├── test_replay.sh               # Historical mainnet replay tests
-│   ├── run_fork_tests.sh            # Anvil-fork integration tests
-│   ├── backtest.py                  # Historical opportunity analysis
-│   ├── gas_profiler.py              # Gas usage profiling
-│   ├── canary.py                    # Scrape-staleness canary
-│   ├── load_test.sh                 # High-frequency detection cycle simulation
-│   ├── watchdog.sh                  # Anvil fork watchdog
-│   ├── db_migrate.sh                # Postgres schema migrations
-│   ├── encrypt_key.sh               # Private key encryption
-│   ├── monitoring_smoke.sh          # Monitoring stack smoke test
-│   └── coverage_check.sh            # Coverage validation scripts
-│
-├── fuzz/                            # Rust fuzz targets (cargo-fuzz / libfuzzer)
-├── tests/                           # Go integration, E2E, and load tests
-│
-├── docs/
-│   ├── architecture.md              # System architecture deep dive
-│   ├── runbook.md                   # Operational procedures
-│   ├── production_runbook.md        # Production startup and troubleshooting
-│   ├── incident-response.md         # SEV1–SEV4 incident playbooks
-│   ├── e2e_testing.md               # E2E test guide
-│   ├── redis_events.md              # Redis pub/sub event documentation
-│   ├── telegram_dashboard.md        # Telegram bot setup and commands
-│   ├── discovery_service.md         # Pool discovery service docs
-│   ├── perf/                        # Performance tuning (cargo profiles, etc.)
-│   ├── research/                    # Tx ordering, builder matrix, strategy analysis
-│   ├── issues/staged/               # Staged issue bodies for upcoming workstreams
-│   └── runbook/                     # Mempool, AB selector, shutdown, recovery, alerts
-│
-└── .github/workflows/               # ── CI/CD Pipelines ──
-    ├── ci.yml                       # On-chain (Solidity) CI
-    ├── offchain-ci.yml              # Off-chain (Go + Rust) CI
-    ├── offchain-cd.yml              # Off-chain (Go + Rust) CD
-    ├── e2e.yml                      # End-to-end stack tests
-    ├── metamask-sepolia.yml         # MetaMask Sepolia testnet testing
-    └── deploy-docs.yml              # Documentation deployment
-```
+### Backrun Mode Configuration
 
----
-
-## Prerequisites
-
-- **Rust** 1.94.1 (minimum 1.81+, via [rustup](https://rustup.rs/), pinned in `rust-toolchain.toml`)
-- **Go** 1.26.1 (minimum 1.22+, in `go.mod`, see `go.mod`)
-- **Foundry** ([forge, cast, anvil](https://getfoundry.sh/))
-- **Protobuf compiler** (`protoc`)
-- **Docker & Docker Compose** (local infrastructure)
-- **PostgreSQL** 15+ (trade ledger; optional in dev)
-
----
-
-## Build
-
-```bash
-# Rust core
-cargo build --release
-
-# Go services
-go build -o bin/aether-executor  ./cmd/executor
-go build -o bin/aether-monitor   ./cmd/monitor
-go build -o bin/aether-reconciler ./cmd/reconciler
-go build -o bin/aether-signer    ./cmd/signer
-go build -o bin/aether-telebot   ./cmd/telebot
-
-# Solidity contracts
-cd contracts && forge build
-
-# All at once
-./scripts/deploy.sh build
-```
-
-For production Rust with LTO:
-
-```bash
-RUSTFLAGS="-C target-cpu=native" cargo build --release
-```
-
----
-
-## Test
-
-```bash
-# Rust unit tests
-cargo test --workspace --locked
-
-# Rust clippy
-cargo clippy --workspace -- -D warnings
-
-# Go tests
-go test ./...
-
-# Go with coverage
-go test ./... -coverprofile=coverage.out
-go tool cover -func=coverage.out | tail -30
-
-# Solidity unit tests
-cd contracts && forge test -vvv
-
-# Solidity fuzz tests
-cd contracts && forge test --fuzz-runs 1000 -vvv
-
-# Solidity invariant tests
-cd contracts && forge test --match-path "test/*.invariant.t.sol" -vvv
-
-# Fork tests (requires ETH_RPC_URL)
-./scripts/run_fork_tests.sh
-
-# Cross-language gRPC integration tests
-./scripts/test_integration.sh
-
-# Historical replay tests
-./scripts/test_replay.sh
-
-# Full staging validation
-./scripts/staging_test.sh
-```
-
-### Test Types Implemented
-
-| Type | Scope | Tool |
+| Environment Variable | Values | Description |
 |---|---|---|
-| Unit tests | Rust crates, Go packages, Solidity contracts | `cargo test`, `go test`, `forge test` |
-| Integration tests | Cross-language gRPC, Postgres, pipeline | Go integration tags + Rust integration crate |
-| Fork tests | Mainnet fork via Anvil | Foundry fork tests |
-| Invariant tests | Solidity post-condition safety properties | Foundry invariant runner |
-| Fuzz tests | Rust libfuzzer targets, Solidity fuzz tests | `cargo-fuzz`, `forge test --fuzz` |
-| Echidna fuzzing | Formal property-based Solidity fuzzing | Echidna |
-| Load / stress tests | Detection cycle simulation | Go load test suite |
-| E2E tests | Full pipeline against Docker Compose stack | Go E2E test suite |
-
----
-
-## CI/CD
-
-The project uses GitHub Actions with three pipeline families:
-
-### On-Chain (Solidity) — `.github/workflows/ci.yml`
-
-Triggered on push/PR to `main`. Runs Foundry-based validation:
-
-- `forge build` — compilation with warnings-as-errors
-- `forge test` — unit + invariant tests
-- Coverage generation with ≥98% threshold
-- Slither static analysis (fail on High/Medium)
-- Solhint linting
-- Semgrep security scanning
-- Echidna property-based fuzzing
-- Anvil mainnet fork integration tests
-
-### Off-Chain (Go + Rust) — `.github/workflows/offchain-ci.yml`
-
-Triggered on push/PR to `main`. Runs:
-
-- `gofmt` formatting check
-- `go vet` + `staticcheck` static analysis
-- `cargo fmt` + `cargo clippy` linting
-- Go coverage (≥97%) + Rust coverage (≥98%)
-- Integration tests
-- Rust + Go fuzz tests
-- Load / stress tests
-- E2E tests
-
-### Off-Chain CD — `.github/workflows/offchain-cd.yml`
-
-Triggered on push to `main`. Same validations as CI plus Docker image build and push to `ghcr.io`.
-
----
-
-## Configuration
-
-All configuration lives in `config/`:
-
-| File | Purpose | Hot-Reload |
-|---|---|---|
-| `pools.toml` | Pool registry — 130+ monitored DEX pools | Yes (gRPC `ReloadConfig`) |
-| `discovery.toml` | Factory-event discovery service | Yes |
-| `risk.yaml` | Risk parameters & circuit breaker thresholds | No (restart) |
-| `nodes.yaml` | Ethereum node provider endpoints | No |
-| `builders.yaml` | Block builder API endpoints & auth | No |
-| `executor.yaml` | Bundle build + tip parameters | No |
-| `signer.yaml` | Remote signer socket & key file path | No |
-| `production.toml` | Cross-service production settings | No |
-
-### Key Environment Variables
-
-| Variable | Purpose |
-|---|---|
-| `ETH_RPC_URL` | Primary RPC endpoint (WS preferred) |
-| `AETHER_POOLS_CONFIG` | Override path to `config/pools.toml` |
-| `DATABASE_URL` | Trade ledger DSN (omit → `NoopLedger`) |
-| `MEMPOOL_TRACKING=1` | Enable Alchemy mempool subscription |
-| `MEMPOOL_BACKRUN_SHADOW=1` | Run backrun validator without submitting |
-| `AETHER_EXECUTOR_ADDRESS` | Executor contract address |
-| `AETHER_SHADOW=1` | Global shadow mode — no real submissions |
-| `LOG_FORMAT=json` | JSON log formatter |
-| `OTEL_EXPORTER_OTLP_ENDPOINT` | OTel endpoint for Tempo |
-
----
-
-## Running
-
-### Local Development (Docker Compose)
-
-```bash
-./scripts/deploy.sh docker up
-```
-
-Starts: `aether-rust`, `aether-go`, Prometheus, Grafana, Loki, Tempo, Alertmanager.
-
-### Manual Start
-
-```bash
-# 1. Infrastructure
-docker compose -f deploy/docker/docker-compose.yml up -d prometheus grafana loki
-
-# 2. Rust core
-cargo run --release --bin aether-rust
-
-# 3. Go executor
-go run ./cmd/executor
-
-# 4. Monitor
-go run ./cmd/monitor
-```
-
-### Production
-
-```bash
-./scripts/deploy.sh deploy staging
-./scripts/deploy.sh deploy production
-./scripts/deploy.sh status production
-./scripts/deploy.sh rollback production
-```
-
----
-
-## Cache Layers
-
-Three caches reduce per-simulation RPC traffic:
-
-| Cache | Mechanism | Impact |
-|---|---|---|
-| Pre-warm throttle | `tokio::Semaphore` (default 8) | Prevents 429s from burst RPCs |
-| Bytecode disk cache | `redb` on disk | Eliminates repeat `eth_getCode` calls |
-| V2 reserves WS cache | `Sync` event stream | Eliminates repeat `eth_getStorageAt` for warm pools |
-
-All caches degrade gracefully — a miss or failure falls back to the RPC path.
-
----
-
-## Expected Performance Characteristics
-
-The following are expected characteristics based on implementation analysis, not measured benchmarks:
-
-| Stage | Expected Range |
-|---|---|
-| Event decode + state update | Sub-millisecond per event |
-| Bellman-Ford SPFA detection | Low single-digit milliseconds |
-| revm fork simulation (cache-warm) | Low single-digit milliseconds |
-| gRPC Rust → Go | Microsecond (Unix Domain Socket) |
-| Bundle build + sign | Low single-digit milliseconds |
-
-Actual performance depends on hardware, network latency, block complexity, and pool configuration.
-
----
-
-## Risk Management
-
-Automatic circuit breakers enforce system safety:
-
-| Condition | Action |
-|---|---|
-| Gas price >300 gwei | **HALT** |
-| 10 consecutive reverts in 10min | **PAUSE** |
-| Daily loss >0.5 ETH | **HALT** |
-| ETH balance <0.1 ETH | **HALT** |
-| Node latency >500ms | **DEGRADE** |
-| Bundle miss rate >80% in 1h | **ALERT** |
-
-State machine:
-
-```mermaid
-stateDiagram-v2
-    [*] --> Running
-    Running --> Degraded: node latency >500ms
-    Running --> Paused: 10 reverts in 10min
-    Running --> Halted: gas >300gwei<br/>daily loss >0.5 ETH<br/>balance <0.1 ETH
-    Degraded --> Running: latency recovers
-    Degraded --> Halted: breaker trips
-    Paused --> Running: manual resume
-    Halted --> Running: manual reset only
-```
-
----
-
-## Monitoring
-
-Prometheus metrics on port 9090 (`/metrics`):
-
-- `aether_opportunities_detected_total` — Arbitrage opportunities found
-- `aether_mempool_pending_arb_candidates_total` — Mempool candidates
-- `aether_bundles_included_total` — Bundles included on-chain
-- `aether_detection_latency_ms` — Detection pipeline latency
-- `aether_end_to_end_latency_ms` — Full pipeline latency
-- `aether_gas_price_gwei` — Current gas price
-- `aether_daily_pnl_eth` — Daily profit & loss
-- `aether_eth_balance` — Searcher wallet balance
-- `aether_decode_errors_total` — Calldata decode failures
-
-Alerts via PagerDuty, Telegram, Discord. Pre-configured Grafana dashboards: overview, mempool, builders, latency, risk, SLI, cache, backrun funnel.
+| `AETHER_BACKRUN_MODE` | `off`, `shadow_only`, `shadow_and_live`, `live_only` | Controls backrun submission behavior |
+| `MEMPOOL_TRACKING` | `1` / `0` | Enables Alchemy mempool subscription |
+| `AETHER_SHADOW` | `1` / `0` | Global shadow mode |
 
 ---
 
@@ -548,39 +511,153 @@ Alerts via PagerDuty, Telegram, Discord. Pre-configured Grafana dashboards: over
 4. Add swap routing in `contracts/src/AetherExecutor.sol` `_executeSwap()`
 5. Add gas estimate in `crates/detector/src/gas.rs`
 6. Add pool config entry in `config/pools.toml`
-7. (Optional) add calldata decoder in `crates/pools/src/router_decoder.rs`
+7. (Optional) Add calldata decoder in `crates/pools/src/router_decoder.rs`
 
 No changes needed to detection or execution logic.
 
 ---
 
-## Security
+## Risk Management
 
-- Flashloan-backed — no upfront capital at risk
-- Searcher EOA holds minimal ETH (~0.5 ETH for gas)
-- Profits swept to cold wallet periodically
-- Private keys encrypted with AES-256-GCM, loaded by remote signer daemon
-- `AetherExecutor` uses OpenZeppelin `Ownable2Step` + `AccessControl` — role-based access for executor/pauser/admin
-- Timelocked router updates (24h/48h) prevent instantaneous DEX router changes
-- Per-protocol kill switches
-- `renounceOwnership()` permanently disabled
-- Network hardening via iptables and WireGuard VPN
+Automatic circuit breakers enforce system safety:
+
+| Condition | Threshold | Action |
+|---|---|---|
+| Gas price | >300 gwei | **HALT** |
+| Consecutive reverts | 10 in 10min | **PAUSE** |
+| Daily loss | >0.5 ETH | **HALT** |
+| ETH balance | <0.1 ETH | **HALT** |
+| Node latency | >500ms | **DEGRADE** |
+| Bundle miss rate | >80% in 1h | **ALERT** |
+| Competitive reverts | >90% | **ALERT** |
+
+### System State Machine
+
+```mermaid
+stateDiagram-v2
+    [*] --> Running
+    Running --> Degraded: node latency >500ms
+    Running --> Paused: 10 reverts in 10min
+    Running --> Halted: gas >300gwei / daily loss >0.5 ETH / balance <0.1 ETH
+    Degraded --> Running: latency recovers
+    Degraded --> Halted: breaker trips
+    Paused --> Running: manual resume
+    Halted --> Running: manual reset only
+```
+
+### Adaptive Tip Strategy
+
+The tip share adjusts dynamically based on inclusion rate:
+- Inclusion rate <50% → increase tip (up to 95%)
+- Inclusion rate >80% → decrease tip (down to 50%)
+- Clamped to configurable min/max bounds
 
 ---
 
-## Documentation
+## Security
 
-- [`docs/architecture.md`](docs/architecture.md) — System architecture deep dive
-- [`docs/runbook.md`](docs/runbook.md) — Operational procedures
-- [`docs/production_runbook.md`](docs/production_runbook.md) — Production startup guide
-- [`docs/incident-response.md`](docs/incident-response.md) — Incident playbooks
-- [`docs/e2e_testing.md`](docs/e2e_testing.md) — E2E test guide
-- [`docs/telegram_dashboard.md`](docs/telegram_dashboard.md) — Telegram bot setup
-- [`docs/redis_events.md`](docs/redis_events.md) — Redis pub/sub schemas
-- [`docs/discovery_service.md`](docs/discovery_service.md) — Dynamic pool discovery
-- [`docs/runbook/mempool-backrun-rollout.md`](docs/runbook/mempool-backrun-rollout.md) — Shadow → canary → live rollout
-- [`docs/runbook/mempool-observability.md`](docs/runbook/mempool-observability.md) — Mempool observability
-- [`docs/research/builder-matrix.md`](docs/research/builder-matrix.md) — Builder integration
-- [`docs/research/tx-ordering-strategy.md`](docs/research/tx-ordering-strategy.md) — Backrun ordering analysis
-- [`docs/research/strategy-class-analysis.md`](docs/research/strategy-class-analysis.md) — Strategy taxonomy
-- [`docs/perf/cargo-release-profile.md`](docs/perf/cargo-release-profile.md) — Release tuning
+| Measure | Description |
+|---|---|
+| **Flash-loan execution** | No upfront capital at risk; profits extracted within single atomic transaction |
+| **Minimal hot-wallet balance** | Searcher EOA holds ~0.5 ETH for gas only |
+| **Encrypted private keys** | AES-256-GCM encryption at rest, decrypted only in signer process memory |
+| **Memory locking** | Signer uses `mlock()` to prevent key material from being swapped to disk |
+| **Zero-on-exit** | Signer zeroes key memory on SIGTERM before exit |
+| **Socket permissions** | UDS socket created with `0600` permissions |
+| **Role-based access** | `AetherExecutor` uses OpenZeppelin `Ownable2Step` + `AccessControl` (EXECUTOR_ROLE, PAUSER_ROLE) |
+| **Timelocked router updates** | 24h/48h delays prevent instantaneous DEX router changes |
+| **Per-protocol kill switches** | Individual protocols can be disabled without affecting others |
+| **Ownership renunciation disabled** | `renounceOwnership()` permanently blocked |
+| **Network hardening** | iptables + WireGuard VPN for production deployments |
+| **`.env` git-ignored** | Secret variables never committed to version control |
+
+---
+
+## Monitoring
+
+### Prometheus Metrics
+
+Key metrics exposed on port 9090 (`/metrics`):
+
+| Metric | Description |
+|---|---|
+| `aether_opportunities_detected_total` | Arbitrage opportunities found |
+| `aether_mempool_pending_arb_candidates_total` | Mempool backrun candidates |
+| `aether_bundles_included_total` | Bundles included on-chain |
+| `aether_detection_latency_ms` | Detection pipeline latency |
+| `aether_end_to_end_latency_ms` | Full pipeline latency |
+| `aether_gas_price_gwei` | Current gas price |
+| `aether_daily_pnl_eth` | Daily profit and loss |
+| `aether_eth_balance` | Searcher wallet balance |
+| `aether_decode_errors_total` | Calldata decode failures |
+| `aether_ledger_writes_total` | Trade ledger write count |
+| `aether_ledger_drops_total` | Dropped writes (saturation) |
+| `aether_mempool_reconciled_total` | Mempool predictions reconciled |
+
+### Grafana Dashboards
+
+8 pre-configured dashboards in `deploy/docker/grafana/dashboards/`:
+
+| Dashboard | Focus |
+|---|---|
+| Overview | High-level system health |
+| Mempool | Pending tx pipeline metrics |
+| Builders | Per-builder inclusion rates |
+| Latency | End-to-end pipeline timing |
+| Risk | Circuit breaker states |
+| SLI | Service level indicators |
+| Cache | Cache hit rates and sizes |
+| Backrun Funnel | Mempool backrun pipeline funnel |
+
+### Alerting
+
+Alerts via PagerDuty, Telegram, Discord, and Slack. Configuration in `config/production.toml` under `[monitor.alerting]`.
+
+---
+
+## Troubleshooting
+
+### Common Issues
+
+| Problem | Solution |
+|---|---|
+| `GRPC_ADDRESS` connection refused | Ensure `aether-rust` is running before starting `aether-executor` |
+| `DATABASE_URL` not set | Trade ledger uses `NoopLedger` — writes are discarded (not an error in dev) |
+| `REDIS_URL` not set | Event pub/sub is disabled — Telegram bot and Redis events won't work |
+| Build fails with Rust version error | Run `rustup install 1.94.1` — toolchain is pinned in `rust-toolchain.toml` |
+| Stale socket file | Delete `/run/aether/signer.sock` if signer crashed without cleanup |
+| `config/pools.toml` parse error | Ensure all `${VAR}` references in YAML have corresponding env vars or defaults |
+| Gas price halt | System halts when gas >300 gwei — adjust `risk.yaml` or wait for gas to drop |
+| Bundle miss rate >80% | Check builder endpoints in `builders.yaml` and network connectivity |
+
+### Logs
+
+```bash
+# Rust core with JSON structured logging
+RUST_LOG=debug LOG_FORMAT=json cargo run --release --bin aether-rust
+
+# Go executor logs
+go run ./cmd/executor 2>&1 | tee logs/executor.log
+
+# View Grafana logs (if using Docker Compose)
+open http://localhost:3000
+```
+
+### Health Checks
+
+```bash
+# gRPC health check
+grpcurl -plaintext localhost:50051 aether.HealthService/Check
+
+# Prometheus metrics
+curl http://localhost:9090/metrics
+
+# PostgreSQL ledger status
+psql $DATABASE_URL -c "SELECT COUNT(*) FROM arbs WHERE ts > now() - interval '1 hour';"
+```
+
+---
+
+## License
+
+MIT License. See [LICENSE](LICENSE) for details.
