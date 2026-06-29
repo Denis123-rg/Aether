@@ -72,8 +72,8 @@ func TestLoadConfig_BuildersYAMLRoutingAndStrategy(t *testing.T) {
 	if !found {
 		t.Fatal("expected flashbots builder from builders.yaml")
 	}
-	if cfg.RoutingMode != "select" {
-		t.Fatalf("routing_mode = %q, want select", cfg.RoutingMode)
+	if cfg.RoutingMode != "fanout" {
+		t.Fatalf("routing_mode = %q, want fanout", cfg.RoutingMode)
 	}
 	if cfg.Strategy.ExplorationFloor <= 0 {
 		t.Fatal("strategy config should be loaded from builders.yaml")

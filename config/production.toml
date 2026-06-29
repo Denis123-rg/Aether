@@ -5,7 +5,7 @@
 bot_token = "env:TELEGRAM_BOT_TOKEN"
 admin_chat_ids = [123456789]
 dashboard_update_interval_secs = 3
-executor_metrics_url = "http://localhost:8080/metrics/json"
+executor_metrics_url = "http://aether-rust:9092/metrics/json"
 
 [redis]
 url = "env:REDIS_URL"
@@ -14,7 +14,7 @@ url = "env:REDIS_URL"
 # Admin HTTP port (metrics JSON, /admin/*). Override with ADMIN_HTTP_PORT env.
 port = 8080
 # Set AETHER_ADMIN_TOKEN in production — required when AETHER_ENV=production.
-discovery_top_pools_url = "http://localhost:9093/top-pools"
+discovery_top_pools_url = "http://aether-rust:9093/top-pools"
 signer_connection_pool = true
 # Optional admin POST rate limit (requests/sec). Override with ADMIN_RATE_LIMIT_RPS env. 0 = disabled.
 admin_rate_limit_rps = 10.0

@@ -32,6 +32,11 @@
       when: ansible_os_family == "Debian"
 
     # --- User and Directories ---
+    - name: Create aether group
+      group:
+        name: "{{ aether_group }}"
+        system: true
+
     - name: Create aether system user
       user:
         name: "{{ aether_user }}"
@@ -40,11 +45,6 @@
         shell: /usr/sbin/nologin
         home: "{{ aether_dir }}"
         create_home: false
-
-    - name: Create aether group
-      group:
-        name: "{{ aether_group }}"
-        system: true
 
     - name: Create directory structure
       file:
@@ -90,8 +90,8 @@
     # --- Deploy Binaries ---
     - name: Copy Rust binary
       copy:
-        src: "../../target/release/aether-grpc-server"
-        dest: "{{ aether_bin_dir }}/aether-grpc-server"
+        src: "../../target/release/aether-rust"
+        dest: "{{ aether_bin_dir }}/aether-rust"
         owner: "{{ aether_user }}"
         group: "{{ aether_group }}"
         mode: "0755"

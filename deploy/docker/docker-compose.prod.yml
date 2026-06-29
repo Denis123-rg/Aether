@@ -141,6 +141,12 @@ services:
   prometheus:
     restart: unless-stopped
     logging: *default-logging
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:9090/-/healthy"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
 
   grafana:
     restart: unless-stopped
@@ -149,20 +155,41 @@ services:
     # !override replaces the base "3000:3000" instead of appending to it.
     ports: !override
       - "3001:3000"
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD:?Set GRAFANA_ADMIN_PASSWORD in .env}
+      - GF_AUTH_ANONYMOUS_ENABLED=true
+      - GF_AUTH_ANONYMOUS_ORG_ROLE=Viewer
 
   alertmanager:
+    restart: unless-stopped
     logging: *default-logging
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:9093/-/healthy"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
 
   loki:
+    restart: unless-stopped
     logging: *default-logging
 
   promtail:
+    restart: unless-stopped
     logging: *default-logging
 
   tempo:
+    restart: unless-stopped
     logging: *default-logging
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:3200/ready"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
 
   canary:
+    restart: unless-stopped
     logging: *default-logging
 
 volumes:

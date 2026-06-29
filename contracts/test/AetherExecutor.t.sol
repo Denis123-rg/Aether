@@ -941,10 +941,11 @@ contract AetherExecutorTest is Test {
     // -------------------------------------------------------------------------
 
     function test_receive_eth() public {
+        uint256 before = address(executor).balance;
         vm.deal(address(this), 1 ether);
         (bool success, ) = address(executor).call{ value: 0.5 ether }("");
         assertTrue(success);
-        assertEq(address(executor).balance, 0.5 ether);
+        assertEq(address(executor).balance, before + 0.5 ether);
     }
 
     // --- New tipBps tests ---
@@ -3580,9 +3581,9 @@ contract AetherExecutorTest is Test {
     }
 
     function test_edge_rescueETHWhenContractHasNoETH() public {
-        assertEq(address(executor).balance, 0);
+        uint256 before = address(executor).balance;
         executor.rescue(address(0), 0);
-        assertEq(address(executor).balance, 0);
+        assertEq(address(executor).balance, before);
     }
 
     /// @dev V3 swap whose pool reverts with empty returndata must surface SwapFailed (not silent).

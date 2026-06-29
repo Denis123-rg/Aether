@@ -1,0 +1,176 @@
+name: Auto Deploy
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Target environment'
+        required: true
+        default: 'staging'
+        type: choice
+        options:
+          - staging
+          - production
+
+permissions:
+  contents: read
+  deployments: write
+
+env:
+  SSH_HOST: ${{ vars.DEPLOY_SSH_HOST || 'ancilar-dev' }}
+  REMOTE_DIR: ${{ vars.DEPLOY_REMOTE_DIR || '/home/jitender/aether' }}
+
+jobs:
+  build:
+    name: Build All Binaries
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@1.94.1
+        with:
+          components: clippy
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.26'
+
+      - name: Install Foundry
+        uses: foundry-rs/foundry-toolchain@v1
+        with:
+          cache: true
+
+      - name: Restore Rust cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: rust-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: rust-${{ runner.os }}-
+
+      - name: Build Rust
+        run: cargo build --release --workspace --bins
+
+      - name: Build Go
+        run: |
+          mkdir -p build/bin
+          CGO_ENABLED=0 go build -o build/bin/aether-executor ./cmd/executor/
+          CGO_ENABLED=0 go build -o build/bin/aether-monitor ./cmd/monitor/
+          CGO_ENABLED=0 go build -o build/bin/aether-telebot ./cmd/telebot/
+          CGO_ENABLED=0 go build -o build/bin/aether-signer ./cmd/signer/
+
+      - name: Build Contracts
+        working-directory: contracts
+        run: forge build
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-${{ github.sha }}
+          path: |
+            target/release/aether-rust
+            build/bin/
+            contracts/out/
+          retention-days: 7
+
+  test:
+    name: Run Tests
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@1.94.1
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.26'
+
+      - name: Install Foundry
+        uses: foundry-rs/foundry-toolchain@v1
+
+      - name: Go vet
+        run: go vet ./...
+
+      - name: Rust clippy
+        run: cargo clippy --workspace -- -D warnings
+
+      - name: Solidity tests
+        working-directory: contracts
+        run: forge test -vvv --no-match-path "test/*.{fork,anvil}.t.sol"
+
+  deploy-staging:
+    name: Deploy to Staging
+    needs: [build, test]
+    runs-on: ubuntu-latest
+    if: github.event_name == 'release' || (github.event_name == 'workflow_dispatch' && github.event.inputs.environment == 'staging')
+    environment: staging
+    steps:
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: build-${{ github.sha }}
+
+      - name: Setup SSH
+        uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: ${{ secrets.DEPLOY_SSH_KEY }}
+
+      - name: Deploy
+        run: |
+          chmod +x target/release/aether-rust build/bin/* 2>/dev/null || true
+          rsync -az --delete \
+            --exclude='.git/' \
+            --exclude='target/' \
+            --exclude='**/.env' \
+            ./ ${{ env.SSH_HOST }}:${{ env.REMOTE_DIR }}/
+          ssh ${{ env.SSH_HOST }} "cd ${{ env.REMOTE_DIR }}/deploy/docker && \
+            docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build"
+
+  deploy-production:
+    name: Deploy to Production
+    needs: [build, test, deploy-staging]
+    runs-on: ubuntu-latest
+    if: github.event_name == 'workflow_dispatch' && github.event.inputs.environment == 'production'
+    environment: production
+    steps:
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: build-${{ github.sha }}
+
+      - name: Setup SSH
+        uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: ${{ secrets.DEPLOY_SSH_KEY }}
+
+      - name: Deploy
+        run: |
+          chmod +x target/release/aether-rust build/bin/* 2>/dev/null || true
+          rsync -az --delete \
+            --exclude='.git/' \
+            --exclude='target/' \
+            --exclude='**/.env' \
+            ./ ${{ env.SSH_HOST }}:${{ env.REMOTE_DIR }}/
+          ssh ${{ env.SSH_HOST }} "cd ${{ env.REMOTE_DIR }}/deploy/docker && \
+            docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build"
+
+      - name: Verify deployment
+        run: |
+          sleep 30
+          ssh ${{ env.SSH_HOST }} "cd ${{ env.REMOTE_DIR }}/deploy/docker && \
+            docker compose ps --format 'table {{.Name}}\t{{.Status}}'"
