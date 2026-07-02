@@ -185,7 +185,7 @@ jobs:
           name: binaries
           path: |
             ./aether-executor
-            ./target/release/aether-grpc-server
+            ./target/release/aether-rust
           retention-days: 1
 
   # ==================================================================
@@ -211,15 +211,15 @@ jobs:
 
       - name: Prepare environment
         run: |
-          # Verify binaries exist and are executable
+          # Verify binaries exist
           echo "=== Checking binaries ==="
-          ls -la ./aether-executor 2>/dev/null || echo "WARN: aether-executor not found at ./"
-          ls -la ./target/release/aether-grpc-server 2>/dev/null || echo "WARN: rust binary not at ./target/release/"
+          ls -la ./aether-executor 2>/dev/null || echo "MISSING: aether-executor"
+          ls -la ./target/release/aether-rust 2>/dev/null || echo "MISSING: aether-rust"
           chmod +x ./aether-executor 2>/dev/null || true
-          chmod +x ./target/release/aether-grpc-server 2>/dev/null || true
+          chmod +x ./target/release/aether-rust 2>/dev/null || true
           mkdir -p shadow-reports/bundles shadow-reports/metrics shadow-reports/logs
 
-          # Verify config files exist
+          # Verify config files
           echo "=== Checking configs ==="
           for f in config/pools.toml config/risk.yaml config/builders.yaml config/nodes.yaml; do
             if [ -f "$f" ]; then echo "OK: $f"; else echo "MISSING: $f"; fi
@@ -233,18 +233,14 @@ jobs:
         id: rust
         run: |
           echo "=== Starting Rust Engine ==="
-          # Find the binary - try multiple paths
-          RUST_BIN=""
-          for candidate in ./target/release/aether-grpc-server ./aether-grpc-server ./grpc-server; do
-            if [ -x "$candidate" ]; then RUST_BIN="$candidate"; break; fi
-          done
-          if [ -z "$RUST_BIN" ]; then
-            echo "FAIL: Rust binary not found"
-            echo "Searched: ./target/release/aether-grpc-server ./aether-grpc-server ./grpc-server"
-            find . -name "*grpc*" -o -name "*aether*rust*" 2>/dev/null | head -10
+          # Binary is named aether-rust (defined in Cargo.toml [[bin]])
+          RUST_BIN="./target/release/aether-rust"
+          if [ ! -x "$RUST_BIN" ]; then
+            echo "FAIL: $RUST_BIN not found or not executable"
+            find . -name "aether-rust" -type f 2>/dev/null
             exit 1
           fi
-          echo "Using binary: $RUST_BIN"
+          echo "Binary: $RUST_BIN ($(ls -lh $RUST_BIN | awk '{print $5}'))"
 
           export AETHER_POOLS_CONFIG=config/pools.toml
           export AETHER_ETH_WS_URL="${{ env.WS_URL }}"
