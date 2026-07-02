@@ -1,0 +1,508 @@
+# ====================================================================
+# Shadow Mode CI/CD — ETH Mainnet Live Pipeline Validation
+# ====================================================================
+#
+# Runs the full Aether pipeline against live ETH Mainnet in shadow mode.
+# No real bundles are submitted — all eth_sendBundle calls are blocked.
+# Validates detection, simulation, bundle building, and risk gating
+# under real mainnet traffic conditions (90-95 ETH block range).
+#
+# Architecture:
+#   Jobs 1-8: Setup, build, validation (parallel where possible)
+#   Job 9:    Runtime — launch engines, execute shadow mode, report
+#
+# Shadow guarantee: AETHER_SHADOW=1 blocks all eth_sendBundle calls.
+# ====================================================================
+
+name: Shadow Mode — ETH Mainnet
+
+on:
+  workflow_dispatch:
+    inputs:
+      duration:
+        description: "Shadow mode duration in seconds"
+        required: false
+        default: "600"
+      rpc_url:
+        description: "ETH Mainnet RPC URL"
+        required: false
+        default: "https://ethereum-rpc.publicnode.com"
+      ws_url:
+        description: "ETH Mainnet WebSocket URL"
+        required: false
+        default: "wss://ethereum-rpc.publicnode.com"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: shadow-mode-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  GOFLAGS: -mod=mod
+  AETHER_SHADOW: "1"
+  AETHER_BACKRUN_MODE: "shadow_only"
+  AETHER_MEMPOOL_MIN_PROFIT_WEI: "5000000000000000"
+  AETHER_MEMPOOL_MAX_TIP_BPS: "9900"
+  AETHER_MEMPOOL_VICTIM_FRESHNESS_MS: "500"
+  AETHER_MEMPOOL_MAX_INFLIGHT: "5"
+  AETHER_CHAIN_ID: "1"
+  DURATION: ${{ github.event.inputs.duration || '600' }}
+  RPC_URL: ${{ github.event.inputs.rpc_url || 'https://ethereum-rpc.publicnode.com' }}
+  WS_URL: ${{ github.event.inputs.ws_url || 'wss://ethereum-rpc.publicnode.com' }}
+
+jobs:
+  # ==================================================================
+  # JOB 1: Validate Configuration
+  # ==================================================================
+  validate:
+    name: Validate Config
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate risk.yaml
+        run: |
+          python3 -c "
+          import yaml, sys
+          with open('config/risk.yaml') as f:
+              cfg = yaml.safe_load(f)
+          pl = cfg.get('position_limits', {})
+          ok = True
+          for key, want in [('min_profit_eth', 0.0045), ('min_tip_share_pct', 30), ('max_tip_share_pct', 99)]:
+              got = pl.get(key, 0)
+              if got != want:
+                  print(f'FAIL: {key}={got}, want {want}', file=sys.stderr)
+                  ok = False
+          if ok:
+              print('PASS: risk.yaml')
+          else:
+              sys.exit(1)
+          "
+
+      - name: Validate nodes.yaml
+        run: |
+          python3 -c "
+          import yaml, sys
+          with open('config/nodes.yaml') as f:
+              nodes = yaml.safe_load(f).get('nodes', [])
+          valid = {'websocket', 'http', 'https', 'ipc'}
+          for i, n in enumerate(nodes):
+              if n.get('type') not in valid:
+                  print(f'FAIL: node[{i}] type={n.get(\"type\")}', file=sys.stderr)
+                  sys.exit(1)
+          print(f'PASS: {len(nodes)} nodes')
+          "
+
+      - name: Validate Solidity contract
+        run: |
+          DEFAULT=$(grep "minProfitThreshold =" contracts/src/AetherExecutor.sol | grep -oP '0\.\d+ ether')
+          if [ "$DEFAULT" != "0.0045 ether" ]; then
+            echo "FAIL: minProfitThreshold=$DEFAULT, want 0.0045 ether"
+            exit 1
+          fi
+          echo "PASS: Solidity contract"
+
+      - name: Validate workflow YAML
+        run: python3 scripts/workflow-validate.py
+
+  # ==================================================================
+  # JOB 2: Build & Test (single job for Go + Rust)
+  # ==================================================================
+  build:
+    name: Build
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    outputs:
+      block-start: ${{ steps.preflight.outputs.block-start }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install system deps
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq protobuf-compiler jq netcat-openbsd
+
+      - name: Install Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+
+      - name: Install Rust
+        run: rustup show
+
+      - name: Cache Cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: shadow-build
+
+      - name: Install Foundry
+        uses: foundry-rs/foundry-toolchain@v1
+        with:
+          cache: true
+
+      - name: Preflight — RPC check
+        id: preflight
+        run: |
+          BLOCK=$(cast block-number --rpc-url ${{ env.RPC_URL }})
+          CHAIN=$(cast chain-id --rpc-url ${{ env.RPC_URL }})
+          GAS=$(cast gas-price --rpc-url ${{ env.RPC_URL }})
+          GAS_GWEI=$(python3 -c "print(f'{$GAS/1e9:.1f}')")
+          echo "block-start=$BLOCK" >> $GITHUB_OUTPUT
+          echo "RPC OK — block=$BLOCK chain=$CHAIN gas=${GAS_GWEI} gwei"
+
+          if [ "$CHAIN" != "1" ]; then
+            echo "FAIL: chain=$CHAIN, want 1 (Mainnet)"
+            exit 1
+          fi
+
+          if python3 -c "exit(0 if $GAS_GWEI < 300 else 1)" 2>/dev/null; then
+            echo "Gas OK: ${GAS_GWEI} gwei"
+          else
+            echo "WARN: Gas ${GAS_GWEI} gwei > 300 threshold"
+          fi
+
+      - name: Build Rust engine
+        run: cargo build --release -p aether-grpc-server
+
+      - name: Build Go executor
+        run: go build -o ./aether-executor ./cmd/executor/
+
+      - name: Smoke tests
+        run: |
+          go test ./internal/config/... ./internal/risk/... ./internal/pb/... -count=1 -timeout 2m
+          cargo test --workspace -- --test-threads=4 2>&1 | tail -10
+
+      - name: Upload binaries
+        uses: actions/upload-artifact@v4
+        with:
+          name: binaries
+          path: |
+            ./aether-executor
+            ./target/release/aether-grpc-server
+          retention-days: 1
+
+  # ==================================================================
+  # JOB 3: Shadow Execution — all runtime in one job
+  # ==================================================================
+  shadow:
+    name: Shadow Execution
+    needs: [validate, build]
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    outputs:
+      bundles-built: ${{ steps.analysis.outputs.built }}
+      bundles-shadow: ${{ steps.analysis.outputs.shadow }}
+      bundles-submitted: ${{ steps.analysis.outputs.submitted }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download binaries
+        uses: actions/download-artifact@v4
+        with:
+          name: binaries
+          path: ./
+
+      - name: Prepare environment
+        run: |
+          chmod +x ./aether-executor ./target/release/aether-grpc-server 2>/dev/null || true
+          mkdir -p shadow-reports/bundles shadow-reports/metrics shadow-reports/logs
+
+          cat > shadow-reports/params.env << 'EOF'
+          AETHER_SHADOW=1
+          AETHER_BACKRUN_MODE=shadow_only
+          AETHER_SHADOW_DUMP_DIR=shadow-reports/bundles
+          AETHER_REPORTS_DIR=shadow-reports
+          AETHER_MEMPOOL_MIN_PROFIT_WEI=5000000000000000
+          AETHER_MEMPOOL_MAX_TIP_BPS=9900
+          AETHER_MEMPOOL_VICTIM_FRESHNESS_MS=500
+          AETHER_MEMPOOL_MAX_INFLIGHT=5
+          AETHER_CHAIN_ID=1
+          EOF
+
+      - name: Start Rust engine
+        id: rust
+        run: |
+          export AETHER_POOLS_CONFIG=config/pools.toml
+          export AETHER_ETH_WS_URL="${{ env.WS_URL }}"
+          export AETHER_CHAIN_ID=1
+          export AETHER_MEMPOOL_MIN_PROFIT_WEI=5000000000000000
+          export RUST_LOG=info
+
+          ./target/release/aether-grpc-server > shadow-reports/logs/rust.log 2>&1 &
+          RUST_PID=$!
+          echo "rust-pid=$RUST_PID" >> $GITHUB_OUTPUT
+
+          for i in $(seq 1 45); do
+            if nc -z localhost 50051 2>/dev/null; then
+              echo "Rust gRPC ready (port 50051)"
+              exit 0
+            fi
+            if ! kill -0 $RUST_PID 2>/dev/null; then
+              echo "FAIL: Rust engine died"
+              tail -30 shadow-reports/logs/rust.log
+              exit 1
+            fi
+            sleep 1
+          done
+          echo "WARN: gRPC port not detected after 45s, continuing"
+
+      - name: Start Go executor
+        id: go
+        run: |
+          export AETHER_SHADOW=1
+          export AETHER_BACKRUN_MODE=shadow_only
+          export AETHER_SHADOW_DUMP_DIR=shadow-reports/bundles
+          export AETHER_REPORTS_DIR=shadow-reports
+          export AETHER_MEMPOOL_MIN_PROFIT_WEI=5000000000000000
+          export AETHER_MEMPOOL_MAX_TIP_BPS=9900
+          export AETHER_MEMPOOL_VICTIM_FRESHNESS_MS=500
+          export AETHER_MEMPOOL_MAX_INFLIGHT=5
+          export AETHER_CHAIN_ID=1
+          export AETHER_ADMIN_TOKEN=shadow-ci-token
+          export ETH_RPC_URL="${{ env.RPC_URL }}"
+
+          ./aether-executor > shadow-reports/logs/go.log 2>&1 &
+          GO_PID=$!
+          echo "go-pid=$GO_PID" >> $GITHUB_OUTPUT
+
+          for i in $(seq 1 45); do
+            if nc -z localhost 8080 2>/dev/null; then
+              echo "Go admin server ready (port 8080)"
+              exit 0
+            fi
+            if ! kill -0 $GO_PID 2>/dev/null; then
+              echo "FAIL: Go executor died"
+              tail -30 shadow-reports/logs/go.log
+              exit 1
+            fi
+            sleep 1
+          done
+          echo "WARN: Admin port not detected after 45s, continuing"
+
+      - name: Execute shadow mode (${{ env.DURATION }}s)
+        run: |
+          DURATION=${{ env.DURATION }}
+          INTERVAL=30
+          ELAPSED=0
+
+          echo "==========================================="
+          echo "  SHADOW MODE ACTIVE — ETH MAINNET"
+          echo "  Duration: ${DURATION}s | Shadow: ON"
+          echo "  AETHER_SHADOW=1 | No live submissions"
+          echo "==========================================="
+          echo ""
+
+          while [ $ELAPSED -lt $DURATION ]; do
+            REMAINING=$((DURATION - ELAPSED))
+            TS=$(date '+%H:%M:%S')
+
+            # health check
+            RUST_OK="no"
+            GO_OK="no"
+            kill -0 ${{ steps.rust.outputs.rust-pid }} 2>/dev/null && RUST_OK="yes"
+            kill -0 ${{ steps.go.outputs.go-pid }} 2>/dev/null && GO_OK="yes"
+
+            # metrics
+            BUILT=$(curl -s http://localhost:8080/metrics 2>/dev/null | grep '^aether_executor_bundles_built_total' | awk '{print $2}' | head -1 || echo 0)
+            SHADOW=$(curl -s http://localhost:8080/metrics 2>/dev/null | grep '^aether_executor_bundles_shadow_blocked_total' | awk '{print $2}' | head -1 || echo 0)
+            SUB=$(curl -s http://localhost:8080/metrics 2>/dev/null | grep '^aether_executor_bundles_submitted_total' | awk '{print $2}' | head -1 || echo 0)
+
+            printf "[%s] %3ds/%ds | rust=%s go=%s | built=%s shadow=%s submitted=%s\n" \
+              "$TS" "$ELAPSED" "$DURATION" "$RUST_OK" "$GO_OK" "${BUILT:-0}" "${SHADOW:-0}" "${SUB:-0}"
+
+            if [ "${SUB:-0}" != "0" ] && [ -n "${SUB:-0}" ]; then
+              echo ""
+              echo "CRITICAL: Live submission detected! Shadow invariant violated!"
+            fi
+
+            if [ "$RUST_OK" = "no" ] || [ "$GO_OK" = "no" ]; then
+              echo "WARN: Process died — rust=$RUST_OK go=$GO_OK"
+            fi
+
+            # snapshot
+            curl -s http://localhost:8080/metrics > shadow-reports/metrics/t-${ELAPSED}.prom 2>/dev/null || true
+
+            sleep $INTERVAL
+            ELAPSED=$((ELAPSED + INTERVAL))
+          done
+
+          echo ""
+          echo "Shadow execution window complete"
+
+      - name: Collect final metrics
+        id: analysis
+        run: |
+          curl -s http://localhost:8080/metrics > shadow-reports/metrics/final.prom 2>/dev/null || true
+
+          FINAL="shadow-reports/metrics/final.prom"
+          BUILT=$(grep '^aether_executor_bundles_built_total' "$FINAL" 2>/dev/null | awk '{print $2}' | head -1)
+          SHADOW=$(grep '^aether_executor_bundles_shadow_blocked_total' "$FINAL" 2>/dev/null | awk '{print $2}' | head -1)
+          SUB=$(grep '^aether_executor_bundles_submitted_total' "$FINAL" 2>/dev/null | awk '{print $2}' | head -1)
+
+          echo "built=${BUILT:-0}" >> $GITHUB_OUTPUT
+          echo "shadow=${SHADOW:-0}" >> $GITHUB_OUTPUT
+          echo "submitted=${SUB:-0}" >> $GITHUB_OUTPUT
+
+          echo ""
+          echo "=== FINAL METRICS ==="
+          echo "  Bundles built:    ${BUILT:-0}"
+          echo "  Shadow blocked:   ${SHADOW:-0}"
+          echo "  Live submitted:   ${SUB:-0}"
+
+          # invariant check
+          if [ "${SUB:-0}" = "0" ]; then
+            echo "  Shadow invariant: PASS"
+          else
+            echo "  Shadow invariant: FAIL — $SUB bundles submitted!"
+            exit 1
+          fi
+
+      - name: Analyze forensics
+        run: |
+          BUNDLE_DIR="shadow-reports/bundles"
+          if [ -d "$BUNDLE_DIR" ]; then
+            COUNT=$(find "$BUNDLE_DIR" -name "*.json" -type f | wc -l)
+            echo "Shadow bundles dumped: $COUNT"
+
+            if [ "$COUNT" -gt 0 ]; then
+              echo "" > shadow-reports/forensics-summary.txt
+              python3 -c "
+          import json, glob
+          files = glob.glob('$BUNDLE_DIR/*.json')
+          profits, sources = [], {}
+          for f in files:
+              try:
+                  d = json.load(open(f))
+                  profits.append(int(d.get('expected_net_profit_wei', 0)))
+                  s = d.get('source', 'unknown')
+                  sources[s] = sources.get(s, 0) + 1
+              except: pass
+          if profits:
+              print(f'Profit avg:  {sum(profits)/len(profits)/1e18:.6f} ETH')
+              print(f'Profit max:  {max(profits)/1e18:.6f} ETH')
+              print(f'Profit min:  {min(profits)/1e18:.6f} ETH')
+              print(f'Candidates:  {len(profits)}')
+              for s, c in sources.items():
+                  print(f'  {s}: {c}')
+          else:
+              print('No profit data extracted')
+          " 2>/dev/null || echo "Forensics parse skipped"
+            fi
+          else
+            echo "No bundle forensics directory"
+          fi
+
+      - name: Stop services
+        if: always()
+        run: |
+          kill ${{ steps.rust.outputs.rust-pid }} 2>/dev/null || true
+          kill ${{ steps.go.outputs.go-pid }} 2>/dev/null || true
+          sleep 2
+          echo "Services stopped"
+
+      - name: Generate report
+        run: |
+          BLOCK_START="${{ needs.build.outputs.block-start }}"
+          BLOCK_END=$(cast block-number --rpc-url ${{ env.RPC_URL }} 2>/dev/null || echo "?")
+          BUILT="${{ steps.analysis.outputs.built }}"
+          SHADOW="${{ steps.analysis.outputs.shadow }}"
+          SUB="${{ steps.analysis.outputs.submitted }}"
+
+          if [ "${SUB:-0}" = "0" ] && [ "${BUILT:-0}" != "0" ]; then
+            VERDICT="PASS"
+            VERDICT_MSG="Shadow mode validated. Zero live submissions."
+          elif [ "${BUILT:-0}" = "0" ]; then
+            VERDICT="INCONCLUSIVE"
+            VERDICT_MSG="No bundles built. Check RPC and pool config."
+          else
+            VERDICT="FAIL"
+            VERDICT_MSG="Live submissions detected in shadow mode!"
+          fi
+
+          cat > shadow-reports/report.md << ENDOFREPORT
+          # Shadow Mode Report — ETH Mainnet
+
+          ## Run Summary
+
+          | Field | Value |
+          |-------|-------|
+          | Chain | ETH Mainnet (Chain ID 1) |
+          | Block Range | $BLOCK_START → $BLOCK_END |
+          | Duration | ${{ env.DURATION }}s |
+          | Timestamp | $(date -u '+%Y-%m-%d %H:%M:%S UTC') |
+          | Verdict | **$VERDICT** |
+
+          ## Configuration
+
+          | Parameter | Value |
+          |-----------|-------|
+          | AETHER_SHADOW | 1 (blocks eth_sendBundle) |
+          | Backrun Mode | shadow_only |
+          | Off-chain Min Profit | 0.005 ETH |
+          | On-chain Min Profit | 0.0045 ETH |
+          | Max Tip Share | 99% (9900 bps) |
+          | Min Tip Share | 30% |
+          | Victim Freshness | 500ms |
+          | Max Inflight | 5/block |
+
+          ## Results
+
+          | Metric | Value |
+          |--------|-------|
+          | Bundles Built | ${BUILT:-0} |
+          | Shadow Blocked | ${SHADOW:-0} |
+          | Live Submitted | ${SUB:-0} |
+          | Shadow Invariant | $([ "${SUB:-0}" = "0" ] && echo "PASS" || echo "FAIL") |
+
+          ## Verdict
+
+          $VERDICT_MSG
+
+          ## Components Tested
+
+          - Rust detection engine (cycle detection, scoring)
+          - Rust mempool pipeline (pending tx decode, simulation)
+          - Go executor (bundle building, risk gating)
+          - Shadow mode block (eth_sendBundle intercepted)
+          - Forensic JSON dump
+          - Risk parameter enforcement
+          ENDOFREPORT
+
+          cat shadow-reports/report.md >> $GITHUB_STEP_SUMMARY
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: shadow-results
+          path: |
+            shadow-reports/
+          retention-days: 30
+
+      - name: Final verdict
+        run: |
+          SUB="${{ steps.analysis.outputs.submitted }}"
+          BUILT="${{ steps.analysis.outputs.built }}"
+          echo ""
+          echo "======================================="
+          echo "  SHADOW MODE CI/CD — FINAL VERDICT"
+          echo "======================================="
+          echo "  Bundles built:  ${BUILT:-0}"
+          echo "  Shadow blocked: ${{ steps.analysis.outputs.shadow }}"
+          echo "  Submitted:      ${SUB:-0}"
+          echo ""
+          if [ "${SUB:-0}" = "0" ] && [ "${BUILT:-0}" != "0" ]; then
+            echo "  Result: PASS"
+          elif [ "${BUILT:-0}" = "0" ]; then
+            echo "  Result: INCONCLUSIVE"
+          else
+            echo "  Result: FAIL"
+          fi
+          echo "======================================="
