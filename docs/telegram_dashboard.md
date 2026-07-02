@@ -50,7 +50,7 @@ go run ./cmd/telebot
 | `/pools` | Top 20 hot pools by discovery score |
 | `/pause` | Pause bundle submission (calls executor `/admin/pause`) |
 | `/resume` | Resume bundle submission |
-| `/set_min_profit 0.001` | Adjust minimum profit threshold (ETH) |
+| `/set_min_profit 0.0045` | Adjust minimum profit threshold (ETH) |
 | `/health` | Health of signer, RPC, discovery, TimescaleDB, Redis |
 | `/trades` | Last 10 trades with profit and timestamp |
 | `/help` | List all commands |
@@ -64,7 +64,7 @@ go run ./cmd/telebot
 /pause
 → ⏸ Bundle submission paused
 
-/set_min_profit 0.002
+/set_min_profit 0.0045
 → ✅ Min profit set to 0.002000 ETH
 
 /health

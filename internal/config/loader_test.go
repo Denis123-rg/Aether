@@ -97,14 +97,14 @@ func TestLoadRiskConfig_ValidFile(t *testing.T) {
 	if cfg.PositionLimits.MaxDailyVolumeETH != 500.0 {
 		t.Errorf("MaxDailyVolumeETH = %v, want 500.0", cfg.PositionLimits.MaxDailyVolumeETH)
 	}
-	if cfg.PositionLimits.MinProfitETH != 0.001 {
-		t.Errorf("MinProfitETH = %v, want 0.001", cfg.PositionLimits.MinProfitETH)
+	if cfg.PositionLimits.MinProfitETH != 0.0045 {
+		t.Errorf("MinProfitETH = %v, want 0.0045", cfg.PositionLimits.MinProfitETH)
 	}
-	if cfg.PositionLimits.MinTipSharePct != 50 {
-		t.Errorf("MinTipSharePct = %v, want 50", cfg.PositionLimits.MinTipSharePct)
+	if cfg.PositionLimits.MinTipSharePct != 30 {
+		t.Errorf("MinTipSharePct = %v, want 30", cfg.PositionLimits.MinTipSharePct)
 	}
-	if cfg.PositionLimits.MaxTipSharePct != 95 {
-		t.Errorf("MaxTipSharePct = %v, want 95", cfg.PositionLimits.MaxTipSharePct)
+	if cfg.PositionLimits.MaxTipSharePct != 99 {
+		t.Errorf("MaxTipSharePct = %v, want 99", cfg.PositionLimits.MaxTipSharePct)
 	}
 	if cfg.System.InitialState != "running" {
 		t.Errorf("InitialState = %q, want %q", cfg.System.InitialState, "running")
@@ -531,9 +531,9 @@ func validRiskFileConfig() RiskFileConfig {
 	cfg.CircuitBreakers.BundleMissRateWindowMinutes = 60
 	cfg.PositionLimits.MaxSingleTradeETH = 50.0
 	cfg.PositionLimits.MaxDailyVolumeETH = 500.0
-	cfg.PositionLimits.MinProfitETH = 0.001
-	cfg.PositionLimits.MinTipSharePct = 50
-	cfg.PositionLimits.MaxTipSharePct = 95
+	cfg.PositionLimits.MinProfitETH = 0.0045
+	cfg.PositionLimits.MinTipSharePct = 30
+	cfg.PositionLimits.MaxTipSharePct = 99
 	return cfg
 }
 

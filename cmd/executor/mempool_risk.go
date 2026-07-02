@@ -20,11 +20,11 @@ import (
 // values, not by hot-reload.
 type MempoolRiskConfig struct {
 	// Minimum gross profit (wei) we require to publish a mempool bundle.
-	// Stage A starts permissive (1e15 = 0.001 ETH); Stage B tightens to
+	// Stage A starts permissive (5e15 = 0.005 ETH); Stage B tightens to
 	// 5e16 (0.05 ETH) until inclusion data justifies dropping back.
 	MinProfitWei *big.Int
 
-	// Maximum tip share we'll bid, in basis points. 9500 = 95%. Above
+	// Maximum tip share we'll bid, in basis points. 9900 = 99%. Above
 	// this the searcher's residual is too small to cover infrastructure
 	// cost so we drop the candidate rather than win a Pyrrhic auction.
 	MaxTipShareBps uint16
@@ -45,8 +45,8 @@ type MempoolRiskConfig struct {
 // typo in the env never silently bypasses a gate.
 func LoadMempoolRiskConfig() MempoolRiskConfig {
 	cfg := MempoolRiskConfig{
-		MinProfitWei:              new(big.Int).SetUint64(1_000_000_000_000_000), // 1e15 wei = 0.001 ETH
-		MaxTipShareBps:            9500,                                          // 95%
+	MinProfitWei: new(big.Int).SetUint64(5_000_000_000_000_000), // 5e15 wei = 0.005 ETH
+		MaxTipShareBps:            9900,                                          // 99%
 		MaxVictimFreshnessMs:      500,
 		MaxInflightPerTargetBlock: 5,
 	}

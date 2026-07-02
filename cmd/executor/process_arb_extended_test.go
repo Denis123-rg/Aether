@@ -98,7 +98,7 @@ func TestProcessArb_MempoolRiskRejection(t *testing.T) {
 
 	mempoolRiskCfg = MempoolRiskConfig{
 		MinProfitWei:              new(big.Int).SetUint64(1_000_000_000_000_000_000), // 1 ETH — very high
-		MaxTipShareBps:            9500,
+		MaxTipShareBps:            9900,
 		MaxVictimFreshnessMs:      500,
 		MaxInflightPerTargetBlock: 5,
 	}

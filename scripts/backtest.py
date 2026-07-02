@@ -176,7 +176,7 @@ def detect_arb_opportunities(
     swaps: list[SwapEvent],
     base_fee: int,
     block_number: int,
-    min_profit_wei: int = 1_000_000_000_000_000,  # 0.001 ETH
+    min_profit_wei: int = 5_000_000_000_000_000,  # 0.005 ETH
 ) -> list[ArbOpportunity]:
     """
     Detect potential arbitrage opportunities from swap events within a block.
@@ -227,7 +227,7 @@ def run_backtest(
     rpc_url: str,
     start_block: int,
     end_block: int,
-    min_profit_wei: int = 1_000_000_000_000_000,
+    min_profit_wei: int = 5_000_000_000_000_000,
     verbose: bool = False,
 ) -> BacktestResult:
     """Run backtest across a range of blocks."""
@@ -335,7 +335,7 @@ def main():
                         help="End block number")
     parser.add_argument("--num-blocks", type=int, default=100,
                         help="Number of blocks to scan (if --end-block not set)")
-    parser.add_argument("--min-profit", type=float, default=0.001,
+    parser.add_argument("--min-profit", type=float, default=0.005,
                         help="Minimum profit threshold in ETH")
     parser.add_argument("--csv", type=str, default=None,
                         help="Export results to CSV file")

@@ -216,7 +216,7 @@ MEMPOOL_POST_STATE_REPLAY=1     # Пост-стейт реплей для tick-c
 
 # Минимальная прибыль (wei) для мемпул-бандла. 1e14 = 0.0001 ETH.
 # Фильтрует пыль, но пропускает реальные арбы.
-AETHER_MEMPOOL_MIN_PROFIT_WEI=100000000000000
+AETHER_MEMPOOL_MIN_PROFIT_WEI=5000000000000000
 
 # ──── 8. RPC TRANSPORT (hardening от 429 ошибок) ─────────────────────────
 # Alchemy CUPS (вычислительных единиц в секунду).
@@ -708,7 +708,7 @@ AETHER_PREWARM_CONCURRENCY=2
 
 | Причина | Что делать |
 |---------|-----------|
-| Слишком низкий tip | Проверь tip_share_pct в risk.yaml (min 50%) |
+| Слишком низкий tip | Проверь tip_share_pct в risk.yaml (min 30%) |
 | Билдер не принял | Проверь метрику `aether_builder_accepted_total` по билдерам |
 | RPC latency | Используй Alchemy Growth или Scale |
 | Бандл пришел поздно | Увеличь timeout_ms (не помогло = проблема в RPC) |

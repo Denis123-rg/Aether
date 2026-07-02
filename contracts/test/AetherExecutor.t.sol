@@ -697,7 +697,7 @@ contract AetherExecutorTest is Test {
     ) internal returns (AetherExecutor) {
         AetherExecutor deployed = new AetherExecutor(_aavePool, _balancerVault, _bancorNetwork);
         deployed.grantExecutor(address(this));
-        // Tests pass minProfitOut=0; production default threshold is 0.01 ether.
+        // Tests pass minProfitOut=0; production default threshold is 0.0045 ether.
         deployed.setMinProfitThreshold(0);
         return deployed;
     }

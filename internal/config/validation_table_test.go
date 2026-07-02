@@ -29,9 +29,9 @@ func validRiskBase() RiskFileConfig {
 	cfg.CircuitBreakers.CompetitiveRevertAlertPct = 90
 	cfg.PositionLimits.MaxSingleTradeETH = 50
 	cfg.PositionLimits.MaxDailyVolumeETH = 500
-	cfg.PositionLimits.MinProfitETH = 0.001
-	cfg.PositionLimits.MinTipSharePct = 50
-	cfg.PositionLimits.MaxTipSharePct = 95
+	cfg.PositionLimits.MinProfitETH = 0.0045
+	cfg.PositionLimits.MinTipSharePct = 30
+	cfg.PositionLimits.MaxTipSharePct = 99
 	return cfg
 }
 

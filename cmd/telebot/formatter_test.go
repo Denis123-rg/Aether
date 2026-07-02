@@ -20,14 +20,14 @@ func TestFormatDashboardContainsFields(t *testing.T) {
 		SignerHealthy:    true,
 		RPCHealthy:       true,
 		SystemState:      "Running",
-		MinProfitETH:     0.001,
+		MinProfitETH:     0.0045,
 		TopPools: []metrics.TopPool{
 			{Address: "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2", Score: 0.95, Protocol: "uniswap_v2"},
 		},
 		ExecutorReachable: true,
 	}
 	text := FormatDashboard(snap, events.DashboardData{}, false)
-	for _, want := range []string{"📊", "PnL", "0.123456", "65.5", "flashbots", "🟢", "✅", "Running", "0.001"} {
+	for _, want := range []string{"📊", "PnL", "0.123456", "65.5", "flashbots", "🟢", "✅", "Running", "0.0045"} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("missing %q in:\n%s", want, text)
 		}

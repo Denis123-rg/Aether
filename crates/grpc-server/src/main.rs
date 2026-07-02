@@ -485,7 +485,7 @@ fn build_backrun_validator_config(
     let min_profit_wei = std::env::var("AETHER_MEMPOOL_MIN_PROFIT_WEI")
         .ok()
         .and_then(|s| U256::from_str(s.trim()).ok())
-        .unwrap_or_else(|| U256::from(1_000_000_000_000_000u64)); // 0.001 ETH
+        .unwrap_or_else(|| U256::from(5_000_000_000_000_000u64)); // 0.005 ETH
     let input_amount_wei = std::env::var("AETHER_MEMPOOL_INPUT_AMOUNT_WEI")
         .ok()
         .and_then(|s| U256::from_str(s.trim()).ok())
@@ -1299,7 +1299,7 @@ mod tests {
         let config = build_backrun_validator_config(None).unwrap();
         assert_eq!(
             config.min_profit_wei,
-            alloy::primitives::U256::from(1_000_000_000_000_000u64)
+            alloy::primitives::U256::from(5_000_000_000_000_000u64)
         );
         std::env::remove_var("AETHER_EXECUTOR_ADDRESS");
         std::env::remove_var("AETHER_MEMPOOL_MIN_PROFIT_WEI");

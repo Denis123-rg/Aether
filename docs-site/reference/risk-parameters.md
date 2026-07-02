@@ -133,7 +133,7 @@ Cumulative trading volume cap per 24-hour period. Prevents runaway trading in ed
 
 | Parameter | Value | Config Key |
 |---|---|---|
-| Limit | 0.001 ETH | `position_limits.min_profit_eth` |
+| Limit | 0.0045 ETH | `position_limits.min_profit_eth` |
 
 Minimum net profit (after gas + flash loan premium) required to execute a trade. Filters out dust-level opportunities that aren't worth the execution risk.
 
@@ -141,9 +141,9 @@ Minimum net profit (after gas + flash loan premium) required to execute a trade.
 
 | Parameter | Value | Config Key |
 |---|---|---|
-| Minimum | 50% | `position_limits.min_tip_share_pct` |
-| Maximum | 95% | `position_limits.max_tip_share_pct` |
+| Minimum | 30% | `position_limits.min_tip_share_pct` |
+| Maximum | 99% | `position_limits.max_tip_share_pct` |
 
 Percentage of profit sent to the block builder as a tip. Higher tips increase inclusion probability but reduce profit. The range ensures:
-- **Min 50%:** Builders have sufficient incentive to include the bundle
-- **Max 95%:** Aether retains at least 5% of profit
+- **Min 30%:** Builders have sufficient incentive to include the bundle
+- **Max 99%:** Aether retains at least 1% of profit

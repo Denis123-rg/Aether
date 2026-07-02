@@ -103,7 +103,7 @@ impl Default for EngineConfig {
         Self {
             max_hops: 4,
             detection_time_budget_us: 3_000,                 // 3ms
-            min_profit_threshold_wei: 1_000_000_000_000_000, // 0.001 ETH
+            min_profit_threshold_wei: 5_000_000_000_000_000, // 0.005 ETH
             gas_price_gwei: 30.0,
             rpc_url: None,
             executor_address: Address::ZERO,
@@ -2860,7 +2860,7 @@ mod tests {
         let config = EngineConfig::default();
         assert_eq!(config.max_hops, 4);
         assert_eq!(config.detection_time_budget_us, 3_000);
-        assert_eq!(config.min_profit_threshold_wei, 1_000_000_000_000_000);
+        assert_eq!(config.min_profit_threshold_wei, 5_000_000_000_000_000);
         assert!((config.gas_price_gwei - 30.0).abs() < f64::EPSILON);
         assert_eq!(config.tip_bps, 9000);
     }
@@ -3038,7 +3038,7 @@ mod tests {
     async fn test_engine_min_profit_threshold() {
         let (tx, _rx) = broadcast::channel(100);
         let engine = AetherEngine::new(EngineConfig::default(), tx);
-        assert_eq!(engine.min_profit_threshold_wei(), 1_000_000_000_000_000);
+        assert_eq!(engine.min_profit_threshold_wei(), 5_000_000_000_000_000);
     }
 
     #[tokio::test]

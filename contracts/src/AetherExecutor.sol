@@ -89,7 +89,7 @@ contract AetherExecutor is Ownable2Step, ReentrancyGuard, AccessControl {
 
     /// @notice Minimum net profit floor (owner-configurable). All bundles must pass
     ///         `minProfitOut >= minProfitThreshold`.
-    uint256 public minProfitThreshold = 0.002 ether;
+    uint256 public minProfitThreshold = 0.0045 ether;
 
     /// @notice Emitted when the owner updates the minimum profit floor
     /// @param newThreshold New minimum profit in wei

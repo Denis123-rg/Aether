@@ -22,9 +22,9 @@ circuit_breakers:
 position_limits:
   max_single_trade_eth: 50
   max_daily_volume_eth: 500
-  min_profit_eth: 0.001
-  min_tip_share_pct: 50
-  max_tip_share_pct: 95
+  min_profit_eth: 0.0045
+  min_tip_share_pct: 30
+  max_tip_share_pct: 99
 `)
 }
 

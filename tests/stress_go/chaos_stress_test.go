@@ -145,7 +145,7 @@ func TestStressConfigReload(t *testing.T) {
 
 	configData = map[string]string{
 		"max_gas_gwei":   "300",
-		"min_profit_eth": "0.001",
+		"min_profit_eth": "0.0045",
 	}
 
 	err := generateLoad(ctx, cfg.Concurrency, cfg.RatePerSecond, func(ctx context.Context) error {

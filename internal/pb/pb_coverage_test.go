@@ -358,7 +358,7 @@ func TestGRPCWithStreamInterceptor(t *testing.T) {
 	defer conn.Close()
 
 	arbClient := NewArbServiceClient(conn)
-	stream, err := arbClient.StreamArbs(ctx, &StreamArbsRequest{MinProfitEth: 0.001})
+	stream, err := arbClient.StreamArbs(ctx, &StreamArbsRequest{MinProfitEth: 0.005})
 	if err != nil {
 		t.Fatalf("StreamArbs: %v", err)
 	}
@@ -449,7 +449,7 @@ func TestGRPCClientsErrorPaths(t *testing.T) {
 		t.Error("expected error from SubmitArb with cancelled context")
 	}
 
-	stream, err := arbClient.StreamArbs(ctx, &StreamArbsRequest{MinProfitEth: 0.001})
+	stream, err := arbClient.StreamArbs(ctx, &StreamArbsRequest{MinProfitEth: 0.005})
 	if err == nil {
 		_, _ = stream.Recv()
 	}

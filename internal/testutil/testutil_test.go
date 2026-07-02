@@ -73,7 +73,7 @@ func TestMockArbServer_StreamFilter(t *testing.T) {
 	defer conn.Close()
 
 	client := pb.NewArbServiceClient(conn)
-	stream, err := client.StreamArbs(ctx, &pb.StreamArbsRequest{MinProfitEth: 0.001})
+	stream, err := client.StreamArbs(ctx, &pb.StreamArbsRequest{MinProfitEth: 0.005})
 	if err != nil {
 		t.Fatalf("StreamArbs: %v", err)
 	}

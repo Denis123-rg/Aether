@@ -78,9 +78,9 @@ services:
       # whose locally-mined blocks do not resolve for state queries.
       - AETHER_BACKRUN_FORK_LATEST=${AETHER_BACKRUN_FORK_LATEST:-}
       # Min net profit (wei) a sized cycle must clear to reach the revm sim.
-      # Code default 0.001 ETH. 1e14 = 0.0001 ETH filters dust yet still lets
+      # Code default 0.005 ETH. 1e14 = 0.0001 ETH filters dust yet still lets
       # the hardened sim path be exercised in shadow; set 0 to admit all.
-      - AETHER_MEMPOOL_MIN_PROFIT_WEI=${AETHER_MEMPOOL_MIN_PROFIT_WEI:-200000000000000}
+      - AETHER_MEMPOOL_MIN_PROFIT_WEI=${AETHER_MEMPOOL_MIN_PROFIT_WEI:-5000000000000000}
       # ── 429 / RPC transport hardening (the fork provider) ──────────────
       # The fork provider now wraps an alloy RetryBackoffLayer: it
       # self-throttles to AETHER_RPC_CUPS compute-units/sec and retries HTTP

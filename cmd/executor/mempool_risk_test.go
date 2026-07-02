@@ -27,11 +27,11 @@ func TestLoadMempoolRiskConfig_Defaults(t *testing.T) {
 		os.Unsetenv(k)
 	}
 	cfg := LoadMempoolRiskConfig()
-	if cfg.MinProfitWei.Cmp(new(big.Int).SetUint64(1_000_000_000_000_000)) != 0 {
-		t.Errorf("MinProfitWei default = %s, want 1e15", cfg.MinProfitWei)
+	if cfg.MinProfitWei.Cmp(new(big.Int).SetUint64(5_000_000_000_000_000)) != 0 {
+		t.Errorf("MinProfitWei default = %s, want 5e15", cfg.MinProfitWei)
 	}
-	if cfg.MaxTipShareBps != 9500 {
-		t.Errorf("MaxTipShareBps default = %d, want 9500", cfg.MaxTipShareBps)
+	if cfg.MaxTipShareBps != 9900 {
+		t.Errorf("MaxTipShareBps default = %d, want 9900", cfg.MaxTipShareBps)
 	}
 	if cfg.MaxVictimFreshnessMs != 500 {
 		t.Errorf("MaxVictimFreshnessMs default = %d, want 500", cfg.MaxVictimFreshnessMs)
@@ -71,10 +71,10 @@ func TestLoadMempoolRiskConfig_BadEnvFallsThrough(t *testing.T) {
 	t.Setenv("AETHER_MEMPOOL_MAX_INFLIGHT", "abc")
 
 	cfg := LoadMempoolRiskConfig()
-	if cfg.MinProfitWei.Uint64() != 1_000_000_000_000_000 {
+	if cfg.MinProfitWei.Uint64() != 5_000_000_000_000_000 {
 		t.Errorf("MinProfitWei: garbage didn't fall through, got %s", cfg.MinProfitWei)
 	}
-	if cfg.MaxTipShareBps != 9500 {
+	if cfg.MaxTipShareBps != 9900 {
 		t.Errorf("MaxTipShareBps: empty didn't fall through, got %d", cfg.MaxTipShareBps)
 	}
 	if cfg.MaxVictimFreshnessMs != 500 {
@@ -91,8 +91,8 @@ func TestLoadMempoolRiskConfig_BadEnvFallsThrough(t *testing.T) {
 
 func testCfg() MempoolRiskConfig {
 	return MempoolRiskConfig{
-		MinProfitWei:              new(big.Int).SetUint64(1_000_000_000_000_000), // 1e15
-		MaxTipShareBps:            9500,
+		MinProfitWei:              new(big.Int).SetUint64(5_000_000_000_000_000), // 5e15
+		MaxTipShareBps:            9900,
 		MaxVictimFreshnessMs:      500,
 		MaxInflightPerTargetBlock: 3,
 	}
@@ -104,7 +104,7 @@ func TestMempoolRiskGate_Approves_HappyPath(t *testing.T) {
 	now := time.Unix(1_700_000_000, 0)
 
 	res := MempoolRiskGate(cfg, MempoolPreflightArgs{
-		GrossProfitWei:  new(big.Int).SetUint64(2_000_000_000_000_000), // 2e15
+		GrossProfitWei:  new(big.Int).SetUint64(6_000_000_000_000_000), // 6e15
 		TipShareBps:     9000,
 		VictimSeenAt:    now.Add(-100 * time.Millisecond),
 		TargetBlock:     18_000_000,
@@ -134,7 +134,7 @@ func TestMempoolRiskGate_Rejects_MinProfit(t *testing.T) {
 	now := time.Unix(1_700_000_000, 0)
 
 	res := MempoolRiskGate(cfg, MempoolPreflightArgs{
-		GrossProfitWei:  new(big.Int).SetUint64(500_000_000_000_000), // 5e14 — below 1e15 floor
+		GrossProfitWei:  new(big.Int).SetUint64(500_000_000_000_000), // 5e14 — below 5e15 floor
 		TipShareBps:     9000,
 		VictimSeenAt:    now.Add(-100 * time.Millisecond),
 		TargetBlock:     18_000_000,
@@ -167,8 +167,8 @@ func TestMempoolRiskGate_Rejects_NilProfit(t *testing.T) {
 func TestMempoolRiskGate_Rejects_MaxTipShare(t *testing.T) {
 	cfg := testCfg()
 	res := MempoolRiskGate(cfg, MempoolPreflightArgs{
-		GrossProfitWei: new(big.Int).SetUint64(2_000_000_000_000_000),
-		TipShareBps:    9600, // > 9500
+		GrossProfitWei: new(big.Int).SetUint64(6_000_000_000_000_000),
+		TipShareBps:    10000, // > 9900
 	}, NewMempoolInflightTracker(), time.Unix(1, 0))
 	if res.Approved || res.Reason != "max_tip_share" {
 		t.Errorf("got approved=%v reason=%q, want reject max_tip_share", res.Approved, res.Reason)
@@ -179,7 +179,7 @@ func TestMempoolRiskGate_Rejects_VictimStale(t *testing.T) {
 	cfg := testCfg()
 	now := time.Unix(1_700_000_000, 0)
 	res := MempoolRiskGate(cfg, MempoolPreflightArgs{
-		GrossProfitWei:  new(big.Int).SetUint64(2_000_000_000_000_000),
+		GrossProfitWei:  new(big.Int).SetUint64(6_000_000_000_000_000),
 		TipShareBps:     9000,
 		VictimSeenAt:    now.Add(-600 * time.Millisecond), // > 500ms
 		TargetBlock:     18_000_000,
@@ -195,7 +195,7 @@ func TestMempoolRiskGate_Rejects_Duplicate(t *testing.T) {
 	inflight := NewMempoolInflightTracker()
 	now := time.Unix(1_700_000_000, 0)
 	args := MempoolPreflightArgs{
-		GrossProfitWei:  new(big.Int).SetUint64(2_000_000_000_000_000),
+		GrossProfitWei:  new(big.Int).SetUint64(6_000_000_000_000_000),
 		TipShareBps:     9000,
 		VictimSeenAt:    now,
 		TargetBlock:     18_000_000,
@@ -219,9 +219,9 @@ func TestMempoolRiskGate_Rejects_MaxInflightPerBlock(t *testing.T) {
 
 	// Three distinct victims, same target_block — all approve.
 	for i := 0; i < 3; i++ {
-		args := MempoolPreflightArgs{
-			GrossProfitWei:  new(big.Int).SetUint64(2_000_000_000_000_000),
-			TipShareBps:     9000,
+args := MempoolPreflightArgs{
+		GrossProfitWei:  new(big.Int).SetUint64(6_000_000_000_000_000),
+		TipShareBps:     9000,
 			VictimSeenAt:    now,
 			TargetBlock:     18_000_000,
 			VictimTxHashHex: "0xvic" + string(rune('0'+i)),
@@ -232,7 +232,7 @@ func TestMempoolRiskGate_Rejects_MaxInflightPerBlock(t *testing.T) {
 	}
 	// 4th distinct victim must reject (count >= cap).
 	args := MempoolPreflightArgs{
-		GrossProfitWei:  new(big.Int).SetUint64(2_000_000_000_000_000),
+		GrossProfitWei:  new(big.Int).SetUint64(6_000_000_000_000_000),
 		TipShareBps:     9000,
 		VictimSeenAt:    now,
 		TargetBlock:     18_000_000,

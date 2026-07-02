@@ -67,7 +67,7 @@ func startMockExecutor(t *testing.T) *httptest.Server {
 			_ = json.NewEncoder(w).Encode(metrics.Snapshot{
 				PnLToday: 0.1, PnLTotal: 1.0, WinRate: 70.0,
 				LastBuilder: "flashbots", SignerHealthy: true, RPCHealthy: true,
-				SystemState: "Running", MinProfitETH: 0.001,
+				SystemState: "Running", MinProfitETH: 0.0045,
 				TopPools:          []metrics.TopPool{{Address: "0xabc", Score: 0.9}},
 				ExecutorReachable: true,
 			})

@@ -42,8 +42,8 @@ to disk as forensics JSON.
 
 ```bash
 export AETHER_BACKRUN_MODE=shadow_only
-export AETHER_MEMPOOL_MIN_PROFIT_WEI=1000000000000000      # 1e15 wei = 0.001 ETH
-export AETHER_MEMPOOL_MAX_TIP_BPS=9500                     # 95%
+export AETHER_MEMPOOL_MIN_PROFIT_WEI=5000000000000000      # 5e15 wei = 0.005 ETH
+export AETHER_MEMPOOL_MAX_TIP_BPS=9900                     # 99%
 export AETHER_MEMPOOL_VICTIM_FRESHNESS_MS=500
 export AETHER_MEMPOOL_MAX_INFLIGHT=5
 export AETHER_REPORTS_DIR=reports
@@ -87,7 +87,7 @@ before retry.
 #   -H "X-Aether-Backrun-Confirm: $AETHER_BACKRUN_CONFIRM_TOKEN" \
 #   http://localhost:8080/admin/backrun/promote
 export AETHER_BACKRUN_MODE=live_only
-export AETHER_MEMPOOL_MIN_PROFIT_WEI=50000000000000000     # 5e16 wei = 0.05 ETH (50× Stage A)
+export AETHER_MEMPOOL_MIN_PROFIT_WEI=50000000000000000     # 5e16 wei = 0.05 ETH (10× Stage A)
 export AETHER_MEMPOOL_MAX_TIP_BPS=8500                     # 85% — leave margin for infra cost
 export AETHER_MEMPOOL_VICTIM_FRESHNESS_MS=300              # 300 ms — tighter staleness
 export AETHER_MEMPOOL_MAX_INFLIGHT=2                       # 2 per target block — limit blast radius
@@ -128,8 +128,8 @@ patch.
 **Configuration delta from Stage B:**
 
 ```bash
-export AETHER_MEMPOOL_MIN_PROFIT_WEI=1000000000000000      # back to 0.001 ETH (Stage A value)
-export AETHER_MEMPOOL_MAX_TIP_BPS=9500                     # back to 95%
+export AETHER_MEMPOOL_MIN_PROFIT_WEI=5000000000000000      # back to 0.005 ETH (Stage A value)
+export AETHER_MEMPOOL_MAX_TIP_BPS=9900                     # back to 99%
 export AETHER_MEMPOOL_VICTIM_FRESHNESS_MS=500              # back to 500 ms
 export AETHER_MEMPOOL_MAX_INFLIGHT=5                       # back to 5
 ```
@@ -169,7 +169,7 @@ gates and patch.
   marked revert-allowed, our arb can land while the victim rolls back —
   zero protection against bad fills.
 - **Tip share unit:** `MempoolRiskConfig.MaxTipShareBps` is basis points
-  (9500 = 95%). `processArb` computes `uint16(tipSharePct * 100)` where
+  (9900 = 99%). `processArb` computes `uint16(tipSharePct * 100)` where
   `tipSharePct` is already a percentage — result is bps. Keep this
   conversion explicit; off-by-100 here = trivially bypassed gate.
 

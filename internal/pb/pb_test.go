@@ -65,7 +65,7 @@ func TestMessageGettersAndString(t *testing.T) {
 			VictimRawTx:     []byte{0x22},
 		},
 		&SubmitArbResponse{Accepted: true, BundleHash: "0xhash", Error: ""},
-		&StreamArbsRequest{MinProfitEth: 0.001},
+		&StreamArbsRequest{MinProfitEth: 0.005},
 		&HealthCheckRequest{},
 		&HealthCheckResponse{Healthy: true, Status: "RUNNING", UptimeSeconds: 1, LastBlock: 100, ActivePools: 5},
 		&SetStateRequest{State: SystemState_PAUSED, Reason: "test"},
@@ -232,7 +232,7 @@ func TestGRPCClientsAndHandlers(t *testing.T) {
 
 	arbClient := NewArbServiceClient(conn)
 	_, _ = arbClient.SubmitArb(ctx, &ValidatedArb{Id: "x"})
-	stream, _ := arbClient.StreamArbs(ctx, &StreamArbsRequest{MinProfitEth: 0.001})
+	stream, _ := arbClient.StreamArbs(ctx, &StreamArbsRequest{MinProfitEth: 0.005})
 	if stream != nil {
 		_, _ = stream.Recv()
 	}

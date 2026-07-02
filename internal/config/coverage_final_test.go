@@ -94,9 +94,9 @@ circuit_breakers:
 position_limits:
   max_single_trade_eth: 50
   max_daily_volume_eth: 500
-  min_profit_eth: 0.001
-  max_tip_share_pct: 95
-  min_tip_share_pct: 50
+  min_profit_eth: 0.0045
+  max_tip_share_pct: 99
+  min_tip_share_pct: 30
 `)
 	if err := os.WriteFile(path, content, 0o644); err != nil {
 		t.Fatal(err)

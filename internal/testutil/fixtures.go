@@ -51,15 +51,15 @@ func Profitable2HopArb() *pb.ValidatedArb {
 	}
 }
 
-// MarginalProfitArb returns an arb just above the 0.001 ETH minimum threshold.
+// MarginalProfitArb returns an arb just above the 0.005 ETH minimum threshold.
 func MarginalProfitArb() *pb.ValidatedArb {
 	return &pb.ValidatedArb{
 		Id: "arb-marginal-001",
 		Hops: []*pb.ArbHop{
-			{Protocol: pb.ProtocolType_UNISWAP_V2, PoolAddress: []byte{0x06}, TokenIn: []byte{0xAA}, TokenOut: []byte{0xBB}, AmountIn: ETHToWeiBytes(1.0), ExpectedOut: ETHToWeiBytes(1.0011), EstimatedGas: 60000},
+			{Protocol: pb.ProtocolType_UNISWAP_V2, PoolAddress: []byte{0x06}, TokenIn: []byte{0xAA}, TokenOut: []byte{0xBB}, AmountIn: ETHToWeiBytes(1.0), ExpectedOut: ETHToWeiBytes(1.0051), EstimatedGas: 60000},
 		},
 		TotalGas:        160000,
-		NetProfitWei:    ETHToWeiBytes(0.0011),
+		NetProfitWei:    ETHToWeiBytes(0.0051),
 		BlockNumber:     18000002,
 		FlashloanAmount: ETHToWeiBytes(1.0),
 		FlashloanToken:  []byte{0xAA},
@@ -67,7 +67,7 @@ func MarginalProfitArb() *pb.ValidatedArb {
 	}
 }
 
-// LowProfitArb returns an arb below the 0.001 ETH minimum (should be rejected).
+// LowProfitArb returns an arb below the 0.005 ETH minimum (should be rejected).
 func LowProfitArb() *pb.ValidatedArb {
 	return &pb.ValidatedArb{
 		Id: "arb-lowprofit-001",

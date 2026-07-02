@@ -15,8 +15,8 @@ Existing gates per CLAUDE.md (kept):
 - 3 consecutive reverts in 10 min → PAUSE
 
 New mempool-specific gates:
-- `min_profit_wei` (env `AETHER_MEMPOOL_MIN_PROFIT_WEI`, default 1e15 = 0.001 ETH)
-- `max_tip_share_bps` (env `AETHER_MEMPOOL_MAX_TIP_BPS`, default 9500 = 95%)
+- `min_profit_wei` (env `AETHER_MEMPOOL_MIN_PROFIT_WEI`, default 5e15 = 0.005 ETH)
+- `max_tip_share_bps` (env `AETHER_MEMPOOL_MAX_TIP_BPS`, default 9900 = 99%)
 - `max_victim_freshness_ms` (env `AETHER_MEMPOOL_VICTIM_FRESHNESS_MS`, default 500)
 - `max_in_flight_per_target_block` (env `AETHER_MEMPOOL_MAX_INFLIGHT`, default 5)
 - Per-target-block dedup: drop later candidate if we already published a bundle for the same `(target_block, victim_tx_hash)`
@@ -68,7 +68,7 @@ Document in `docs/runbook/mempool-backrun-rollout.md`:
 - Gate to Stage C: ≥3 inclusions, no daily P&L breach, predicted ≈ actual within 10%
 
 **Stage C — Live operation**
-- `AETHER_MEMPOOL_MIN_PROFIT_WEI=1e15` (0.001 ETH)
+- `AETHER_MEMPOOL_MIN_PROFIT_WEI=5e15` (0.005 ETH)
 - Tip share tuned weekly from observed inclusion rate
 - Daily P&L circuit breaker active
 

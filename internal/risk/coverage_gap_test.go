@@ -211,13 +211,13 @@ func TestPreflightCheck_AllRejected_Coverage(t *testing.T) {
 	}
 
 	// Tip share too low
-	r = rm.PreflightCheck(big.NewInt(1e18), big.NewInt(1e15), 50.0, 10.0, 10.0)
+	r = rm.PreflightCheck(big.NewInt(1e18), big.NewInt(1e15), 50.0, 29.0, 10.0)
 	if r.Approved {
 		t.Error("expected rejected for low tip share")
 	}
 
 	// Tip share too high
-	r = rm.PreflightCheck(big.NewInt(1e18), big.NewInt(1e15), 50.0, 99.0, 10.0)
+	r = rm.PreflightCheck(big.NewInt(1e18), big.NewInt(1e15), 50.0, 100.0, 10.0)
 	if r.Approved {
 		t.Error("expected rejected for high tip share")
 	}

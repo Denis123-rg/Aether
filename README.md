@@ -264,8 +264,8 @@ All runtime configuration lives in `config/`. Environment variables support `${V
 | `miss_rate_alert` | 0.8 | Alert when bundle miss rate exceeds |
 | `single_trade_limit_eth` | 50 | Max single trade size |
 | `daily_volume_limit_eth` | 500 | Max daily volume |
-| `min_profit_eth` | 0.001 | Minimum profit threshold |
-| `tip_share_range_bps` | 50–95 | Adaptive tip share bounds |
+| `min_profit_eth` | 0.0045 | Minimum profit threshold |
+| `tip_share_range_bps` | 30–99 | Adaptive tip share bounds |
 
 ---
 

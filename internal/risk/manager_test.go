@@ -154,7 +154,7 @@ func TestPreflightCheck_TipShareTooHigh(t *testing.T) {
 		fracETHWei(t, 1, 100),
 		ethWei(t, 10),
 		100.0,
-		96.0, // 96% — above 95% max
+		100.0, // 100% — above 99% max
 		1.0,
 	)
 
@@ -172,7 +172,7 @@ func TestPreflightCheck_TipShareTooLow(t *testing.T) {
 		fracETHWei(t, 1, 100),
 		ethWei(t, 10),
 		100.0,
-		49.0, // 49% — below 50% min
+		29.0, // 29% — below 30% min
 		1.0,
 	)
 
@@ -450,15 +450,15 @@ func TestCalculateTipShare_UsesBundleMissRate(t *testing.T) {
 		t.Fatalf("tip share after high miss rate = %.1f, want 95.0", got)
 	}
 
-	// No new feedback => gated, returns last tip (95%).
-	if got := rm.CalculateTipShare(profitWei, 30.0); got != 95.0 {
-		t.Fatalf("tip share should stay at 95.0 without new feedback, got %.1f", got)
+	// New miss feedback => tries to increase to 100% but capped at 99%.
+	rm.RecordBundleResult(false)
+	if got := rm.CalculateTipShare(profitWei, 30.0); got != 99.0 {
+		t.Fatalf("tip share should remain capped at 99.0, got %.1f", got)
 	}
 
-	// New miss feedback => tries to increase but capped at 95%.
-	rm.RecordBundleResult(false)
-	if got := rm.CalculateTipShare(profitWei, 30.0); got != 95.0 {
-		t.Fatalf("tip share should remain capped at 95.0, got %.1f", got)
+	// No new feedback => gated, returns last tip (99%).
+	if got := rm.CalculateTipShare(profitWei, 30.0); got != 99.0 {
+		t.Fatalf("tip share should stay at 99.0 without new feedback, got %.1f", got)
 	}
 }
 

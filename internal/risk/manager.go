@@ -57,9 +57,9 @@ func DefaultRiskConfig() RiskConfig {
 		BundleMissRateWindowMin:   60,
 		MaxSingleTradeETH:         50.0,
 		MaxDailyVolumeETH:         500.0,
-		MinProfitETH:              0.001,
-		MinTipSharePct:            50.0,
-		MaxTipSharePct:            95.0,
+		MinProfitETH:              0.0045,
+		MinTipSharePct:            30.0,
+		MaxTipSharePct:            99.0,
 	}
 }
 

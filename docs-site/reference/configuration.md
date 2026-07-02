@@ -100,18 +100,18 @@ Only bug reverts count toward `consecutive_reverts_pause`. Competitive/MEV rever
 position_limits:
   max_single_trade_eth: 50.0
   max_daily_volume_eth: 500.0
-  min_profit_eth: 0.001
-  min_tip_share_pct: 50
-  max_tip_share_pct: 95
+  min_profit_eth: 0.0045
+  min_tip_share_pct: 30
+  max_tip_share_pct: 99
 ```
 
 | Field | Type | Default | Description |
 |---|---|---|---|
 | `max_single_trade_eth` | float | 50.0 | Maximum ETH value per trade |
 | `max_daily_volume_eth` | float | 500.0 | Maximum daily trading volume |
-| `min_profit_eth` | float | 0.001 | Minimum net profit to execute |
-| `min_tip_share_pct` | integer | 50 | Minimum % of profit sent to builder |
-| `max_tip_share_pct` | integer | 95 | Maximum % of profit sent to builder |
+| `min_profit_eth` | float | 0.0045 | Minimum net profit to execute |
+| `min_tip_share_pct` | integer | 30 | Minimum % of profit sent to builder |
+| `max_tip_share_pct` | integer | 99 | Maximum % of profit sent to builder |
 
 ### System
 
