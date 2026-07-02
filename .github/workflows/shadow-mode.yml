@@ -233,14 +233,15 @@ jobs:
         id: rust
         run: |
           echo "=== Starting Rust Engine ==="
-          # Find the binary
+          # Find the binary - try multiple paths
           RUST_BIN=""
-          for candidate in ./target/release/aether-grpc-server ./aether-grpc-server; do
+          for candidate in ./target/release/aether-grpc-server ./aether-grpc-server ./grpc-server; do
             if [ -x "$candidate" ]; then RUST_BIN="$candidate"; break; fi
           done
           if [ -z "$RUST_BIN" ]; then
             echo "FAIL: Rust binary not found"
-            find . -name "aether-grpc-server" -type f 2>/dev/null
+            echo "Searched: ./target/release/aether-grpc-server ./aether-grpc-server ./grpc-server"
+            find . -name "*grpc*" -o -name "*aether*rust*" 2>/dev/null | head -10
             exit 1
           fi
           echo "Using binary: $RUST_BIN"
