@@ -219,9 +219,9 @@ func TestMempoolRiskGate_Rejects_MaxInflightPerBlock(t *testing.T) {
 
 	// Three distinct victims, same target_block — all approve.
 	for i := 0; i < 3; i++ {
-args := MempoolPreflightArgs{
-		GrossProfitWei:  new(big.Int).SetUint64(6_000_000_000_000_000),
-		TipShareBps:     9000,
+		args := MempoolPreflightArgs{
+			GrossProfitWei:  new(big.Int).SetUint64(6_000_000_000_000_000),
+			TipShareBps:     9000,
 			VictimSeenAt:    now,
 			TargetBlock:     18_000_000,
 			VictimTxHashHex: "0xvic" + string(rune('0'+i)),

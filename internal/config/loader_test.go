@@ -397,8 +397,8 @@ func TestLoadNodesConfig_ValidFile(t *testing.T) {
 		t.Fatalf("LoadNodesConfig(%q): %v", path, err)
 	}
 
-	if len(cfg.Nodes) != 2 {
-		t.Fatalf("expected 2 nodes, got %d", len(cfg.Nodes))
+	if len(cfg.Nodes) != 5 {
+		t.Fatalf("expected 5 nodes, got %d", len(cfg.Nodes))
 	}
 	if cfg.Nodes[0].Name != "alchemy-ws" {
 		t.Errorf("nodes[0].name = %q, want %q", cfg.Nodes[0].Name, "alchemy-ws")
@@ -409,11 +409,11 @@ func TestLoadNodesConfig_ValidFile(t *testing.T) {
 	if cfg.Nodes[0].Priority != 1 {
 		t.Errorf("nodes[0].priority = %d, want 1", cfg.Nodes[0].Priority)
 	}
-	if cfg.Nodes[1].Name != "local-reth" {
-		t.Errorf("nodes[1].name = %q, want %q", cfg.Nodes[1].Name, "local-reth")
+	if cfg.Nodes[1].Name != "alchemy-http" {
+		t.Errorf("nodes[1].name = %q, want %q", cfg.Nodes[1].Name, "alchemy-http")
 	}
-	if cfg.Nodes[1].Type != "ipc" {
-		t.Errorf("nodes[1].type = %q, want %q", cfg.Nodes[1].Type, "ipc")
+	if cfg.Nodes[1].Type != "https" {
+		t.Errorf("nodes[1].type = %q, want %q", cfg.Nodes[1].Type, "https")
 	}
 	if cfg.MinHealthyNodes != 2 {
 		t.Errorf("min_healthy_nodes = %d, want 2", cfg.MinHealthyNodes)

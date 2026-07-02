@@ -45,7 +45,7 @@ type MempoolRiskConfig struct {
 // typo in the env never silently bypasses a gate.
 func LoadMempoolRiskConfig() MempoolRiskConfig {
 	cfg := MempoolRiskConfig{
-	MinProfitWei: new(big.Int).SetUint64(5_000_000_000_000_000), // 5e15 wei = 0.005 ETH
+		MinProfitWei:              new(big.Int).SetUint64(5_000_000_000_000_000), // 5e15 wei = 0.005 ETH
 		MaxTipShareBps:            9900,                                          // 99%
 		MaxVictimFreshnessMs:      500,
 		MaxInflightPerTargetBlock: 5,

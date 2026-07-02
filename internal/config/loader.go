@@ -423,9 +423,9 @@ func ValidateNodesConfig(cfg NodesFileConfig) error {
 		if n.Type == "" {
 			return fmt.Errorf("nodes[%d].type must not be empty", i)
 		}
-		validType := n.Type == "websocket" || n.Type == "ipc" || n.Type == "http"
+		validType := n.Type == "websocket" || n.Type == "ipc" || n.Type == "http" || n.Type == "https"
 		if !validType {
-			return fmt.Errorf("nodes[%d].type must be websocket, ipc, or http, got %q", i, n.Type)
+			return fmt.Errorf("nodes[%d].type must be websocket, ipc, http, or https, got %q", i, n.Type)
 		}
 	}
 	if cfg.MinHealthyNodes <= 0 {
