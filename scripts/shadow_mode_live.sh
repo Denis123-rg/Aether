@@ -245,7 +245,7 @@ if [ "$DISABLE_DASHBOARD" != "1" ] && [ ! -x "$AETHER_MONITOR" ]; then
     log_error "Dashboard binary missing: $AETHER_MONITOR"; exit 1
 fi
 
-POOLS_CONFIG="$PROJECT_ROOT/config/pools_shadow.toml"
+POOLS_CONFIG="${AETHER_POOLS_CONFIG:-$PROJECT_ROOT/config/pools_shadow.toml}"
 if [ ! -f "$POOLS_CONFIG" ]; then
     log_error "Pool config missing: $POOLS_CONFIG"
     log_error "Shadow mode needs a multi-pool graph; aborting before the"
